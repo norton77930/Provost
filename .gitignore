@@ -1,0 +1,26 @@
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# Claude Code local, per-machine state — never publish
+.claude/settings.local.json
+.claude/projects/
+.claude/todos/
+.claude/shell-snapshots/
+
+# Backups, logs, scratch, browser-automation dumps
+*.bak
+*.log
+.playwright-mcp/
+scratch/
+tmp/
+
+# Node (only if demo/build tooling is added later)
+node_modules/
+
+# NOTE: .claude/agents/ is intentionally NOT ignored — the collaborator
+# role definitions are a shipped part of this project.
