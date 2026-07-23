@@ -95,9 +95,9 @@ and inspection commands but must not write sources, tests, fixtures, or
 configuration; if a test command could mutate the repository, it reports the
 limitation instead of running it.
 
-Keep every role report within roughly 4,000 tokens: summarize evidence with
-exact paths and lines; never paste whole files, because role reports accumulate
-in the main agent's context.
+Keep every role report concise: summarize evidence with exact paths and line
+numbers, and never paste whole files, because role reports accumulate in the main
+agent's context.
 
 Custom roles do not invoke nested subagents. Do not create commits, branches,
 remotes, or worktrees unless the user explicitly asks.
