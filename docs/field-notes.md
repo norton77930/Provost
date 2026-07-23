@@ -5,6 +5,50 @@ specific to running *non-Anthropic* models behind an Anthropic-compatible proxy 
 each note says which. Observed on Claude Code 2.1.21x (early 2026); internals
 change, so treat these as a starting point, not a contract.
 
+## Spotlight — taming GPT-5.6 Sol: structure beats the model lottery
+
+*Running non-Anthropic models via a proxy — GPT-5.6 Sol especially.*
+
+GPT-5.6 Sol has a rough reputation — "powerful but hard to drive." In practice the
+problem usually isn't capability; it's that, left unconstrained, **it doesn't
+converge**: it over-runs, gold-plates, wanders off the task, and retries the same
+failure. Give it structure and it becomes reliable. Everything below is discipline
+Provost already imposes — which is why the same model that flails in a bare session
+behaves under Provost.
+
+1. **Plan the whole execution *before* you start, and make "done" enumerable.** The
+   biggest lever — one mechanism doing two jobs. Sol drifts when the goal is vague
+   and the steps are improvised mid-run. Provost requires a **Completion Contract in
+   the Plan before any implementation** (see [`orchestration.md`](../orchestration.md)):
+   a finite list of required claims, the specific evidence for each, the roles that
+   will resolve them, and *one* planned final verification. That pre-declared route
+   stops the drift; the finite, enumerable claim list gives it a wall to stop at
+   (`active → sealing → done`: once every claim is PASS-current, only the final
+   verification runs, then you stop — no "while I'm here" additions). Vague goals let
+   Sol wander; an enumerable contract makes it converge.
+
+2. **Cap each role report (~4,000 tokens).** Provost's default role prompts don't
+   hard-cap report size — native large-window models don't need it — but GPT-5.6 Sol
+   behind a proxy does: a hard budget keeps sub-agent reports from bloating the main
+   context on a tighter window, and it nudges the model to converge its own output.
+   If you run Sol, add "stay within ~4,000 tokens" back to the role prompts.
+
+3. **Fix the context ceiling.** Set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` (Sol isn't a
+   `claude-` model, so it applies) and `CLAUDE_CODE_AUTO_COMPACT_WINDOW` — see the
+   context-window notes below — so a long session doesn't hit the wall.
+
+4. **Pin a model to every role.** Avoids the `general-purpose` 502 (see the note
+   below): a route that emits a native `claude-*` ID breaks against a non-Anthropic
+   gateway.
+
+5. **One active writer, plan first.** A single writer plus plan-before-Auto keeps a
+   wander-prone model on one track instead of sprawling across the codebase.
+
+**The lesson isn't about GPT-5.6.** None of the above is model-specific magic — it's
+the same structure Provost applies to any crew. A model's reputation is often a
+*lack-of-structure* problem wearing the model's name. **Structure beats the model
+lottery.**
+
 ## Universal — the bundled `claude-api` skill can blow your context window in one message
 
 *Applies to everyone, native models included.*

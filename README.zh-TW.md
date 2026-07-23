@@ -69,7 +69,9 @@
 
 ## 接其他模型
 
-Provost 就是提示詞、角色定義與一套治理設計——沒有任何一部分綁死廠商。範例用原生 Anthropic 模型,任何人都能重現。想在 Claude Code 後面跑其他模型?用 [CC Switch](https://github.com/farion1231/cc-switch) 或 CLIProxyAPI 之類的 router,指向任何 Anthropic 相容 gateway 即可——那是外部選擇,Provost 不 ship、也不背書。
+Provost 就是提示詞、角色定義與一套治理設計——沒有任何一部分綁死廠商。範例用原生 Anthropic 模型,任何人都能重現。想在 Claude Code 後面跑其他模型?用 [CC Switch](https://github.com/farion1231/cc-switch) 或 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 之類的 router,指向任何 Anthropic 相容 gateway 即可——那是外部選擇,Provost 不 ship、也不背書。
+
+跑 GPT-5.6 Sol 覺得難搞?釘好每個角色的模型、修好 context ceiling、用可列舉的 Completion Contract 框住它,就比傳聞乖得多——見 [field notes](docs/field-notes.md)。
 
 ## 這裡還有
 

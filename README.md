@@ -104,8 +104,13 @@ ship. That mapping is config; the framework doesn't change.
 Provost is prompts, roles, and a governance design — nothing is tied to a vendor.
 The examples use native Anthropic models so anyone can reproduce them. To run other
 models behind Claude Code, point it at any Anthropic-compatible gateway with a
-router such as [CC Switch](https://github.com/farion1231/cc-switch) or CLIProxyAPI
-— an external choice Provost neither ships nor endorses.
+router such as [CC Switch](https://github.com/farion1231/cc-switch) or
+[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) — an external choice
+Provost neither ships nor endorses.
+
+Running GPT-5.6 Sol and finding it rough? It's better-behaved than its reputation
+once you pin models per role, fix the context ceiling, and hold it to an enumerable
+Completion Contract — see [field notes](docs/field-notes.md).
 
 ## Also here
 
