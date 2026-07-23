@@ -49,10 +49,17 @@ enforced, and you want a trail you can reconstruct. The governed tier adds:
   forever without a written, falsifiable diagnosis;
 - an append-only **JSONL ledger** and immutable handoff receipts.
 
-> **User story.** *As an engineer changing the authentication system, I want the
-> agent physically prevented from touching anything outside the files I approved,
-> and every step to leave evidence I can audit later — so a wrong turn is blocked
-> at the tool call, not discovered in review.*
+**When the governed tier earns its ceremony:**
+
+> - *Changing auth, secrets, or payments* — the agent is physically blocked from
+>   editing outside the approved files, and every step leaves an auditable trail.
+>   *(engine-enforced write scope + ledger)*
+> - *A schema or data migration across many files* — dependent tasks hand off under
+>   path custody with pinned hashes, and each claim carries its own evidence, so
+>   nothing drifts and nothing is taken on faith. *(path custody + per-claim evidence)*
+> - *An agent flailing on the same error* — it can't retry the identical failure
+>   forever; the same failure signature twice forces a written, falsifiable
+>   diagnosis before another attempt. *(failure-signature diagnosis gate)*
 
 Design and a reference implementation: [`docs/governance/`](docs/governance/).
 

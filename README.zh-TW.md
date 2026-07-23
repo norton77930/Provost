@@ -1,37 +1,60 @@
 # Provost
 
-**Match oversight to blast radius.**（依風險調節監督強度）— 給 Claude Code agent 的漸進式治理框架。
+**Match oversight to blast radius.**（依風險調節監督強度）— 給 Claude Code agent 的治理框架。
 
 *[English →](README.md)*
 
 ---
 
-多數做法只給 AI 編碼代理**一種固定的流程**——改一個 typo 和做一次付款系統遷移,用的是同一套儀式。Provost 把**「監督」變成一把可調的 dial**。三層讓你依一次改動的 *blast radius*(能造成多大破壞、多難復原)調節儀式:一行修正單飛;一般功能走「模型分層的協作者團隊 + 單一 writer 紀律」;高風險改動則走「不可變 manifest + 引擎強制 write-scope + path custody + 逐項證據才算完成」。
+當你讓 AI agent 寫程式,真正有風險的不是改 typo——是 auth 改動、遷移、公開 API。**Provost 是給 Claude Code agent 的治理框架**:隨著一次改動的 blast radius 升高,把*被強制執行*的問責感往上調。
 
-它是 **model-agnostic** 的,跑在**原生 Claude Code** 上,用原生 Anthropic 模型——便宜模型做粗活,最強的模型只留給指揮與 review。
+高端時,agent 在不可變 manifest 下工作、被**物理性擋住**不能編輯核准清單外的檔、且**沒有證據不能宣稱完成**。往下是一支處理日常工作的協作團隊;最底層是拋棄式任務用的 bare Claude Code。一把 dial、三層,對上賭注大小。
+
+它跑在**原生 Claude Code** 上、是 **model-agnostic** 的——把你最強的模型放在指揮位,便宜模型做大量工作。
 
 ## 這把 dial
 
 | 層 | 是什麼 | 何時用 |
 |---|---|---|
-| **0 · Bare** | 只有 Claude Code + 基本護欄,無團隊、無儀式。 | 拋棄式小改、問答、探索。 |
-| **1 · 協作者** | 一支模型分層的 subagent 團隊、單一 active writer、有限的 Completion Contract。 | 一般功能與 bug fix。 |
-| **2 · 治理** | 不可變 manifest、引擎強制 write-scope、custody、逐項證據、fresh verifier。 | auth、遷移、公開 API——任何你會被稽核的事。 |
+| **2 · 治理** — *Provost 存在的理由* | 不可變 manifest、引擎強制 write-scope、path custody、逐項證據、fresh verifier。 | auth、secret、payment、遷移、公開 API——任何你會被稽核的事。 |
+| **1 · 協作者** | 模型分層的 subagent 團隊、單一 active writer、有限的 Completion Contract。 | 日常功能與 bug fix。 |
+| **0 · Bare** | 只有 Claude Code + 護欄,無團隊、無儀式。 | 拋棄式小改、問答、探索。 |
 
-重點**不是**永遠用第 2 層,而是**別再為第 0 層的工作付第 2 層的成本**——也別用第 0 層的隨性去做第 2 層的改動。完整模型與決策規則見 [`docs/concepts.md`](docs/concepts.md)。
+第 0–1 層是你**往上 escalate 的業界底座**(見下方「相關工作與定位」)。Provost 加的、別人沒有的是**第 2 層**——把「agent 答應會待在 scope 內」變成「agent 被*擋住*出不去」。完整模型與決策規則見 [`docs/concepts.md`](docs/concepts.md)。
 
-## 快速開始(第 1 層——協作者團隊)
+## 第 2 層——治理(差異化所在)
 
-跑在原生 Claude Code 上;不需要 proxy、不需要額外服務。
+高 blast radius 的改動,口頭同意 scope 不夠;你要它被強制執行,還要一條能重建的軌跡。治理層加了:
+
+- **不可變 manifest**,釘死在核准的計畫上——不能偷偷移動球門;
+- 一個 `PreToolUse` hook,**在引擎層擋掉任何超出當前 task literal `write_set` 的寫入**——不是好聲好氣拜託 agent;
+- **path custody**,讓一個 task 交棒給下一個時檔案不漂移;
+- **逐項證據**與一個必須通過才算完成的 **fresh-context verifier**;
+- **failure-signature 診斷閘**,讓同一個失敗不能無限重試而不附可證偽的診斷;
+- append-only 的 **JSONL ledger** 與不可變的交接 receipt。
+
+**治理層什麼時候值得那套儀式:**
+
+> - *改 auth、secret、payment* — agent 被物理性擋住不能編輯核准外的檔,每步留可稽核軌跡。*(引擎強制 write-scope + ledger)*
+> - *跨多檔的 schema/資料遷移* — 相依 task 以 pinned hash 做 path custody 交棒,每項 claim 各自帶證據,所以不漂移、不靠信任。*(path custody + 逐項證據)*
+> - *agent 在同一個錯上鬼打牆* — 不能對同一個失敗無限重試;同一 failure signature 出現兩次,就強制先寫出可證偽的診斷才能再試。*(failure-signature 診斷閘)*
+
+設計與 reference 實作:[`docs/governance/`](docs/governance/)。
+
+**現況**:治理層目前以**設計 + 一份 Windows/PowerShell reference 實作**呈現;乾淨、跨平台、可跑的 port 是 Phase B 目標。下方的協作層**今天就能跑、跨平台**。
+
+## 快速開始——第 1 層(今天可跑、跨平台)
+
+協作團隊跑在原生 Claude Code 上;不需要 proxy、不需要額外服務。
 
 1. 把角色檔複製進你的專案(或 `~/.claude/`):
    ```bash
    cp -r .claude/agents/ your-project/.claude/agents/
    ```
 2. 把 [`orchestration.md`](orchestration.md) 併進你專案的 `CLAUDE.md`(或 `~/.claude/CLAUDE.md`)。
-3. 用 Opus 跑 Claude Code,照常工作——先計畫,再讓團隊執行。主代理把唯讀工作委派給 `explorer` 與 reviewer、維持單一 active writer,並在 Completion Contract 達成時停手。
+3. 用你最強的模型當主/指揮代理跑 Claude Code,照常工作——先計畫,再讓團隊執行。主代理把唯讀工作委派給 `explorer` 與 reviewer、維持單一 active writer,並在 Completion Contract 達成時停手。
 
-角色以釘死的模型讓成本對上任務:
+角色以釘死的模型讓成本對上任務——便宜模型做粗活,最強的模型只留給需要判斷的事(指揮與 review):
 
 | 角色 | 模型 | |
 |---|---|---|
@@ -40,24 +63,27 @@
 | `test-analyst` | haiku | 只跑既有測試,絕不改檔 |
 | `code-reviewer` / `architecture-reviewer` | opus | 唯讀 review |
 
-> _Demo:terminal 錄影製作中——Opus 指揮 Haiku/Sonnet 分工跑一個真實任務。_
+角色講的是*工作*,不是模型。你想換什麼模型都行——Opus、Fable 5,或(透過 router)非 Anthropic 模型——並在新模型出來時把角色重新指派給模型。那個對應是 config;框架不變。
 
-## 第 2 層——治理
-
-高 blast radius 的工作,協作紀律要被**引擎強制**,而不只是口頭同意:不可變 manifest、在引擎層擋掉越界寫入的 hooks、path custody、逐項證據,以及一個必須通過才算完成的 fresh-context verifier。設計與 reference 實作:[`docs/governance/`](docs/governance/)。
+> _Demo:terminal 錄影製作中——一個強指揮者帶 Haiku/Sonnet 分工跑真實任務。_
 
 ## 接其他模型
 
-Provost 就是提示詞、角色定義與一套治理設計——沒有任何一部分綁死某家模型或廠商。範例用原生 Anthropic 模型,任何人都能重現。想在 Claude Code 後面跑其他模型?用 [CC Switch](https://github.com/farion1231/cc-switch) 或 CLIProxyAPI 之類的 router,把它指向任何 Anthropic 相容 gateway 即可——那是外部選擇,Provost 不 ship、也不背書。Provost 是團隊與流程;router 只是決定他們跑在哪個引擎上。
+Provost 就是提示詞、角色定義與一套治理設計——沒有任何一部分綁死廠商。範例用原生 Anthropic 模型,任何人都能重現。想在 Claude Code 後面跑其他模型?用 [CC Switch](https://github.com/farion1231/cc-switch) 或 CLIProxyAPI 之類的 router,指向任何 Anthropic 相容 gateway 即可——那是外部選擇,Provost 不 ship、也不背書。
 
 ## 這裡還有
 
-- [`docs/field-notes.md`](docs/field-notes.md) — 把 Claude Code 操到極限的踩雷筆記(context window 內部行為;會一則訊息撐爆你視窗的內建 `claude-api` skill)。
+- [`docs/field-notes.md`](docs/field-notes.md) — 把 Claude Code 操到極限的踩雷筆記(context window 內部行為;會一則訊息撐爆視窗的內建 `claude-api` skill)。
 - [`skills/`](skills/) — 團隊用的方法論 skills(TDD、bug 診斷、review、完成前驗證)。部分 vendored 自第三方 MIT 專案,見 [`skills/NOTICE.md`](skills/NOTICE.md)。
 
 ## 相關工作與定位
 
-Provost 完全建在原生 Claude Code primitives 上——subagents、hooks、skills。它是一個**主動式**治理層:事前約束 scope、以證據 gate 完成。如果你要的是**事後可觀測性**——每個 session 的可查詢紀錄——像 [claude-agent-team](https://github.com/ek33450505/claude-agent-team) 這類專案是從「紀錄」的角度切入同一個「Claude Code governance layer」品類。
+Provost 建在原生 Claude Code primitives 上——subagents、hooks、skills。**協作層**(強模型指揮便宜模型)是別人也做得好的模式,值得認識:
+
+- **[pilotfish](https://github.com/Nanako0129/pilotfish)** 主打*成本*——有 benchmark 的「前沿指揮 + 便宜執行」拆分,加一個完整的 installer。
+- **[claude-agent-team](https://github.com/ek33450505/claude-agent-team)** 主打*可觀測性*——每個 session 的可查詢本機紀錄。
+
+Provost 獨有的貢獻是**治理層**:主動、引擎強制的 scope 與證據導向的完成。當那些工具讓團隊更便宜或更可觀測,Provost 讓它**可問責**——而且三個角度可以乾淨疊加(成本 + 紀錄 + 治理)。
 
 ## 路線圖
 

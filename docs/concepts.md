@@ -71,6 +71,14 @@ custody for handoffs, per-claim evidence, and a fresh-context verifier that must
 pass before completion. See [`governance/`](governance/) for the design and a
 reference implementation.
 
+**This tier is Provost's reason to exist.** The collaborator tier above is a
+well-trodden pattern — see, for example,
+[pilotfish](https://github.com/Nanako0129/pilotfish) (the cost angle) and
+[claude-agent-team](https://github.com/ek33450505/claude-agent-team) (the
+observability angle). Provost's distinct contribution is this governed tier:
+proactive, engine-enforced scope and evidence-based completion. The three angles
+combine cleanly — cost, record, and governance.
+
 ## Model-agnostic, router-agnostic
 
 Provost is prompts, role definitions, and a governance design — none of it is
