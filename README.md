@@ -77,6 +77,8 @@ Windows/PowerShell reference implementation**; a clean, cross-platform, runnable
 port is the Phase B goal. The collaborator tier below **runs today on any
 platform**.
 
+**Want the governed tier on macOS/Linux?** [Open an issue](https://github.com/norton77930/Provost/issues/new) — demand is what decides whether the Phase B port happens next.
+
 ## Quickstart — Tier 1 (runs today, any platform)
 
 The collaborator crew runs on vanilla Claude Code; no proxy, no extra services.
@@ -106,7 +108,20 @@ Roles name a *job*, not a model. Swap in whatever models you like — Opus, Fabl
 or (via a router) a non-Anthropic model — and re-assign roles to models as new ones
 ship. That mapping is config; the framework doesn't change.
 
-> _Demo: terminal recording coming — a strong orchestrator directing Haiku/Sonnet workers on a real task._
+**What a run looks like** *(a full terminal recording is coming)* — a Tier 1 run on a one-line bug fix reads roughly like this:
+
+```text
+you          ▸ "intermittent 500 on /login when the email has trailing spaces"
+explorer     ▸ (haiku)  finds it: the email isn't trimmed before the session lookup
+plan         ▸ Completion Contract — 1 claim: "login trims the email"; evidence: a failing→passing test
+implementer  ▸ (sonnet) RED: a test for a trailing-space email → fails
+             ▸ GREEN: trim before the lookup → the test passes
+test-analyst ▸ (haiku)  runs the auth suite → green, no regressions
+reviewer     ▸ (opus)   confirms the claim, checks for scope creep → clean
+done         ▸ contract met → stop. Opus was spent only on judgment.
+```
+
+One active writer throughout; the expensive model orchestrates and reviews while cheaper models do the volume.
 
 ## Running other models
 

@@ -52,6 +52,8 @@ flowchart TD
 
 **現況**:治理層目前以**設計 + 一份 Windows/PowerShell reference 實作**呈現;乾淨、跨平台、可跑的 port 是 Phase B 目標。下方的協作層**今天就能跑、跨平台**。
 
+**想在 macOS/Linux 上跑治理層?**[開一個 issue](https://github.com/norton77930/Provost/issues/new)——需求決定 Phase B port 要不要做。
+
 ## 快速開始——第 1 層(今天可跑、跨平台)
 
 協作團隊跑在原生 Claude Code 上;不需要 proxy、不需要額外服務。
@@ -74,7 +76,20 @@ flowchart TD
 
 角色講的是*工作*,不是模型。你想換什麼模型都行——Opus、Fable 5,或(透過 router)非 Anthropic 模型——並在新模型出來時把角色重新指派給模型。那個對應是 config;框架不變。
 
-> _Demo:terminal 錄影製作中——一個強指揮者帶 Haiku/Sonnet 分工跑真實任務。_
+**一次 run 長什麼樣** *(完整 terminal 錄影製作中)* — 一個 Tier 1、修一行 bug 的 run,大致像這樣:
+
+```text
+你           ▸「/login 偶發 500,當 email 尾端有空白時」
+explorer     ▸(haiku) 定位:session lookup 前沒有 trim email
+plan         ▸ Completion Contract — 1 條 claim:「login 會 trim email」;證據:一個 失敗→通過 的測試
+implementer  ▸(sonnet)RED:針對尾端空白 email 的測試 → 失敗
+             ▸ GREEN:lookup 前先 trim → 測試通過
+test-analyst ▸(haiku) 跑 auth 測試套件 → 綠燈,無 regression
+reviewer     ▸(opus)  確認 claim、檢查有無 scope creep → 乾淨
+done         ▸ 契約達成 → 收手。Opus 只花在判斷上。
+```
+
+全程單一 writer;貴模型負責指揮與 review,便宜模型做量。
 
 ## 接其他模型
 
