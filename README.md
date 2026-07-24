@@ -20,6 +20,15 @@ tiers, matched to what's at stake.
 It runs on **vanilla Claude Code** and is **model-agnostic** — put your strongest
 model in the orchestrator seat and cheaper models on the volume work.
 
+```mermaid
+flowchart TD
+    C(["A change to make"]) --> Q1{"Throwaway edit,<br/>question, or exploration?"}
+    Q1 -->|yes| T0["Tier 0 · Bare<br/>Claude Code + guardrails"]
+    Q1 -->|no| Q2{"Auth · secrets · payments ·<br/>migration · public API ·<br/>audit trail needed?"}
+    Q2 -->|yes| T2["Tier 2 · Governed<br/>immutable manifest ·<br/>enforced scope · per-claim evidence"]
+    Q2 -->|no| T1["Tier 1 · Collaborator<br/>model-tiered crew · single writer"]
+```
+
 ## The dial
 
 | Tier | What it is | Use it for |

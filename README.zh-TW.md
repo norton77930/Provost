@@ -12,6 +12,15 @@
 
 它跑在**原生 Claude Code** 上、是 **model-agnostic** 的——把你最強的模型放在指揮位,便宜模型做大量工作。
 
+```mermaid
+flowchart TD
+    C(["一個要做的改動"]) --> Q1{"拋棄式小改、<br/>問答或探索?"}
+    Q1 -->|是| T0["第 0 層 · Bare<br/>Claude Code + 護欄"]
+    Q1 -->|否| Q2{"auth、secret、payment、<br/>遷移、公開 API、<br/>或需要稽核軌跡?"}
+    Q2 -->|是| T2["第 2 層 · 治理<br/>不可變 manifest ·<br/>引擎強制 scope · 逐項證據"]
+    Q2 -->|否| T1["第 1 層 · 協作者<br/>模型分層團隊 · 單一 writer"]
+```
+
 ## 這把 dial
 
 | 層 | 是什麼 | 何時用 |

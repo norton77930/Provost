@@ -21,14 +21,13 @@ tier-0 work** — and to stop running tier-0 recklessness on tier-2 changes.
 
 ## The decision rule
 
-```
-Need a throwaway edit / a quick question / exploration?
-  -> Tier 0 (bare)
-Cross-repo, auth, secrets, payments, migrations, a public API,
-high blast radius, or you need an audit trail?
-  -> Tier 2 (governed)
-Otherwise (a normal, reversible feature or fix)
-  -> Tier 1 (collaborator)
+```mermaid
+flowchart TD
+    C(["A change to make"]) --> Q1{"Throwaway edit,<br/>question, or exploration?"}
+    Q1 -->|yes| T0["Tier 0 · Bare<br/>Claude Code + guardrails"]
+    Q1 -->|no| Q2{"Auth · secrets · payments ·<br/>migration · public API ·<br/>audit trail needed?"}
+    Q2 -->|yes| T2["Tier 2 · Governed<br/>immutable manifest ·<br/>enforced scope · per-claim evidence"]
+    Q2 -->|no| T1["Tier 1 · Collaborator<br/>model-tiered crew · single writer"]
 ```
 
 Don't silently switch tiers mid-change. If a tier-1 change turns out riskier than
@@ -86,6 +85,6 @@ tied to a specific model or vendor. The examples use native Anthropic models
 (Opus / Sonnet / Haiku) so anyone with Claude Code can reproduce them with zero
 setup. Want to run other models behind Claude Code? Point it at any
 Anthropic-compatible gateway with a router such as
-[CC Switch](https://github.com/farion1231/cc-switch) or CLIProxyAPI — an external
+[CC Switch](https://github.com/farion1231/cc-switch) or [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) — an external
 choice Provost neither ships nor endorses. Provost is the crew and the process;
 the router is just which engine they run on.
