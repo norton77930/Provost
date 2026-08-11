@@ -1,173 +1,186 @@
 # Provost
 
-**Match oversight to blast radius.** — a governance framework for Claude Code agents.
+**Match oversight to blast radius.** — graduated governance for coding-agent work.
 
 *[中文說明 →](README.zh-TW.md)*
 
----
+Provost is a governance framework for deciding how much oversight an AI coding
+task needs and making high-risk work more accountable. A typo does not need the
+same process as an authentication change, a migration, or a public API change.
+Provost provides three tiers so the process can rise with the potential damage.
 
-When you let an AI agent write code, the risk that matters isn't the typo fix —
-it's the auth change, the migration, the public API. **Provost is a governance
-framework for Claude Code agents**: it lets you dial up *enforced* accountability
-as a change's blast radius rises.
+The governance model is model-agnostic. The current reference host and
+integrations target **Claude Code**, and the shipped role files use Claude model
+identifiers. Broader agent-host compatibility is planned, not claimed as
+available today.
 
-At the high end, an agent works under an immutable manifest, is **physically
-blocked** from editing outside an approved set of files, and **can't declare a task
-done without evidence**. Below that sits an ordinary coordinated crew for everyday
-work; and at the bottom, bare Claude Code for throwaway tasks. One dial, three
-tiers, matched to what's at stake.
+## Why this exists
 
-It runs on **vanilla Claude Code** and is **model-agnostic** — put your strongest
-model in the orchestrator seat and cheaper models on the volume work.
+Prompt instructions are useful, but an agent can misunderstand or ignore them.
+For high-blast-radius work, Provost explores stronger controls: a plan is pinned
+to a manifest, file writes are checked against an approved set, handoffs retain
+path custody, and completion passes through declared verifier tasks.
+
+That makes Provost more than a prompt collection. Its Tier 2 reference code
+contains lifecycle state, manifest hashing, write-gate decisions, workspace
+snapshots, custody records, failure signatures, and an audit ledger. The current
+implementation is deliberately described as a reference implementation because
+the repository does not yet ship its original launcher or a turnkey installer.
+
+## The dial
+
+| Tier | What it is | Use it for |
+|---|---|---|
+| **0 · Bare** | Claude Code with local guardrails; no crew or governance runtime. | Throwaway edits, questions, and exploration. |
+| **1 · Collaborator** | A coordinated role pack, one-active-writer policy, and a finite Completion Contract. | Everyday features and bug fixes. |
+| **2 · Governed** | A hash-pinned manifest, hook-enforced write scope, path custody, verifier tasks, and an audit trail. | Auth, secrets, payments, migrations, public APIs, and other high-risk work. |
 
 ```mermaid
 flowchart TD
     C(["A change to make"]) --> Q1{"Throwaway edit,<br/>question, or exploration?"}
     Q1 -->|yes| T0["Tier 0 · Bare<br/>Claude Code + guardrails"]
     Q1 -->|no| Q2{"Auth · secrets · payments ·<br/>migration · public API ·<br/>audit trail needed?"}
-    Q2 -->|yes| T2["Tier 2 · Governed<br/>immutable manifest ·<br/>enforced scope · per-claim evidence"]
+    Q2 -->|yes| T2["Tier 2 · Governed<br/>hash-pinned manifest ·<br/>enforced scope · verifier gate"]
     Q2 -->|no| T1["Tier 1 · Collaborator<br/>model-tiered crew · single writer"]
 ```
 
-## The dial
+See [the concepts guide](docs/concepts.md) for the decision rule and the intended
+boundaries between tiers.
 
-| Tier | What it is | Use it for |
-|---|---|---|
-| **2 · Governed** — *the reason Provost exists* | Immutable manifest, engine-enforced write scope, path custody, per-claim evidence, fresh verifier. | Auth, secrets, payments, migrations, public APIs — anything you'll be audited on. |
-| **1 · Collaborator** | A crew of model-tiered subagents, one active writer, a finite Completion Contract. | Everyday features and bug fixes. |
-| **0 · Bare** | Just Claude Code with guardrails — no crew, no ceremony. | Throwaway edits, questions, exploration. |
+## Project status
 
-Tiers 0–1 are the well-trodden base you escalate *from* (see
-[Prior art](#prior-art--positioning)). What Provost adds that others don't is
-**Tier 2** — turning "the agent promised to stay in scope" into "the agent was
-*prevented* from leaving it." See [`docs/concepts.md`](docs/concepts.md) for the
-full model and the decision rule.
+### Available now
 
-## Tier 2 — governance (the differentiator)
+- Six Claude Code role definitions under [`.claude/agents/`](.claude/agents/).
+- The Tier 1 [orchestration policy](orchestration.md), including plan-first work,
+  one active writer, and evidence-based completion discipline.
+- Reusable methodology [skills](skills/) for TDD, diagnosis, review, and
+  verification, with third-party attribution preserved in
+  [`skills/NOTICE.md`](skills/NOTICE.md).
+- A dependency-free test that exercises the Tier 2 write-gate decision logic on
+  Windows; see the [governed write-scope demo](docs/examples/governed-write-scope-demo.md).
 
-For a high-blast-radius change, agreeing on scope isn't enough; you want it
-enforced, and you want a trail you can reconstruct. The governed tier adds:
+### Experimental / reference implementation
 
-- an **immutable manifest** pinned to the approved plan — no quiet goal-post moves;
-- a `PreToolUse` hook that **blocks any write outside the running task's literal
-  `write_set`, at the engine level** — not by asking the agent nicely;
-- **path custody** so files don't drift when one task hands off to another;
-- **per-claim evidence** and a **fresh-context verifier** that must pass before a
-  run can be marked complete;
-- a **failure-signature diagnosis gate** so a repeated failure can't be retried
-  forever without a written, falsifiable diagnosis;
-- an append-only **JSONL ledger** and immutable handoff receipts.
+- The Windows/PowerShell Tier 2 lifecycle helper and Claude Code hook scripts in
+  [`docs/governance/reference/`](docs/governance/reference/).
+- Hash checks detect changes to an approved manifest, and the helper requires a
+  new revision for changed intent; the file is not made immutable by the
+  operating system.
+- The `PreToolUse` write gate returns a machine-readable deny decision for an
+  `Edit`, `Write`, or `NotebookEdit` target outside a running task's literal
+  `write_set` when the hook is installed and the governed environment is active.
+- The helper implements workspace snapshots, path-custody hashes, task state,
+  failure-signature handling, verifier-task completion gates, helper-appended
+  JSONL events, and hashed terminal handoff receipts.
 
-**When the governed tier earns its ceremony:**
+### Not yet shipped
 
-> - *Changing auth, secrets, or payments* — the agent is physically blocked from
->   editing outside the approved files, and every step leaves an auditable trail.
->   *(engine-enforced write scope + ledger)*
-> - *A schema or data migration across many files* — dependent tasks hand off under
->   path custody with pinned hashes, and each claim carries its own evidence, so
->   nothing drifts and nothing is taken on faith. *(path custody + per-claim evidence)*
-> - *An agent flailing on the same error* — it can't retry the identical failure
->   forever; the same failure signature twice forces a written, falsifiable
->   diagnosis before another attempt. *(failure-signature diagnosis gate)*
+- The original launcher and ready-to-install Claude Code hook configuration.
+- A clean end-to-end governed-session quickstart or packaged runtime.
+- Complete per-claim evidence binding. Acceptance entries are validated, and a
+  task may record a verification summary, but the helper does not yet require a
+  separate evidence record for every acceptance claim.
+- Linux/macOS support and adapters for additional coding-agent environments.
 
-Design and a reference implementation: [`docs/governance/`](docs/governance/).
+See the [governance capability matrix](docs/governance/README.md) and
+[`ROADMAP.md`](ROADMAP.md) for the exact implementation boundary and next steps.
 
-**Availability:** the governed tier ships today as a **design plus a
-Windows/PowerShell reference implementation**; a clean, cross-platform, runnable
-port is the Phase B goal. The collaborator tier below **runs today on any
-platform**.
+## Try it
 
-**Want the governed tier on macOS/Linux?** [Open an issue](https://github.com/norton77930/Provost/issues/new) — demand is what decides whether the Phase B port happens next.
+### Tier 1 collaborator workflow
 
-## Quickstart — Tier 1 (runs today, any platform)
+The collaborator workflow uses vanilla Claude Code and needs no proxy or extra
+service:
 
-The collaborator crew runs on vanilla Claude Code; no proxy, no extra services.
+1. Copy the role files into your project (or your user-level `.claude` directory):
 
-1. Copy the role files into your project (or `~/.claude/`):
    ```bash
    cp -r .claude/agents/ your-project/.claude/agents/
    ```
-2. Merge [`orchestration.md`](orchestration.md) into your project's `CLAUDE.md`
-   (or `~/.claude/CLAUDE.md`).
-3. Run Claude Code with your strongest model as the main/orchestrator agent and
-   work as usual — plan first, then let the crew execute. The main agent delegates
-   read-only work to `explorer` and the reviewers, keeps one active writer, and
-   stops when the Completion Contract is met.
 
-The roles pin models to match cost to the job — cheap models for grunt work, the
-strongest model reserved for judgment (orchestrating and reviewing):
+2. Merge [`orchestration.md`](orchestration.md) into the project's `CLAUDE.md`.
+3. Start with a plan and a finite Completion Contract. Delegate read-only
+   exploration and review as needed, while keeping exactly one active writer.
 
-| Role | Model | |
+The shipped role mapping is:
+
+| Role | Current model ID | Responsibility |
 |---|---|---|
-| `explorer` | haiku | read-only evidence gathering |
-| `implementer` / `implementer-deep` | sonnet / opus | bounded TDD writers |
-| `test-analyst` | haiku | runs existing tests, never edits |
-| `code-reviewer` / `architecture-reviewer` | opus | read-only review |
+| `explorer` | haiku | Read-only evidence gathering |
+| `implementer` / `implementer-deep` | sonnet / opus | Bounded TDD implementation |
+| `test-analyst` | haiku | Existing test execution without source edits |
+| `code-reviewer` / `architecture-reviewer` | opus | Read-only assurance |
 
-Roles name a *job*, not a model. Swap in whatever models you like — Opus, Fable 5,
-or (via a router) a non-Anthropic model — and re-assign roles to models as new ones
-ship. That mapping is config; the framework doesn't change.
+These are configuration choices, not portable model abstractions. You can edit
+the role mapping for another model available to your Claude Code environment;
+Provost does not ship or certify a third-party gateway.
 
-**What a run looks like** *(a full terminal recording is coming)* — a Tier 1 run on a one-line bug fix reads roughly like this:
+### Tier 2 write-scope decision
 
-```text
-you          ▸ "intermittent 500 on /login when the email has trailing spaces"
-explorer     ▸ (haiku)  finds it: the email isn't trimmed before the session lookup
-plan         ▸ Completion Contract — 1 claim: "login trims the email"; evidence: a failing→passing test
-implementer  ▸ (sonnet) RED: a test for a trailing-space email → fails
-             ▸ GREEN: trim before the lookup → the test passes
-test-analyst ▸ (haiku)  runs the auth suite → green, no regressions
-reviewer     ▸ (opus)   confirms the claim, checks for scope creep → clean
-done         ▸ contract met → stop. Opus was spent only on judgment.
+On Windows, run:
+
+```powershell
+powershell.exe -NoProfile -File .\tests\governance\Test-WriteScope.ps1
 ```
 
-One active writer throughout; the expensive model orchestrates and reviews while cheaper models do the volume.
+The test constructs an isolated manifest and active-run lock, invokes the shipped
+hook through its stdin protocol, confirms an approved path is allowed, and
+confirms out-of-scope and invalid-state writes are denied. It does not modify the
+repository. Full prerequisites, expected output, and limitations are documented
+in the [demo walkthrough](docs/examples/governed-write-scope-demo.md).
+
+## Tier 2 governance details
+
+The governed tier's reference design covers:
+
+- **Hash-pinned manifests:** approved content is hashed and checked through the
+  lifecycle; changed scope requires a new revision.
+- **Write-scope decisions:** the write hook fails closed and denies paths outside
+  a running task's literal `write_set`.
+- **Path custody:** shared writer paths require dependency ordering and recorded
+  content evidence at handoff.
+- **Completion gating:** a successful run requires every declared task, including
+  required verifier tasks, to have reached `PASS`.
+- **Failure control:** repeated failure signatures can require new diagnosis
+  evidence before another revision proceeds.
+- **Audit artifacts:** lifecycle actions append JSONL events; terminal handoff
+  receipts pin the manifest, ledger, and workspace snapshot by hash.
+
+These controls become engine-enforced only when the hooks are registered with
+Claude Code and the required `PROVOST_*` environment is set by a launcher. The
+launcher/configuration is not part of this public repository yet. Read the
+[governance documentation](docs/governance/README.md) before evaluating or
+adapting the reference implementation.
 
 ## Running other models
 
-Provost is prompts, roles, and a governance design — nothing is tied to a vendor.
-The examples use native Anthropic models so anyone can reproduce them. To run other
-models behind Claude Code, point it at any Anthropic-compatible gateway with a
-router such as [CC Switch](https://github.com/farion1231/cc-switch) or
-[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) — an external choice
-Provost neither ships nor endorses.
+The governance concepts do not depend on a model's reasoning style. The shipped
+integration does depend on Claude Code interfaces. If you choose to place another
+model behind an Anthropic-compatible gateway, that gateway is an external part of
+your setup; Provost neither ships nor endorses one. Operational observations from
+such setups are recorded separately in [field notes](docs/field-notes.md).
 
-Running GPT-5.6 Sol and finding it rough? It's better-behaved than its reputation
-once you pin models per role, fix the context ceiling, and hold it to an enumerable
-Completion Contract — see [field notes](docs/field-notes.md).
+## Prior art and positioning
 
-## Also here
+Provost builds on native Claude Code primitives—subagents, hooks, and skills. The
+collaborator pattern is well explored elsewhere:
 
-- [`docs/field-notes.md`](docs/field-notes.md) — hard-won operational notes on
-  running Claude Code (the context-window internals; the bundled `claude-api` skill
-  that can blow your window in one message).
-- [`skills/`](skills/) — the methodology skills the crew uses (TDD, bug diagnosis,
-  review, verification-before-completion). Some are vendored from third-party MIT
-  projects; see [`skills/NOTICE.md`](skills/NOTICE.md).
+- [pilotfish](https://github.com/Nanako0129/pilotfish) focuses on the cost split
+  between a frontier orchestrator and cheaper workers.
+- [claude-agent-team](https://github.com/ek33450505/claude-agent-team) focuses on
+  local session observability.
 
-## Prior art & positioning
+Provost's focus is graduated governance: increasing oversight with blast radius
+and exploring enforceable scope, custody, verification, and auditability for the
+highest tier.
 
-Provost stands on native Claude Code primitives — subagents, hooks, skills. The
-**collaborator tier** (a strong model orchestrating cheaper ones) is a pattern
-others do well, and they're worth knowing:
+## Contributing
 
-- **[pilotfish](https://github.com/Nanako0129/pilotfish)** focuses on the *cost*
-  angle — a benchmarked frontier-orchestrator + cheap-worker split, with a polished
-  installer.
-- **[claude-agent-team](https://github.com/ek33450505/claude-agent-team)** focuses
-  on *observability* — a queryable local record of every session.
-
-Provost's distinct contribution is the **governed tier**: proactive,
-engine-enforced scope and evidence-based completion. Where those tools make the
-crew cheaper or more observable, Provost makes it **accountable** — and the three
-angles combine cleanly (cost + record + governance).
-
-## Roadmap
-
-- **Phase A (now):** the collaborator tier as a runnable, cross-platform drop-in;
-  the governed tier as design + a Windows/PowerShell reference implementation.
-- **Phase B:** a clean, cross-platform, model-agnostic port of the governed tier as
-  an installable tool; possibly a UI for composing role catalogs.
+Bug reports, governance proposals, documentation improvements, tests, packaging,
+and cross-platform work are welcome. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md)
+and keep pull requests narrowly scoped. Changes must not silently weaken a stated
+governance guarantee.
 
 ## License
 

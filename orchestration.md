@@ -104,7 +104,8 @@ remotes, or worktrees unless the user explicitly asks.
 
 ---
 
-For **when** to escalate from this collaborator tier to the full governance tier
-(immutable manifests, scope-locking hooks, evidence-per-claim completion), see
-[`docs/concepts.md`](docs/concepts.md) — the three-tier graduated-governance
-model.
+For **when** to escalate from this collaborator tier to the governed reference
+design (hash-pinned manifests, scope-locking hooks, and verifier-gated
+completion), see [`docs/concepts.md`](docs/concepts.md). The implementation
+status and remaining per-claim evidence gap are documented in
+[`docs/governance/README.md`](docs/governance/README.md).

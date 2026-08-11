@@ -10,11 +10,11 @@ change, so treat these as a starting point, not a contract.
 *Running non-Anthropic models via a proxy — GPT-5.6 Sol especially.*
 
 GPT-5.6 Sol has a rough reputation — "powerful but hard to drive." In practice the
-problem usually isn't capability; it's that, left unconstrained, **it doesn't
-converge**: it over-runs, gold-plates, wanders off the task, and retries the same
-failure. Give it structure and it becomes reliable. Everything below is discipline
-Provost already imposes — which is why the same model that flails in a bare session
-behaves under Provost.
+problem usually isn't capability; in the author's observed proxy setup, it was
+that the model did not reliably converge: it over-ran, gold-plated, wandered off
+the task, and retried the same failure. The Tier 1 policy contains the disciplines
+used in that setup. This is an operational field note, not a controlled benchmark
+or a general reliability claim.
 
 1. **Plan the whole execution *before* you start, and make "done" enumerable.** The
    biggest lever — one mechanism doing two jobs. Sol drifts when the goal is vague
