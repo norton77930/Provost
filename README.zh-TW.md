@@ -1,121 +1,129 @@
 # Provost
 
-**Match oversight to blast radius.**（依風險調節監督強度）— 給 Claude Code agent 的治理框架。
+**Match oversight to blast radius.**（依風險調節監督強度）— coding-agent 工作的分級治理框架。
 
 *[English →](README.md)*
 
----
+Provost 用來判斷一次 AI coding 任務需要多少監督，並讓高風險工作更可問責。修 typo 不需要和 auth 改動、migration 或 public API 變更一樣的流程；Provost 提供三個 tier，讓治理成本跟著可能造成的損害上升。
 
-當你讓 AI agent 寫程式,真正有風險的不是改 typo——是 auth 改動、遷移、公開 API。**Provost 是給 Claude Code agent 的治理框架**:隨著一次改動的 blast radius 升高,把*被強制執行*的問責感往上調。
+治理模型是 model-agnostic；目前的 reference host 與 integrations 以 **Claude Code** 為目標，交付的 role files 也使用 Claude model identifiers。更廣的 agent-host 相容性是規劃方向，不是現在已可用的能力。
 
-高端時,agent 在不可變 manifest 下工作、被**物理性擋住**不能編輯核准清單外的檔、且**沒有證據不能宣稱完成**。往下是一支處理日常工作的協作團隊;最底層是拋棄式任務用的 bare Claude Code。一把 dial、三層,對上賭注大小。
+## 為什麼需要 Provost
 
-它跑在**原生 Claude Code** 上、是 **model-agnostic** 的——把你最強的模型放在指揮位,便宜模型做大量工作。
+Prompt 指示很有用，但 agent 可能誤解或忽略。對高 blast-radius 工作，Provost 探索更強的控制：把核准計畫釘在 manifest、依允許清單檢查檔案寫入、在交接時保留 path custody，並讓完成狀態經過宣告好的 verifier tasks。
+
+因此 Provost 不只是一組 prompts。Tier 2 reference code 包含 lifecycle state、manifest hashing、write-gate decisions、workspace snapshots、custody records、failure signatures 與 audit ledger。由於 repository 尚未交付原始 launcher 或 turnkey installer，目前應把它視為 reference implementation。
+
+## 三級治理
+
+| Tier | 是什麼 | 適用情境 |
+|---|---|---|
+| **0 · Bare** | Claude Code 加上本機 guardrails；沒有 crew 或 governance runtime。 | 拋棄式小改、問答與探索。 |
+| **1 · Collaborator** | 一組協作 roles、單一 active writer policy 與有限的 Completion Contract。 | 日常 feature 與 bug fix。 |
+| **2 · Governed** | Hash-pinned manifest、hook-enforced write scope、path custody、verifier tasks 與 audit trail。 | Auth、secret、payment、migration、public API 等高風險工作。 |
 
 ```mermaid
 flowchart TD
-    C(["一個要做的改動"]) --> Q1{"拋棄式小改、<br/>問答或探索?"}
-    Q1 -->|是| T0["第 0 層 · Bare<br/>Claude Code + 護欄"]
-    Q1 -->|否| Q2{"auth、secret、payment、<br/>遷移、公開 API、<br/>或需要稽核軌跡?"}
-    Q2 -->|是| T2["第 2 層 · 治理<br/>不可變 manifest ·<br/>引擎強制 scope · 逐項證據"]
-    Q2 -->|否| T1["第 1 層 · 協作者<br/>模型分層團隊 · 單一 writer"]
+    C(["一個要做的改動"]) --> Q1{"拋棄式小改、<br/>問答或探索？"}
+    Q1 -->|是| T0["Tier 0 · Bare<br/>Claude Code + guardrails"]
+    Q1 -->|否| Q2{"auth · secret · payment ·<br/>migration · public API ·<br/>或需要 audit trail？"}
+    Q2 -->|是| T2["Tier 2 · Governed<br/>hash-pinned manifest ·<br/>enforced scope · verifier gate"]
+    Q2 -->|否| T1["Tier 1 · Collaborator<br/>model-tiered crew · single writer"]
 ```
 
-## 這把 dial
+完整決策規則與各 tier 邊界見 [`docs/concepts.md`](docs/concepts.md)。
 
-| 層 | 是什麼 | 何時用 |
-|---|---|---|
-| **2 · 治理** — *Provost 存在的理由* | 不可變 manifest、引擎強制 write-scope、path custody、逐項證據、fresh verifier。 | auth、secret、payment、遷移、公開 API——任何你會被稽核的事。 |
-| **1 · 協作者** | 模型分層的 subagent 團隊、單一 active writer、有限的 Completion Contract。 | 日常功能與 bug fix。 |
-| **0 · Bare** | 只有 Claude Code + 護欄,無團隊、無儀式。 | 拋棄式小改、問答、探索。 |
+## 專案狀態
 
-第 0–1 層是你**往上 escalate 的業界底座**(見下方「相關工作與定位」)。Provost 加的、別人沒有的是**第 2 層**——把「agent 答應會待在 scope 內」變成「agent 被*擋住*出不去」。完整模型與決策規則見 [`docs/concepts.md`](docs/concepts.md)。
+### 現在可用
 
-## 第 2 層——治理(差異化所在)
+- [`.claude/agents/`](.claude/agents/) 下的六個 Claude Code role definitions。
+- Tier 1 [`orchestration.md`](orchestration.md)：plan-first、單一 active writer 與 evidence-based completion discipline。
+- [`skills/`](skills/) 中的 TDD、診斷、review 與完成前驗證方法；第三方歸屬保留於 [`skills/NOTICE.md`](skills/NOTICE.md)。
+- Windows 上不需額外 dependency 的 Tier 2 write-gate decision test；見 [governed write-scope demo](docs/examples/governed-write-scope-demo.md)。
 
-高 blast radius 的改動,口頭同意 scope 不夠;你要它被強制執行,還要一條能重建的軌跡。治理層加了:
+### Experimental／reference implementation
 
-- **不可變 manifest**,釘死在核准的計畫上——不能偷偷移動球門;
-- 一個 `PreToolUse` hook,**在引擎層擋掉任何超出當前 task literal `write_set` 的寫入**——不是好聲好氣拜託 agent;
-- **path custody**,讓一個 task 交棒給下一個時檔案不漂移;
-- **逐項證據**與一個必須通過才算完成的 **fresh-context verifier**;
-- **failure-signature 診斷閘**,讓同一個失敗不能無限重試而不附可證偽的診斷;
-- append-only 的 **JSONL ledger** 與不可變的交接 receipt。
+- [`docs/governance/reference/`](docs/governance/reference/) 中的 Windows/PowerShell Tier 2 lifecycle helper 與 Claude Code hook scripts。
+- Hash checks 能偵測已核准 manifest 被變更；變更 intent 必須建立新 revision，但作業系統並沒有把檔案設成不可修改。
+- 當 hook 已安裝且 governed environment 啟用時，`PreToolUse` write gate 會對不在 running task literal `write_set` 內的 `Edit`、`Write` 或 `NotebookEdit` target 回傳 machine-readable deny。
+- Helper 實作 workspace snapshots、path-custody hashes、task state、failure-signature handling、verifier-task completion gates、由 helper append 的 JSONL events，以及 hashed terminal handoff receipts。
 
-**治理層什麼時候值得那套儀式:**
+### 尚未交付
 
-> - *改 auth、secret、payment* — agent 被物理性擋住不能編輯核准外的檔,每步留可稽核軌跡。*(引擎強制 write-scope + ledger)*
-> - *跨多檔的 schema/資料遷移* — 相依 task 以 pinned hash 做 path custody 交棒,每項 claim 各自帶證據,所以不漂移、不靠信任。*(path custody + 逐項證據)*
-> - *agent 在同一個錯上鬼打牆* — 不能對同一個失敗無限重試;同一 failure signature 出現兩次,就強制先寫出可證偽的診斷才能再試。*(failure-signature 診斷閘)*
+- 原始 launcher 與可直接安裝的 Claude Code hook configuration。
+- 乾淨的 end-to-end governed-session quickstart 或 packaged runtime。
+- 完整逐 claim evidence binding。目前 acceptance entries 會被驗證，task 也可以記錄整體 verification summary，但 helper 不要求每個 acceptance claim 都有獨立 evidence record。
+- Linux/macOS support，以及其他 coding-agent environment adapters。
 
-設計與 reference 實作:[`docs/governance/`](docs/governance/)。
+精確能力邊界與下一步見 [governance capability matrix](docs/governance/README.md) 與 [`ROADMAP.md`](ROADMAP.md)。
 
-**現況**:治理層目前以**設計 + 一份 Windows/PowerShell reference 實作**呈現;乾淨、跨平台、可跑的 port 是 Phase B 目標。下方的協作層**今天就能跑、跨平台**。
+## 如何試用
 
-**想在 macOS/Linux 上跑治理層?**[開一個 issue](https://github.com/norton77930/Provost/issues/new)——需求決定 Phase B port 要不要做。
+### Tier 1 collaborator workflow
 
-## 快速開始——第 1 層(今天可跑、跨平台)
+Collaborator workflow 使用原生 Claude Code，不需要 proxy 或額外 service：
 
-協作團隊跑在原生 Claude Code 上;不需要 proxy、不需要額外服務。
+1. 把角色檔複製到專案或使用者層級的 `.claude` directory：
 
-1. 把角色檔複製進你的專案(或 `~/.claude/`):
    ```bash
    cp -r .claude/agents/ your-project/.claude/agents/
    ```
-2. 把 [`orchestration.md`](orchestration.md) 併進你專案的 `CLAUDE.md`(或 `~/.claude/CLAUDE.md`)。
-3. 用你最強的模型當主/指揮代理跑 Claude Code,照常工作——先計畫,再讓團隊執行。主代理把唯讀工作委派給 `explorer` 與 reviewer、維持單一 active writer,並在 Completion Contract 達成時停手。
 
-角色以釘死的模型讓成本對上任務——便宜模型做粗活,最強的模型只留給需要判斷的事(指揮與 review):
+2. 把 [`orchestration.md`](orchestration.md) 合併到專案的 `CLAUDE.md`。
+3. 先建立 plan 與有限的 Completion Contract；需要時委派唯讀探索與 review，並維持單一 active writer。
 
-| 角色 | 模型 | |
+目前交付的 role mapping：
+
+| Role | 現有 model ID | 職責 |
 |---|---|---|
-| `explorer` | haiku | 唯讀蒐證 |
-| `implementer` / `implementer-deep` | sonnet / opus | 有界的 TDD writer |
-| `test-analyst` | haiku | 只跑既有測試,絕不改檔 |
-| `code-reviewer` / `architecture-reviewer` | opus | 唯讀 review |
+| `explorer` | haiku | 唯讀 evidence gathering |
+| `implementer` / `implementer-deep` | sonnet / opus | 有界的 TDD implementation |
+| `test-analyst` | haiku | 不改 source 的既有測試執行 |
+| `code-reviewer` / `architecture-reviewer` | opus | 唯讀 assurance |
 
-角色講的是*工作*,不是模型。你想換什麼模型都行——Opus、Fable 5,或(透過 router)非 Anthropic 模型——並在新模型出來時把角色重新指派給模型。那個對應是 config;框架不變。
+這些是設定選擇，不是 portable model abstractions。你可以依 Claude Code environment 可用的 model 調整 mapping；Provost 不交付或認證第三方 gateway。
 
-**一次 run 長什麼樣** *(完整 terminal 錄影製作中)* — 一個 Tier 1、修一行 bug 的 run,大致像這樣:
+### Tier 2 write-scope decision
 
-```text
-你           ▸「/login 偶發 500,當 email 尾端有空白時」
-explorer     ▸(haiku) 定位:session lookup 前沒有 trim email
-plan         ▸ Completion Contract — 1 條 claim:「login 會 trim email」;證據:一個 失敗→通過 的測試
-implementer  ▸(sonnet)RED:針對尾端空白 email 的測試 → 失敗
-             ▸ GREEN:lookup 前先 trim → 測試通過
-test-analyst ▸(haiku) 跑 auth 測試套件 → 綠燈,無 regression
-reviewer     ▸(opus)  確認 claim、檢查有無 scope creep → 乾淨
-done         ▸ 契約達成 → 收手。Opus 只花在判斷上。
+在 Windows 執行：
+
+```powershell
+powershell.exe -NoProfile -File .\tests\governance\Test-WriteScope.ps1
 ```
 
-全程單一 writer;貴模型負責指揮與 review,便宜模型做量。
+測試會建立隔離的 manifest 與 active-run lock，透過 stdin protocol 呼叫 repository 內的 hook，確認核准路徑被允許，並確認 scope 外或無效 state 的寫入被拒絕。它不會修改 repository。Prerequisites、預期輸出與限制見 [demo walkthrough](docs/examples/governed-write-scope-demo.md)。
 
-## 接其他模型
+## Tier 2 治理細節
 
-Provost 就是提示詞、角色定義與一套治理設計——沒有任何一部分綁死廠商。範例用原生 Anthropic 模型,任何人都能重現。想在 Claude Code 後面跑其他模型?用 [CC Switch](https://github.com/farion1231/cc-switch) 或 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 之類的 router,指向任何 Anthropic 相容 gateway 即可——那是外部選擇,Provost 不 ship、也不背書。
+Governed tier 的 reference design 包含：
 
-跑 GPT-5.6 Sol 覺得難搞?釘好每個角色的模型、修好 context ceiling、用可列舉的 Completion Contract 框住它,就比傳聞乖得多——見 [field notes](docs/field-notes.md)。
+- **Hash-pinned manifests：** lifecycle 會檢查核准內容的 hash；scope 變更需要新 revision。
+- **Write-scope decisions：** write hook fail closed，拒絕 running task literal `write_set` 外的 target。
+- **Path custody：** 共用 writer path 需要 dependency ordering，交接時記錄 content evidence。
+- **Completion gating：** 成功完成要求所有宣告的 tasks（包含 required verifier tasks）都達到 `PASS`。
+- **Failure control：** 重複的 failure signature 可要求新的 diagnosis evidence 才能繼續下一個 revision。
+- **Audit artifacts：** lifecycle actions append JSONL events；terminal handoff receipt 以 hash 釘住 manifest、ledger 與 workspace snapshot。
 
-## 這裡還有
+只有 hooks 已註冊到 Claude Code，且 launcher 設好必要的 `PROVOST_*` environment 時，這些 controls 才會成為 engine-enforced 行為。目前 public repository 尚未包含 launcher/configuration。評估或移植前請先讀 [governance documentation](docs/governance/README.md)。
 
-- [`docs/field-notes.md`](docs/field-notes.md) — 把 Claude Code 操到極限的踩雷筆記(context window 內部行為;會一則訊息撐爆視窗的內建 `claude-api` skill)。
-- [`skills/`](skills/) — 團隊用的方法論 skills(TDD、bug 診斷、review、完成前驗證)。部分 vendored 自第三方 MIT 專案,見 [`skills/NOTICE.md`](skills/NOTICE.md)。
+## 其他模型
+
+治理概念不依賴特定模型的 reasoning style，但目前交付的 integration 依賴 Claude Code interfaces。若你自行在 Anthropic-compatible gateway 後方使用其他模型，gateway 是外部 setup；Provost 不交付也不背書。相關實務觀察另記於 [field notes](docs/field-notes.md)。
 
 ## 相關工作與定位
 
-Provost 建在原生 Claude Code primitives 上——subagents、hooks、skills。**協作層**(強模型指揮便宜模型)是別人也做得好的模式,值得認識:
+Provost 建在 Claude Code 的 subagents、hooks 與 skills 上。Collaborator pattern 也有其他成熟方向：
 
-- **[pilotfish](https://github.com/Nanako0129/pilotfish)** 主打*成本*——有 benchmark 的「前沿指揮 + 便宜執行」拆分,加一個完整的 installer。
-- **[claude-agent-team](https://github.com/ek33450505/claude-agent-team)** 主打*可觀測性*——每個 session 的可查詢本機紀錄。
+- [pilotfish](https://github.com/Nanako0129/pilotfish) 聚焦 frontier orchestrator 與較便宜 workers 的成本拆分。
+- [claude-agent-team](https://github.com/ek33450505/claude-agent-team) 聚焦 local session observability。
 
-Provost 獨有的貢獻是**治理層**:主動、引擎強制的 scope 與證據導向的完成。當那些工具讓團隊更便宜或更可觀測,Provost 讓它**可問責**——而且三個角度可以乾淨疊加(成本 + 紀錄 + 治理)。
+Provost 聚焦 graduated governance：依 blast radius 提高監督強度，並在最高 tier 探索可強制的 scope、custody、verification 與 auditability。
 
-## 路線圖
+## 貢獻
 
-- **Phase A(現在)**:協作層做成可跑、跨平台的 drop-in;治理層以設計 + 一份 Windows/PowerShell reference 實作呈現。
-- **Phase B**:把治理層做成乾淨、跨平台、model-agnostic 的可安裝工具;可能加一個組角色目錄的 UI。
+歡迎 bug reports、governance proposals、文件、測試、packaging 與 cross-platform work。請先讀 [`CONTRIBUTING.md`](CONTRIBUTING.md)，保持 PR scope 精簡，且不得無聲削弱已宣告的治理保證。
 
 ## 授權
 
-MIT — 見 [`LICENSE`](LICENSE)。Vendored skills 保留其原始 MIT 歸屬於 [`skills/NOTICE.md`](skills/NOTICE.md)。
+MIT — 見 [`LICENSE`](LICENSE)。Vendored skills 的原始 MIT 歸屬保留於 [`skills/NOTICE.md`](skills/NOTICE.md)。
