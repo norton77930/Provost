@@ -7,6 +7,12 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- A Windows helper test for v2 failure diagnosis (unsigned FAIL rejected,
+  signature persistence, hash normalization, diagnosis brake, reused
+  diagnosis rejected), with a walkthrough and CI coverage. Requires `git`.
+
 ## [0.1.3] - 2026-08-13
 
 Completion-gate coverage and shared lifecycle test helpers since 0.1.2.

@@ -58,12 +58,13 @@ boundaries between tiers.
   verification, with third-party attribution preserved in
   [`skills/NOTICE.md`](skills/NOTICE.md).
 - Windows tests for the Tier 2 write-gate, ref-guard, manifest-pin,
-  path-custody, and completion-gate decision logic; see the
+  path-custody, completion-gate, and failure-diagnosis decision logic; see the
   [governed write-scope demo](docs/examples/governed-write-scope-demo.md),
   [governed ref-guard demo](docs/examples/governed-ref-guard-demo.md),
   [governed manifest-pin demo](docs/examples/governed-manifest-pin-demo.md),
   [governed path-custody demo](docs/examples/governed-path-custody-demo.md),
-  and [governed completion-gate demo](docs/examples/governed-completion-gate-demo.md).
+  [governed completion-gate demo](docs/examples/governed-completion-gate-demo.md),
+  and [governed failure-diagnosis demo](docs/examples/governed-failure-diagnosis-demo.md).
 
 ### Experimental / reference implementation
 
@@ -200,6 +201,19 @@ powershell.exe -NoProfile -File .\tests\governance\Test-CompletionGate.ps1
 The test rejects `Complete PASS` until every declared task is PASS, then
 confirms the active lock is removed. It does not modify the repository. See the
 [demo walkthrough](docs/examples/governed-completion-gate-demo.md).
+
+### Tier 2 failure-diagnosis decision
+
+On Windows, with `git` available, run:
+
+```powershell
+powershell.exe -NoProfile -File .\tests\governance\Test-FailureDiagnosis.ps1
+```
+
+The test requires a signature on `Complete FAIL`, checks that equivalent
+signatures share one hash, and requires a new diagnosis after the same failure
+repeats. It does not modify the repository. See the
+[demo walkthrough](docs/examples/governed-failure-diagnosis-demo.md).
 
 ## Tier 2 governance details
 
