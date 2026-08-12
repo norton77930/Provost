@@ -31,6 +31,10 @@ jobs:
         shell: powershell
         run: powershell.exe -NoProfile -File .\tests\governance\Test-ManifestPin.ps1
 
+      - name: Exercise governed path custody
+        shell: powershell
+        run: powershell.exe -NoProfile -File .\tests\governance\Test-PathCustody.ps1
+
       - name: Validate relative Markdown links
         shell: powershell
         run: powershell.exe -NoProfile -File .\tests\docs\Test-MarkdownLinks.ps1

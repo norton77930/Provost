@@ -14,7 +14,7 @@ internally named "Foreman."
 | Write scope | `PreToolUse-WriteGate.ps1` compares `Edit`, `Write`, and `NotebookEdit` targets with the literal `write_set` of running tasks and returns `deny` on mismatch or unreadable state. | Enforcement requires Claude Code hook registration and launcher-provided `PROVOST_*` environment variables, which this repository does not yet package. Shell writes inside the workspace require separate command controls. |
 | External reference protection | `PreToolUse-RefGuard.ps1` denies write-like commands that mention declared read-only external roots and asks for review when it cannot classify a command. A dependency-free hook test covers silent, deny, allow, and ask decisions. | This is a conservative command-text classifier, not an operating-system sandbox. |
 | Workspace anchoring | `SessionStart-WorkspaceCheck.ps1` compares the session cwd with the intended workspace. | Claude Code's `SessionStart` hook can add a warning but cannot block; this check is informational and fail-open. |
-| Path custody | Manifest v2 requires dependency ordering for writers sharing a path. The helper records and verifies status/hash evidence between writers. | Covered by implementation code but not yet by a committed automated test suite. |
+| Path custody | Manifest v2 requires dependency ordering for writers sharing a path. The helper records and verifies status/hash evidence between writers. A public test rejects unordered shared writers, records custody on FinishTask, and transfers it on the next StartTask. | Content-drift between writers is implemented but not covered by this public test. |
 | Completion gate | A PASS completion requires every declared task to be PASS. The schema requires a code-verifier task, and an optional required architecture verifier must depend on every non-review task. | The repository does not include the original launcher that creates fresh agent contexts. Context freshness is therefore a workflow/launcher responsibility, not something this helper alone proves. |
 | Acceptance evidence | Tasks declare acceptance entries (`id`, `command`, `expect`) and may write one verification summary to the ledger. | Evidence is not yet bound and validated separately for every acceptance claim. Full per-claim evidence enforcement remains planned. |
 | Failure diagnosis | Manifest v2 records normalized failure signatures and checks prior terminal receipts; repeated signatures require new diagnosis fields and evidence delta. | The complete multi-revision flow lacks a public end-to-end demo and broad automated coverage. |
@@ -80,6 +80,18 @@ The test initializes a minimal v1 manifest in an isolated Git workspace,
 validates it, then confirms that a tampered native Plan and a tampered
 approved manifest are rejected. It requires `git`. See the
 [walkthrough](../examples/governed-manifest-pin-demo.md).
+
+## Path-custody demo
+
+A fourth Windows test exercises v2 shared-path custody:
+
+```powershell
+powershell.exe -NoProfile -File .\tests\governance\Test-PathCustody.ps1
+```
+
+The test rejects two writers that share a path without a dependency, then
+records and transfers custody when the writers are ordered. It requires `git`.
+See the [walkthrough](../examples/governed-path-custody-demo.md).
 
 ## Design direction
 

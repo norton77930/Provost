@@ -52,11 +52,12 @@ powershell.exe -NoProfile -File .\tests\governance\Test-PowerShellSyntax.ps1
 powershell.exe -NoProfile -File .\tests\governance\Test-WriteScope.ps1
 powershell.exe -NoProfile -File .\tests\governance\Test-RefGuard.ps1
 powershell.exe -NoProfile -File .\tests\governance\Test-ManifestPin.ps1
+powershell.exe -NoProfile -File .\tests\governance\Test-PathCustody.ps1
 powershell.exe -NoProfile -File .\tests\docs\Test-MarkdownLinks.ps1
 ```
 
-The checks have no package dependencies. `Test-ManifestPin.ps1` also requires
-`git`. Tier 2 is Windows-specific today;
+The checks have no package dependencies. `Test-ManifestPin.ps1` and
+`Test-PathCustody.ps1` also require `git`. Tier 2 is Windows-specific today;
 contributors working on other platforms can still review and improve Tier 1 and
 documentation, but should state which checks they could not run.
 

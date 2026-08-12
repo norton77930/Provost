@@ -7,6 +7,12 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- A Windows helper test for v2 shared-path custody (unordered writers
+  rejected, FinishTask records custody, StartTask transfers it), with a
+  walkthrough and CI coverage. Requires `git`.
+
 ## [0.1.1] - 2026-08-13
 
 Public tests and maintainer docs since the first release.

@@ -40,7 +40,7 @@ flowchart TD
 - [`.claude/agents/`](.claude/agents/) 下的六個 Claude Code role definitions。
 - Tier 1 [`orchestration.md`](orchestration.md)：plan-first、單一 active writer 與 evidence-based completion discipline。
 - [`skills/`](skills/) 中的 TDD、診斷、review 與完成前驗證方法；第三方歸屬保留於 [`skills/NOTICE.md`](skills/NOTICE.md)。
-- Windows 上的 Tier 2 write-gate、ref-guard 與 manifest-pin decision test；見 [governed write-scope demo](docs/examples/governed-write-scope-demo.md)、[governed ref-guard demo](docs/examples/governed-ref-guard-demo.md) 與 [governed manifest-pin demo](docs/examples/governed-manifest-pin-demo.md)。
+- Windows 上的 Tier 2 write-gate、ref-guard、manifest-pin 與 path-custody decision test；見 [governed write-scope demo](docs/examples/governed-write-scope-demo.md)、[governed ref-guard demo](docs/examples/governed-ref-guard-demo.md)、[governed manifest-pin demo](docs/examples/governed-manifest-pin-demo.md) 與 [governed path-custody demo](docs/examples/governed-path-custody-demo.md)。
 
 ### Experimental／reference implementation
 
@@ -125,6 +125,16 @@ powershell.exe -NoProfile -File .\tests\governance\Test-ManifestPin.ps1
 ```
 
 測試會在隔離的 Git workspace 初始化最小 v1 manifest、通過 Validate，並確認被改過的 Plan 或已核准 manifest 會被拒絕。它不會修改 repository。見 [demo walkthrough](docs/examples/governed-manifest-pin-demo.md)。
+
+### Tier 2 path-custody decision
+
+在 Windows 且 `git` 可用時執行：
+
+```powershell
+powershell.exe -NoProfile -File .\tests\governance\Test-PathCustody.ps1
+```
+
+測試會拒絕共用 path 但沒有依賴順序的兩個 writer，並在有依賴時記錄、交接 custody。它不會修改 repository。見 [demo walkthrough](docs/examples/governed-path-custody-demo.md)。
 
 ## Tier 2 治理細節
 

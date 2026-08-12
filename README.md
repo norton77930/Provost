@@ -57,11 +57,12 @@ boundaries between tiers.
 - Reusable methodology [skills](skills/) for TDD, diagnosis, review, and
   verification, with third-party attribution preserved in
   [`skills/NOTICE.md`](skills/NOTICE.md).
-- Windows tests for the Tier 2 write-gate, ref-guard, and manifest-pin
-  decision logic; see the
+- Windows tests for the Tier 2 write-gate, ref-guard, manifest-pin, and
+  path-custody decision logic; see the
   [governed write-scope demo](docs/examples/governed-write-scope-demo.md),
-  [governed ref-guard demo](docs/examples/governed-ref-guard-demo.md), and
-  [governed manifest-pin demo](docs/examples/governed-manifest-pin-demo.md).
+  [governed ref-guard demo](docs/examples/governed-ref-guard-demo.md),
+  [governed manifest-pin demo](docs/examples/governed-manifest-pin-demo.md),
+  and [governed path-custody demo](docs/examples/governed-path-custody-demo.md).
 
 ### Experimental / reference implementation
 
@@ -172,6 +173,19 @@ The test initializes a minimal v1 manifest in an isolated Git workspace,
 validates it, and confirms that a tampered Plan or approved manifest is
 rejected. It does not modify the repository. See the
 [demo walkthrough](docs/examples/governed-manifest-pin-demo.md).
+
+### Tier 2 path-custody decision
+
+On Windows, with `git` available, run:
+
+```powershell
+powershell.exe -NoProfile -File .\tests\governance\Test-PathCustody.ps1
+```
+
+The test rejects unordered writers that share a path, then records and
+transfers custody when they are dependency-ordered. It does not modify the
+repository. See the
+[demo walkthrough](docs/examples/governed-path-custody-demo.md).
 
 ## Tier 2 governance details
 
