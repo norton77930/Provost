@@ -116,6 +116,20 @@ These are configuration choices, not portable model abstractions. You can edit
 the role mapping for another model available to your Claude Code environment;
 Provost does not ship or certify a third-party gateway.
 
+### Methodology skills
+
+Claude Code does not load the repository-root [`skills/`](skills/) directory
+automatically. Copy the skill folders — not [`NOTICE.md`](skills/NOTICE.md) —
+into the project's or your user-level `.claude/skills/` directory:
+
+```bash
+cp -r skills/tdd skills/diagnosing-bugs skills/grilling skills/grill-me \
+  skills/two-axis-review skills/verification-before-completion \
+  your-project/.claude/skills/
+```
+
+Attribution for the vendored skills is in [`skills/NOTICE.md`](skills/NOTICE.md).
+
 ### Tier 2 write-scope decision
 
 On Windows, run:
@@ -180,7 +194,7 @@ highest tier.
 Bug reports, governance proposals, documentation improvements, tests, packaging,
 and cross-platform work are welcome. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md)
 and keep pull requests narrowly scoped. Changes must not silently weaken a stated
-governance guarantee.
+governance guarantee. Notable changes are listed in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## License
 

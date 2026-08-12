@@ -84,6 +84,18 @@ Collaborator workflow 使用原生 Claude Code，不需要 proxy 或額外 servi
 
 這些是設定選擇，不是 portable model abstractions。你可以依 Claude Code environment 可用的 model 調整 mapping；Provost 不交付或認證第三方 gateway。
 
+### Methodology skills
+
+Claude Code **不會**自動載入 repo 根目錄的 [`skills/`](skills/)。把各 skill 目錄（不要複製 [`NOTICE.md`](skills/NOTICE.md)）拷到專案或使用者層級的 `.claude/skills/`：
+
+```bash
+cp -r skills/tdd skills/diagnosing-bugs skills/grilling skills/grill-me \
+  skills/two-axis-review skills/verification-before-completion \
+  your-project/.claude/skills/
+```
+
+Vendored skills 的歸屬見 [`skills/NOTICE.md`](skills/NOTICE.md)。
+
 ### Tier 2 write-scope decision
 
 在 Windows 執行：
@@ -122,7 +134,7 @@ Provost 聚焦 graduated governance：依 blast radius 提高監督強度，並�
 
 ## 貢獻
 
-歡迎 bug reports、governance proposals、文件、測試、packaging 與 cross-platform work。請先讀 [`CONTRIBUTING.md`](CONTRIBUTING.md)，保持 PR scope 精簡，且不得無聲削弱已宣告的治理保證。
+歡迎 bug reports、governance proposals、文件、測試、packaging 與 cross-platform work。請先讀 [`CONTRIBUTING.md`](CONTRIBUTING.md)，保持 PR scope 精簡，且不得無聲削弱已宣告的治理保證。顯著變更見 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 授權
 

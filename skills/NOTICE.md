@@ -5,6 +5,7 @@ The skills `grilling`, `grill-me`, `tdd` (with `tests.md` / `mocking.md`), `diag
 - Source: https://github.com/mattpocock/skills (snapshot 2026-07-20, commit `9603c1c`)
 - License: MIT — Copyright (c) 2026 Matt Pocock
 - Local adaptations: examples converted to PowerShell/Pester, issue-tracker and `setup-matt-pocock-skills` bindings removed, a PowerShell twin added for the HITL loop template, and `code-review` renamed to `two-axis-review` to avoid clashing with Claude Code's built-in `/code-review`.
+- Update policy lives in [`CONTRIBUTING.md`](../CONTRIBUTING.md), not in this file.
 
 `verification-before-completion` is written locally; its core discipline is distilled from `obra/superpowers` (also MIT).
 

@@ -30,6 +30,13 @@ request description.
 
 - Documentation changes should keep `README.md`, the core status section in
   `README.zh-TW.md`, and the governance capability matrix consistent.
+- If you add or remove a methodology skill directory, update the install
+  command lists in both `README.md` and `README.zh-TW.md`.
+- Vendored skills stay pinned to the snapshot recorded in
+  [`skills/NOTICE.md`](skills/NOTICE.md). Do not auto-follow upstream. Adopt a
+  later change only when it is a safety or methodology fix that does not change
+  Provost's public contract (tiers, roles, schemas, or install surface). Record
+  the source commit and any deliberately skipped upstream edits in NOTICE.
 - Windows reference-runtime changes should include a focused failing check first,
   the smallest coherent fix, and relevant regression coverage.
 - Cross-platform work should preserve fail-closed behavior and literal path
