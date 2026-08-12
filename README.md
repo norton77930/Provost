@@ -182,8 +182,9 @@ On Windows, with `git` available, run:
 powershell.exe -NoProfile -File .\tests\governance\Test-PathCustody.ps1
 ```
 
-The test rejects unordered writers that share a path, then records and
-transfers custody when they are dependency-ordered. It does not modify the
+The test rejects unordered writers that share a path, records and transfers
+custody when they are dependency-ordered, and escalates if shared content
+drifts before the next writer. It does not modify the
 repository. See the
 [demo walkthrough](docs/examples/governed-path-custody-demo.md).
 

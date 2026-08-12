@@ -30,7 +30,8 @@ Expected output resembles:
 PASS: Initialize rejected unordered writers sharing a path
 PASS: FinishTask T01 recorded custody for the shared path
 PASS: StartTask T02 transferred custody from T01
-Path-custody checks passed: 3
+PASS: StartTask T02 rejected shared-path content drift
+Path-custody checks passed: 4
 ```
 
 ## What is enforced
@@ -38,10 +39,11 @@ Path-custody checks passed: 3
 Two writers that list the same path must be ordered by `depends_on`. After the
 first writer passes, the lock stores `path_custody` with that task id and the
 file hash. Starting the dependent writer transfers custody and records
-`received_from_task_id`.
+`received_from_task_id`. If the shared file changes after that pin and before
+the next writer starts, `StartTask` escalates (`SCOPE_ESCALATE`,
+`custody_drift`) and writes a terminal handoff receipt.
 
 ## Limitations
 
 This is a **helper-level integration test**, not an end-to-end governed Claude
-Code session. It does not cover custody drift (the shared file changing between
-writers), failure signatures, or a packaged launcher.
+Code session. It does not cover failure signatures or a packaged launcher.

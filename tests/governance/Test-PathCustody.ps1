@@ -5,6 +5,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:Passed = 0
+$script:LastThrowMessage = $null
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $helperPath = Join-Path $repositoryRoot 'docs\governance\reference\Foreman-Manifest.ps1'
 
@@ -45,6 +46,7 @@ function Assert-ThrowsCode {
     }
     catch {
         if ($_.Exception.Message -notmatch ('\[' + [regex]::Escape($Code) + '\]')) { throw }
+        $script:LastThrowMessage = $_.Exception.Message
         Write-Pass -Label $Label
         return
     }
@@ -219,6 +221,56 @@ try {
         throw ('StartTask T02 received_from_task_id was ' + $secondCustody.received_from_task_id + ' instead of T01.')
     }
     Write-Pass -Label 'StartTask T02 transferred custody from T01'
+
+    $driftRoot = Join-Path $resolvedTemporaryRoot 'drift'
+    New-GitWorkspace -Root $driftRoot
+    $drift = New-CustodyDraft -Root $driftRoot -ChangeId 'custody-drift' -LinkWriters $true
+    $driftSession = 'custody-drift'
+    Invoke-Helper -Parameters @{
+        Action = 'Initialize'
+        DraftPath = $drift.DraftPath
+        ManifestPath = $drift.ManifestPath
+        WorkspaceRoot = $driftRoot
+        SessionId = $driftSession
+    } | Out-Null
+    Invoke-Helper -Parameters @{
+        Action = 'StartTask'
+        ManifestPath = $drift.ManifestPath
+        WorkspaceRoot = $driftRoot
+        SessionId = $driftSession
+        TaskId = 'T01'
+    } | Out-Null
+    [System.IO.File]::WriteAllText($drift.SharedPath, 'first writer pinned content', [System.Text.UTF8Encoding]::new($false))
+    Invoke-Helper -Parameters @{
+        Action = 'FinishTask'
+        ManifestPath = $drift.ManifestPath
+        WorkspaceRoot = $driftRoot
+        SessionId = $driftSession
+        TaskId = 'T01'
+        Outcome = 'PASS'
+        ChangedFilesJson = '["src/shared.txt"]'
+        VerificationSummary = 'First writer pinned custody.'
+    } | Out-Null
+    [System.IO.File]::WriteAllText($drift.SharedPath, 'drift after custody handoff', [System.Text.UTF8Encoding]::new($false))
+    Assert-ThrowsCode -Code 'SCOPE_ESCALATE' -Label 'StartTask T02 rejected shared-path content drift' -Action {
+        Invoke-Helper -Parameters @{
+            Action = 'StartTask'
+            ManifestPath = $drift.ManifestPath
+            WorkspaceRoot = $driftRoot
+            SessionId = $driftSession
+            TaskId = 'T02'
+        }
+    }
+    if ($script:LastThrowMessage -notmatch 'custody_drift') {
+        throw ('SCOPE_ESCALATE did not name custody_drift. Actual: ' + $script:LastThrowMessage)
+    }
+    $driftLock = Get-Content -LiteralPath $drift.LockPath -Raw | ConvertFrom-Json
+    if ([string]$driftLock.state -ne 'ESCALATE') {
+        throw ('Drift lock state was ' + $driftLock.state + ' instead of ESCALATE.')
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$driftLock.handoff_path) -or -not (Test-Path -LiteralPath ([string]$driftLock.handoff_path) -PathType Leaf)) {
+        throw 'Custody drift did not persist a terminal handoff receipt.'
+    }
 
     Write-Output ('Path-custody checks passed: ' + $script:Passed)
 }

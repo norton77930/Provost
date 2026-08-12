@@ -134,7 +134,7 @@ powershell.exe -NoProfile -File .\tests\governance\Test-ManifestPin.ps1
 powershell.exe -NoProfile -File .\tests\governance\Test-PathCustody.ps1
 ```
 
-測試會拒絕共用 path 但沒有依賴順序的兩個 writer，並在有依賴時記錄、交接 custody。它不會修改 repository。見 [demo walkthrough](docs/examples/governed-path-custody-demo.md)。
+測試會拒絕共用 path 但沒有依賴順序的兩個 writer，在有依賴時記錄並交接 custody，並在下一手開始前檔案被改時 escalation。它不會修改 repository。見 [demo walkthrough](docs/examples/governed-path-custody-demo.md)。
 
 ## Tier 2 治理細節
 
