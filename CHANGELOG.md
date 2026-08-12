@@ -15,6 +15,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   [`CONTRIBUTING.md`](CONTRIBUTING.md), with the recorded snapshot remaining
   in [`skills/NOTICE.md`](skills/NOTICE.md). Adding or removing a skill
   directory also requires updating the install lists in both READMEs.
+- A dependency-free Windows test for the Tier 2 ref-guard decision
+  logic, with a walkthrough and CI coverage.
 
 ## [0.1.0] - 2026-08-11
 

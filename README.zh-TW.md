@@ -40,7 +40,7 @@ flowchart TD
 - [`.claude/agents/`](.claude/agents/) 下的六個 Claude Code role definitions。
 - Tier 1 [`orchestration.md`](orchestration.md)：plan-first、單一 active writer 與 evidence-based completion discipline。
 - [`skills/`](skills/) 中的 TDD、診斷、review 與完成前驗證方法；第三方歸屬保留於 [`skills/NOTICE.md`](skills/NOTICE.md)。
-- Windows 上不需額外 dependency 的 Tier 2 write-gate decision test；見 [governed write-scope demo](docs/examples/governed-write-scope-demo.md)。
+- Windows 上不需額外 dependency 的 Tier 2 write-gate 與 ref-guard decision test；見 [governed write-scope demo](docs/examples/governed-write-scope-demo.md) 與 [governed ref-guard demo](docs/examples/governed-ref-guard-demo.md)。
 
 ### Experimental／reference implementation
 
@@ -105,6 +105,16 @@ powershell.exe -NoProfile -File .\tests\governance\Test-WriteScope.ps1
 ```
 
 測試會建立隔離的 manifest 與 active-run lock，透過 stdin protocol 呼叫 repository 內的 hook，確認核准路徑被允許，並確認 scope 外或無效 state 的寫入被拒絕。它不會修改 repository。Prerequisites、預期輸出與限制見 [demo walkthrough](docs/examples/governed-write-scope-demo.md)。
+
+### Tier 2 ref-guard decision
+
+在 Windows 執行：
+
+```powershell
+powershell.exe -NoProfile -File .\tests\governance\Test-RefGuard.ps1
+```
+
+測試會把暫存目錄當成宣告的外部 read root，確認寫入類命令被拒絕、窄型讀取被允許、無法分類的命令改為 ask。它不會修改 repository。見 [demo walkthrough](docs/examples/governed-ref-guard-demo.md)。
 
 ## Tier 2 治理細節
 

@@ -12,7 +12,7 @@ internally named "Foreman."
 |---|---|---|
 | Hash-pinned manifest | `Foreman-Manifest.ps1` hashes the approved manifest, records the hash in the active lock, and checks it before lifecycle actions. Changed intent requires a new numbered revision. | The operating system does not make the file immutable. The helper detects a mismatch and escalates it. |
 | Write scope | `PreToolUse-WriteGate.ps1` compares `Edit`, `Write`, and `NotebookEdit` targets with the literal `write_set` of running tasks and returns `deny` on mismatch or unreadable state. | Enforcement requires Claude Code hook registration and launcher-provided `PROVOST_*` environment variables, which this repository does not yet package. Shell writes inside the workspace require separate command controls. |
-| External reference protection | `PreToolUse-RefGuard.ps1` denies write-like commands that mention declared read-only external roots and asks for review when it cannot classify a command. | This is a conservative command-text classifier, not an operating-system sandbox. |
+| External reference protection | `PreToolUse-RefGuard.ps1` denies write-like commands that mention declared read-only external roots and asks for review when it cannot classify a command. A dependency-free hook test covers silent, deny, allow, and ask decisions. | This is a conservative command-text classifier, not an operating-system sandbox. |
 | Workspace anchoring | `SessionStart-WorkspaceCheck.ps1` compares the session cwd with the intended workspace. | Claude Code's `SessionStart` hook can add a warning but cannot block; this check is informational and fail-open. |
 | Path custody | Manifest v2 requires dependency ordering for writers sharing a path. The helper records and verifies status/hash evidence between writers. | Covered by implementation code but not yet by a committed automated test suite. |
 | Completion gate | A PASS completion requires every declared task to be PASS. The schema requires a code-verifier task, and an optional required architecture verifier must depend on every non-review task. | The repository does not include the original launcher that creates fresh agent contexts. Context freshness is therefore a workflow/launcher responsibility, not something this helper alone proves. |
@@ -52,6 +52,20 @@ The test invokes the hook with synthetic governed state and verifies allowed,
 out-of-scope, forbidden, outside-workspace, missing-lock, and invalid-state
 cases. See the [walkthrough](../examples/governed-write-scope-demo.md) for
 prerequisites, output, and interpretation.
+
+## External-reference guard demo
+
+The repository also includes a dependency-free Windows test for the ref-guard
+decision logic:
+
+```powershell
+powershell.exe -NoProfile -File .\tests\governance\Test-RefGuard.ps1
+```
+
+The test invokes the hook with a temporary external root and verifies that
+non-governed sessions stay silent, write-like commands are denied, a narrow
+read is allowed, and an unclassified command asks for review. See the
+[walkthrough](../examples/governed-ref-guard-demo.md).
 
 ## Design direction
 

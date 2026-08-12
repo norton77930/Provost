@@ -50,6 +50,7 @@ From the repository root on Windows:
 ```powershell
 powershell.exe -NoProfile -File .\tests\governance\Test-PowerShellSyntax.ps1
 powershell.exe -NoProfile -File .\tests\governance\Test-WriteScope.ps1
+powershell.exe -NoProfile -File .\tests\governance\Test-RefGuard.ps1
 powershell.exe -NoProfile -File .\tests\docs\Test-MarkdownLinks.ps1
 ```
 

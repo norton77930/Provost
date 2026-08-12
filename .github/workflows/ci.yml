@@ -23,6 +23,10 @@ jobs:
         shell: powershell
         run: powershell.exe -NoProfile -File .\tests\governance\Test-WriteScope.ps1
 
+      - name: Exercise governed ref guard
+        shell: powershell
+        run: powershell.exe -NoProfile -File .\tests\governance\Test-RefGuard.ps1
+
       - name: Validate relative Markdown links
         shell: powershell
         run: powershell.exe -NoProfile -File .\tests\docs\Test-MarkdownLinks.ps1

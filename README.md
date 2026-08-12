@@ -57,8 +57,10 @@ boundaries between tiers.
 - Reusable methodology [skills](skills/) for TDD, diagnosis, review, and
   verification, with third-party attribution preserved in
   [`skills/NOTICE.md`](skills/NOTICE.md).
-- A dependency-free test that exercises the Tier 2 write-gate decision logic on
-  Windows; see the [governed write-scope demo](docs/examples/governed-write-scope-demo.md).
+- Dependency-free tests that exercise the Tier 2 write-gate and ref-guard
+  decision logic on Windows; see the
+  [governed write-scope demo](docs/examples/governed-write-scope-demo.md) and
+  [governed ref-guard demo](docs/examples/governed-ref-guard-demo.md).
 
 ### Experimental / reference implementation
 
@@ -143,6 +145,19 @@ hook through its stdin protocol, confirms an approved path is allowed, and
 confirms out-of-scope and invalid-state writes are denied. It does not modify the
 repository. Full prerequisites, expected output, and limitations are documented
 in the [demo walkthrough](docs/examples/governed-write-scope-demo.md).
+
+### Tier 2 ref-guard decision
+
+On Windows, run:
+
+```powershell
+powershell.exe -NoProfile -File .\tests\governance\Test-RefGuard.ps1
+```
+
+The test treats a temporary directory as a declared external read root, confirms
+that write-like commands are denied, a narrow read is allowed, and an
+unclassified command asks for review. It does not modify the repository. See the
+[demo walkthrough](docs/examples/governed-ref-guard-demo.md).
 
 ## Tier 2 governance details
 
