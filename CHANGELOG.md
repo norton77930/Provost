@@ -17,6 +17,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   directory also requires updating the install lists in both READMEs.
 - A dependency-free Windows test for the Tier 2 ref-guard decision
   logic, with a walkthrough and CI coverage.
+- A Windows helper test for v1 manifest hash pinning (Initialize,
+  Validate, tampered Plan, tampered approved manifest), with a
+  walkthrough and CI coverage. Requires `git`.
 
 ## [0.1.0] - 2026-08-11
 

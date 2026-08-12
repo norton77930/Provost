@@ -9,8 +9,8 @@ This roadmap describes intended work, not promised dates. Items move to
 - Tier 1 Claude Code collaborator roles and orchestration policy.
 - Methodology skills for TDD, diagnosis, review, and completion verification.
 - Windows/PowerShell Tier 2 reference helper and hook implementations.
-- Hook-level write-scope and ref-guard enforcement demos and basic
-  Windows CI checks.
+- Hook-level write-scope and ref-guard enforcement demos, a helper-level
+  v1 manifest-pin test, and basic Windows CI checks.
 - Governance capability matrix that separates implemented behavior, design
   intent, and limitations.
 

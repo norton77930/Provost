@@ -40,7 +40,7 @@ flowchart TD
 - [`.claude/agents/`](.claude/agents/) 下的六個 Claude Code role definitions。
 - Tier 1 [`orchestration.md`](orchestration.md)：plan-first、單一 active writer 與 evidence-based completion discipline。
 - [`skills/`](skills/) 中的 TDD、診斷、review 與完成前驗證方法；第三方歸屬保留於 [`skills/NOTICE.md`](skills/NOTICE.md)。
-- Windows 上不需額外 dependency 的 Tier 2 write-gate 與 ref-guard decision test；見 [governed write-scope demo](docs/examples/governed-write-scope-demo.md) 與 [governed ref-guard demo](docs/examples/governed-ref-guard-demo.md)。
+- Windows 上的 Tier 2 write-gate、ref-guard 與 manifest-pin decision test；見 [governed write-scope demo](docs/examples/governed-write-scope-demo.md)、[governed ref-guard demo](docs/examples/governed-ref-guard-demo.md) 與 [governed manifest-pin demo](docs/examples/governed-manifest-pin-demo.md)。
 
 ### Experimental／reference implementation
 
@@ -115,6 +115,16 @@ powershell.exe -NoProfile -File .\tests\governance\Test-RefGuard.ps1
 ```
 
 測試會把暫存目錄當成宣告的外部 read root，確認寫入類命令被拒絕、窄型讀取被允許、無法分類的命令改為 ask。它不會修改 repository。見 [demo walkthrough](docs/examples/governed-ref-guard-demo.md)。
+
+### Tier 2 manifest-pin decision
+
+在 Windows 且 `git` 可用時執行：
+
+```powershell
+powershell.exe -NoProfile -File .\tests\governance\Test-ManifestPin.ps1
+```
+
+測試會在隔離的 Git workspace 初始化最小 v1 manifest、通過 Validate，並確認被改過的 Plan 或已核准 manifest 會被拒絕。它不會修改 repository。見 [demo walkthrough](docs/examples/governed-manifest-pin-demo.md)。
 
 ## Tier 2 治理細節
 

@@ -57,10 +57,11 @@ boundaries between tiers.
 - Reusable methodology [skills](skills/) for TDD, diagnosis, review, and
   verification, with third-party attribution preserved in
   [`skills/NOTICE.md`](skills/NOTICE.md).
-- Dependency-free tests that exercise the Tier 2 write-gate and ref-guard
-  decision logic on Windows; see the
-  [governed write-scope demo](docs/examples/governed-write-scope-demo.md) and
-  [governed ref-guard demo](docs/examples/governed-ref-guard-demo.md).
+- Windows tests for the Tier 2 write-gate, ref-guard, and manifest-pin
+  decision logic; see the
+  [governed write-scope demo](docs/examples/governed-write-scope-demo.md),
+  [governed ref-guard demo](docs/examples/governed-ref-guard-demo.md), and
+  [governed manifest-pin demo](docs/examples/governed-manifest-pin-demo.md).
 
 ### Experimental / reference implementation
 
@@ -158,6 +159,19 @@ The test treats a temporary directory as a declared external read root, confirms
 that write-like commands are denied, a narrow read is allowed, and an
 unclassified command asks for review. It does not modify the repository. See the
 [demo walkthrough](docs/examples/governed-ref-guard-demo.md).
+
+### Tier 2 manifest-pin decision
+
+On Windows, with `git` available, run:
+
+```powershell
+powershell.exe -NoProfile -File .\tests\governance\Test-ManifestPin.ps1
+```
+
+The test initializes a minimal v1 manifest in an isolated Git workspace,
+validates it, and confirms that a tampered Plan or approved manifest is
+rejected. It does not modify the repository. See the
+[demo walkthrough](docs/examples/governed-manifest-pin-demo.md).
 
 ## Tier 2 governance details
 

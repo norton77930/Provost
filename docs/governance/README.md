@@ -10,7 +10,7 @@ internally named "Foreman."
 
 | Capability | Reference implementation evidence | Current limitation |
 |---|---|---|
-| Hash-pinned manifest | `Foreman-Manifest.ps1` hashes the approved manifest, records the hash in the active lock, and checks it before lifecycle actions. Changed intent requires a new numbered revision. | The operating system does not make the file immutable. The helper detects a mismatch and escalates it. |
+| Hash-pinned manifest | `Foreman-Manifest.ps1` hashes the approved manifest, records the hash in the active lock, and checks it before lifecycle actions. Changed intent requires a new numbered revision. A public test covers Initialize, Validate, a tampered native Plan, and a tampered approved manifest. | The operating system does not make the file immutable. The helper detects a mismatch and escalates it. |
 | Write scope | `PreToolUse-WriteGate.ps1` compares `Edit`, `Write`, and `NotebookEdit` targets with the literal `write_set` of running tasks and returns `deny` on mismatch or unreadable state. | Enforcement requires Claude Code hook registration and launcher-provided `PROVOST_*` environment variables, which this repository does not yet package. Shell writes inside the workspace require separate command controls. |
 | External reference protection | `PreToolUse-RefGuard.ps1` denies write-like commands that mention declared read-only external roots and asks for review when it cannot classify a command. A dependency-free hook test covers silent, deny, allow, and ask decisions. | This is a conservative command-text classifier, not an operating-system sandbox. |
 | Workspace anchoring | `SessionStart-WorkspaceCheck.ps1` compares the session cwd with the intended workspace. | Claude Code's `SessionStart` hook can add a warning but cannot block; this check is informational and fail-open. |
@@ -66,6 +66,20 @@ The test invokes the hook with a temporary external root and verifies that
 non-governed sessions stay silent, write-like commands are denied, a narrow
 read is allowed, and an unclassified command asks for review. See the
 [walkthrough](../examples/governed-ref-guard-demo.md).
+
+## Manifest-pin demo
+
+A third Windows test exercises the lifecycle helper's hash pin without a
+launcher:
+
+```powershell
+powershell.exe -NoProfile -File .\tests\governance\Test-ManifestPin.ps1
+```
+
+The test initializes a minimal v1 manifest in an isolated Git workspace,
+validates it, then confirms that a tampered native Plan and a tampered
+approved manifest are rejected. It requires `git`. See the
+[walkthrough](../examples/governed-manifest-pin-demo.md).
 
 ## Design direction
 
