@@ -40,7 +40,7 @@ flowchart TD
 - [`.claude/agents/`](.claude/agents/) 下的六個 Claude Code role definitions。
 - Tier 1 [`orchestration.md`](orchestration.md)：plan-first、單一 active writer 與 evidence-based completion discipline。
 - [`skills/`](skills/) 中的 TDD、診斷、review 與完成前驗證方法；第三方歸屬保留於 [`skills/NOTICE.md`](skills/NOTICE.md)。
-- Windows 上的 Tier 2 write-gate、ref-guard、manifest-pin 與 path-custody decision test；見 [governed write-scope demo](docs/examples/governed-write-scope-demo.md)、[governed ref-guard demo](docs/examples/governed-ref-guard-demo.md)、[governed manifest-pin demo](docs/examples/governed-manifest-pin-demo.md) 與 [governed path-custody demo](docs/examples/governed-path-custody-demo.md)。
+- Windows 上的 Tier 2 write-gate、ref-guard、manifest-pin、path-custody 與 completion-gate decision test；見 [governed write-scope demo](docs/examples/governed-write-scope-demo.md)、[governed ref-guard demo](docs/examples/governed-ref-guard-demo.md)、[governed manifest-pin demo](docs/examples/governed-manifest-pin-demo.md)、[governed path-custody demo](docs/examples/governed-path-custody-demo.md) 與 [governed completion-gate demo](docs/examples/governed-completion-gate-demo.md)。
 
 ### Experimental／reference implementation
 
@@ -135,6 +135,16 @@ powershell.exe -NoProfile -File .\tests\governance\Test-PathCustody.ps1
 ```
 
 測試會拒絕共用 path 但沒有依賴順序的兩個 writer，在有依賴時記錄並交接 custody，並在下一手開始前檔案被改時 escalation。它不會修改 repository。見 [demo walkthrough](docs/examples/governed-path-custody-demo.md)。
+
+### Tier 2 completion-gate decision
+
+在 Windows 且 `git` 可用時執行：
+
+```powershell
+powershell.exe -NoProfile -File .\tests\governance\Test-CompletionGate.ps1
+```
+
+測試會在每個宣告 task 都 PASS 之前拒絕 `Complete PASS`，通過後確認 active lock 被刪除。它不會修改 repository。見 [demo walkthrough](docs/examples/governed-completion-gate-demo.md)。
 
 ## Tier 2 治理細節
 

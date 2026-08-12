@@ -7,6 +7,12 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- A Windows helper test for the completion gate (`Complete PASS` rejected
+  until every task is PASS, then the active lock is removed), with a
+  walkthrough and CI coverage. Requires `git`.
+
 ## [0.1.2] - 2026-08-13
 
 Public v2 shared-path custody coverage since 0.1.1.
