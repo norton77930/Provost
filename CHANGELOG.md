@@ -7,6 +7,10 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-13
+
+Public v2 shared-path custody coverage since 0.1.1.
+
 ### Added
 
 - A Windows helper test for v2 shared-path custody (unordered writers
@@ -54,6 +58,7 @@ private source tree.
 - Public tree without the leftover Grok provider adapter from the private
   multi-provider setup.
 
-[Unreleased]: https://github.com/norton77930/Provost/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/norton77930/Provost/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/norton77930/Provost/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/norton77930/Provost/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/norton77930/Provost/releases/tag/v0.1.0
