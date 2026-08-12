@@ -4,72 +4,8 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$script:Passed = 0
-$script:LastThrowMessage = $null
-$repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-$helperPath = Join-Path $repositoryRoot 'docs\governance\reference\Foreman-Manifest.ps1'
-
-if (-not (Test-Path -LiteralPath $helperPath -PathType Leaf)) {
-    throw ('Foreman helper is missing: ' + $helperPath)
-}
-if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-    throw 'This reference test requires git.'
-}
-
-function Write-JsonFile {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)]$Value
-    )
-    [System.IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 32), [System.Text.UTF8Encoding]::new($false))
-}
-
-function Invoke-Helper {
-    param([hashtable]$Parameters)
-    & $helperPath @Parameters
-}
-
-function Write-Pass {
-    param([Parameter(Mandatory = $true)][string]$Label)
-    $script:Passed++
-    Write-Output ('PASS: ' + $Label)
-}
-
-function Assert-ThrowsCode {
-    param(
-        [Parameter(Mandatory = $true)][scriptblock]$Action,
-        [Parameter(Mandatory = $true)][string]$Code,
-        [Parameter(Mandatory = $true)][string]$Label
-    )
-    try {
-        & $Action | Out-Null
-    }
-    catch {
-        if ($_.Exception.Message -notmatch ('\[' + [regex]::Escape($Code) + '\]')) { throw }
-        $script:LastThrowMessage = $_.Exception.Message
-        Write-Pass -Label $Label
-        return
-    }
-    throw ($Label + ' did not throw [' + $Code + '].')
-}
-
-function Get-FileSha256 {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
-}
-
-function New-GitWorkspace {
-    param([Parameter(Mandatory = $true)][string]$Root)
-    [System.IO.Directory]::CreateDirectory((Join-Path $Root 'src')) | Out-Null
-    [System.IO.File]::WriteAllText((Join-Path $Root 'src\shared.txt'), 'baseline shared content', [System.Text.UTF8Encoding]::new($false))
-    & git -C $Root init -q
-    if ($LASTEXITCODE -ne 0) { throw 'git init failed.' }
-    & git -C $Root config user.email 'provost-test@example.invalid'
-    & git -C $Root config user.name 'Provost Test'
-    & git -C $Root add -- .
-    & git -C $Root -c commit.gpgsign=false commit -qm 'baseline'
-    if ($LASTEXITCODE -ne 0) { throw 'Unable to create the temporary Git baseline.' }
-}
+. (Join-Path $PSScriptRoot 'ForemanTestHelpers.ps1')
+Initialize-ForemanTest
 
 function New-CustodyDraft {
     param(
@@ -141,20 +77,14 @@ function New-CustodyDraft {
     }
 }
 
-$temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('provost-path-custody-' + [guid]::NewGuid().ToString('N'))
-$resolvedTemporaryRoot = [System.IO.Path]::GetFullPath($temporaryRoot)
-$resolvedSystemTemp = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
-
-if (-not $resolvedTemporaryRoot.StartsWith($resolvedSystemTemp, [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw 'Refusing to create test state outside the system temporary directory.'
-}
+$resolvedTemporaryRoot = New-IsolatedTempRoot -Prefix 'provost-path-custody-'
 
 try {
     $unlinkedRoot = Join-Path $resolvedTemporaryRoot 'unlinked'
-    New-GitWorkspace -Root $unlinkedRoot
+    New-GitWorkspace -Root $unlinkedRoot -RelativeFile 'src/shared.txt' -Content 'baseline shared content'
     $unlinked = New-CustodyDraft -Root $unlinkedRoot -ChangeId 'unlinked-writers' -LinkWriters $false
     Assert-ThrowsCode -Code 'SCHEMA' -Label 'Initialize rejected unordered writers sharing a path' -Action {
-        Invoke-Helper -Parameters @{
+        Invoke-ForemanHelper -Parameters @{
             Action = 'Initialize'
             DraftPath = $unlinked.DraftPath
             ManifestPath = $unlinked.ManifestPath
@@ -164,17 +94,17 @@ try {
     }
 
     $linkedRoot = Join-Path $resolvedTemporaryRoot 'linked'
-    New-GitWorkspace -Root $linkedRoot
+    New-GitWorkspace -Root $linkedRoot -RelativeFile 'src/shared.txt' -Content 'baseline shared content'
     $linked = New-CustodyDraft -Root $linkedRoot -ChangeId 'linked-writers' -LinkWriters $true
     $sessionId = 'linked-custody'
-    Invoke-Helper -Parameters @{
+    Invoke-ForemanHelper -Parameters @{
         Action = 'Initialize'
         DraftPath = $linked.DraftPath
         ManifestPath = $linked.ManifestPath
         WorkspaceRoot = $linkedRoot
         SessionId = $sessionId
     } | Out-Null
-    Invoke-Helper -Parameters @{
+    Invoke-ForemanHelper -Parameters @{
         Action = 'StartTask'
         ManifestPath = $linked.ManifestPath
         WorkspaceRoot = $linkedRoot
@@ -182,7 +112,7 @@ try {
         TaskId = 'T01'
     } | Out-Null
     [System.IO.File]::WriteAllText($linked.SharedPath, 'first writer result', [System.Text.UTF8Encoding]::new($false))
-    Invoke-Helper -Parameters @{
+    Invoke-ForemanHelper -Parameters @{
         Action = 'FinishTask'
         ManifestPath = $linked.ManifestPath
         WorkspaceRoot = $linkedRoot
@@ -205,7 +135,7 @@ try {
     }
     Write-Pass -Label 'FinishTask T01 recorded custody for the shared path'
 
-    Invoke-Helper -Parameters @{
+    Invoke-ForemanHelper -Parameters @{
         Action = 'StartTask'
         ManifestPath = $linked.ManifestPath
         WorkspaceRoot = $linkedRoot
@@ -223,17 +153,17 @@ try {
     Write-Pass -Label 'StartTask T02 transferred custody from T01'
 
     $driftRoot = Join-Path $resolvedTemporaryRoot 'drift'
-    New-GitWorkspace -Root $driftRoot
+    New-GitWorkspace -Root $driftRoot -RelativeFile 'src/shared.txt' -Content 'baseline shared content'
     $drift = New-CustodyDraft -Root $driftRoot -ChangeId 'custody-drift' -LinkWriters $true
     $driftSession = 'custody-drift'
-    Invoke-Helper -Parameters @{
+    Invoke-ForemanHelper -Parameters @{
         Action = 'Initialize'
         DraftPath = $drift.DraftPath
         ManifestPath = $drift.ManifestPath
         WorkspaceRoot = $driftRoot
         SessionId = $driftSession
     } | Out-Null
-    Invoke-Helper -Parameters @{
+    Invoke-ForemanHelper -Parameters @{
         Action = 'StartTask'
         ManifestPath = $drift.ManifestPath
         WorkspaceRoot = $driftRoot
@@ -241,7 +171,7 @@ try {
         TaskId = 'T01'
     } | Out-Null
     [System.IO.File]::WriteAllText($drift.SharedPath, 'first writer pinned content', [System.Text.UTF8Encoding]::new($false))
-    Invoke-Helper -Parameters @{
+    Invoke-ForemanHelper -Parameters @{
         Action = 'FinishTask'
         ManifestPath = $drift.ManifestPath
         WorkspaceRoot = $driftRoot
@@ -253,7 +183,7 @@ try {
     } | Out-Null
     [System.IO.File]::WriteAllText($drift.SharedPath, 'drift after custody handoff', [System.Text.UTF8Encoding]::new($false))
     Assert-ThrowsCode -Code 'SCOPE_ESCALATE' -Label 'StartTask T02 rejected shared-path content drift' -Action {
-        Invoke-Helper -Parameters @{
+        Invoke-ForemanHelper -Parameters @{
             Action = 'StartTask'
             ManifestPath = $drift.ManifestPath
             WorkspaceRoot = $driftRoot
@@ -261,8 +191,8 @@ try {
             TaskId = 'T02'
         }
     }
-    if ($script:LastThrowMessage -notmatch 'custody_drift') {
-        throw ('SCOPE_ESCALATE did not name custody_drift. Actual: ' + $script:LastThrowMessage)
+    if ((Get-ForemanLastThrowMessage) -notmatch 'custody_drift') {
+        throw ('SCOPE_ESCALATE did not name custody_drift. Actual: ' + (Get-ForemanLastThrowMessage))
     }
     $driftLock = Get-Content -LiteralPath $drift.LockPath -Raw | ConvertFrom-Json
     if ([string]$driftLock.state -ne 'ESCALATE') {
@@ -272,13 +202,8 @@ try {
         throw 'Custody drift did not persist a terminal handoff receipt.'
     }
 
-    Write-Output ('Path-custody checks passed: ' + $script:Passed)
+    Write-Output ('Path-custody checks passed: ' + (Get-ForemanTestPassCount))
 }
 finally {
-    if (Test-Path -LiteralPath $resolvedTemporaryRoot) {
-        if (-not $resolvedTemporaryRoot.StartsWith($resolvedSystemTemp, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw 'Refusing to clean up a path outside the system temporary directory.'
-        }
-        Remove-Item -LiteralPath $resolvedTemporaryRoot -Recurse -Force
-    }
+    Remove-IsolatedTempRoot -Root $resolvedTemporaryRoot
 }

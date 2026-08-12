@@ -4,71 +4,13 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$script:Passed = 0
-$repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-$helperPath = Join-Path $repositoryRoot 'docs\governance\reference\Foreman-Manifest.ps1'
+. (Join-Path $PSScriptRoot 'ForemanTestHelpers.ps1')
+Initialize-ForemanTest
 
-if (-not (Test-Path -LiteralPath $helperPath -PathType Leaf)) {
-    throw ('Foreman helper is missing: ' + $helperPath)
-}
-if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-    throw 'This reference test requires git.'
-}
-
-function Write-JsonFile {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)]$Value
-    )
-    [System.IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 32), [System.Text.UTF8Encoding]::new($false))
-}
-
-function Invoke-Helper {
-    param([hashtable]$Parameters)
-    & $helperPath @Parameters
-}
-
-function Write-Pass {
-    param([Parameter(Mandatory = $true)][string]$Label)
-    $script:Passed++
-    Write-Output ('PASS: ' + $Label)
-}
-
-function Assert-ThrowsCode {
-    param(
-        [Parameter(Mandatory = $true)][scriptblock]$Action,
-        [Parameter(Mandatory = $true)][string]$Code,
-        [Parameter(Mandatory = $true)][string]$Label
-    )
-    try {
-        & $Action | Out-Null
-    }
-    catch {
-        if ($_.Exception.Message -notmatch ('\[' + [regex]::Escape($Code) + '\]')) { throw }
-        Write-Pass -Label $Label
-        return
-    }
-    throw ($Label + ' did not throw [' + $Code + '].')
-}
-
-$temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('provost-completion-gate-' + [guid]::NewGuid().ToString('N'))
-$resolvedTemporaryRoot = [System.IO.Path]::GetFullPath($temporaryRoot)
-$resolvedSystemTemp = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
-
-if (-not $resolvedTemporaryRoot.StartsWith($resolvedSystemTemp, [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw 'Refusing to create test state outside the system temporary directory.'
-}
+$resolvedTemporaryRoot = New-IsolatedTempRoot -Prefix 'provost-completion-gate-'
 
 try {
-    [System.IO.Directory]::CreateDirectory((Join-Path $resolvedTemporaryRoot 'src')) | Out-Null
-    [System.IO.File]::WriteAllText((Join-Path $resolvedTemporaryRoot 'src\sample.txt'), 'baseline', [System.Text.UTF8Encoding]::new($false))
-    & git -C $resolvedTemporaryRoot init -q
-    if ($LASTEXITCODE -ne 0) { throw 'git init failed.' }
-    & git -C $resolvedTemporaryRoot config user.email 'provost-test@example.invalid'
-    & git -C $resolvedTemporaryRoot config user.name 'Provost Test'
-    & git -C $resolvedTemporaryRoot add -- .
-    & git -C $resolvedTemporaryRoot -c commit.gpgsign=false commit -qm 'baseline'
-    if ($LASTEXITCODE -ne 0) { throw 'Unable to create the temporary Git baseline.' }
+    New-GitWorkspace -Root $resolvedTemporaryRoot -RelativeFile 'src/sample.txt' -Content 'baseline'
 
     $foremanRoot = Join-Path $resolvedTemporaryRoot '.claude\provost\foreman'
     $plans = Join-Path $foremanRoot 'plans'
@@ -118,7 +60,7 @@ try {
     }
     Write-JsonFile -Path $draftPath -Value $draft
 
-    Invoke-Helper -Parameters @{
+    Invoke-ForemanHelper -Parameters @{
         Action = 'Initialize'
         DraftPath = $draftPath
         ManifestPath = $manifestPath
@@ -127,7 +69,7 @@ try {
     } | Out-Null
 
     Assert-ThrowsCode -Code 'VERIFY' -Label 'Complete PASS rejected before any task passed' -Action {
-        Invoke-Helper -Parameters @{
+        Invoke-ForemanHelper -Parameters @{
             Action = 'Complete'
             WorkspaceRoot = $resolvedTemporaryRoot
             SessionId = $sessionId
@@ -135,14 +77,14 @@ try {
         }
     }
 
-    Invoke-Helper -Parameters @{
+    Invoke-ForemanHelper -Parameters @{
         Action = 'StartTask'
         ManifestPath = $manifestPath
         WorkspaceRoot = $resolvedTemporaryRoot
         SessionId = $sessionId
         TaskId = 'T01'
     } | Out-Null
-    Invoke-Helper -Parameters @{
+    Invoke-ForemanHelper -Parameters @{
         Action = 'FinishTask'
         ManifestPath = $manifestPath
         WorkspaceRoot = $resolvedTemporaryRoot
@@ -154,7 +96,7 @@ try {
     } | Out-Null
 
     Assert-ThrowsCode -Code 'VERIFY' -Label 'Complete PASS rejected while the verifier task is unfinished' -Action {
-        Invoke-Helper -Parameters @{
+        Invoke-ForemanHelper -Parameters @{
             Action = 'Complete'
             WorkspaceRoot = $resolvedTemporaryRoot
             SessionId = $sessionId
@@ -162,14 +104,14 @@ try {
         }
     }
 
-    Invoke-Helper -Parameters @{
+    Invoke-ForemanHelper -Parameters @{
         Action = 'StartTask'
         ManifestPath = $manifestPath
         WorkspaceRoot = $resolvedTemporaryRoot
         SessionId = $sessionId
         TaskId = 'T02'
     } | Out-Null
-    Invoke-Helper -Parameters @{
+    Invoke-ForemanHelper -Parameters @{
         Action = 'FinishTask'
         ManifestPath = $manifestPath
         WorkspaceRoot = $resolvedTemporaryRoot
@@ -180,7 +122,7 @@ try {
         VerificationSummary = 'No material findings.'
     } | Out-Null
 
-    $completed = Invoke-Helper -Parameters @{
+    $completed = Invoke-ForemanHelper -Parameters @{
         Action = 'Complete'
         WorkspaceRoot = $resolvedTemporaryRoot
         SessionId = $sessionId
@@ -194,13 +136,8 @@ try {
     }
     Write-Pass -Label 'Complete PASS succeeded after every task was PASS'
 
-    Write-Output ('Completion-gate checks passed: ' + $script:Passed)
+    Write-Output ('Completion-gate checks passed: ' + (Get-ForemanTestPassCount))
 }
 finally {
-    if (Test-Path -LiteralPath $resolvedTemporaryRoot) {
-        if (-not $resolvedTemporaryRoot.StartsWith($resolvedSystemTemp, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw 'Refusing to clean up a path outside the system temporary directory.'
-        }
-        Remove-Item -LiteralPath $resolvedTemporaryRoot -Recurse -Force
-    }
+    Remove-IsolatedTempRoot -Root $resolvedTemporaryRoot
 }

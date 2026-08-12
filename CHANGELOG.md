@@ -13,6 +13,12 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   until every task is PASS, then the active lock is removed), with a
   walkthrough and CI coverage. Requires `git`.
 
+### Changed
+
+- Shared Foreman lifecycle test helpers live in
+  `tests/governance/ForemanTestHelpers.ps1`. Manifest-pin, path-custody, and
+  completion-gate tests now dot-source that file. Assertions are unchanged.
+
 ## [0.1.2] - 2026-08-13
 
 Public v2 shared-path custody coverage since 0.1.1.
