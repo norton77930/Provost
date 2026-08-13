@@ -7,6 +7,10 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-08-13
+
+Failure-diagnosis and audit-artifacts coverage since 0.1.3.
+
 ### Added
 
 - A Windows helper test for v2 failure diagnosis (unsigned FAIL rejected,
@@ -83,7 +87,8 @@ private source tree.
 - Public tree without the leftover Grok provider adapter from the private
   multi-provider setup.
 
-[Unreleased]: https://github.com/norton77930/Provost/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/norton77930/Provost/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/norton77930/Provost/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/norton77930/Provost/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/norton77930/Provost/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/norton77930/Provost/compare/v0.1.0...v0.1.1
