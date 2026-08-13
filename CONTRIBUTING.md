@@ -55,13 +55,14 @@ powershell.exe -NoProfile -File .\tests\governance\Test-ManifestPin.ps1
 powershell.exe -NoProfile -File .\tests\governance\Test-PathCustody.ps1
 powershell.exe -NoProfile -File .\tests\governance\Test-CompletionGate.ps1
 powershell.exe -NoProfile -File .\tests\governance\Test-FailureDiagnosis.ps1
+powershell.exe -NoProfile -File .\tests\governance\Test-AuditArtifacts.ps1
 powershell.exe -NoProfile -File .\tests\docs\Test-MarkdownLinks.ps1
 ```
 
 The checks have no package dependencies. `Test-ManifestPin.ps1`,
-`Test-PathCustody.ps1`, `Test-CompletionGate.ps1`, and
-`Test-FailureDiagnosis.ps1` also require `git`. Tier 2 is Windows-specific
-today;
+`Test-PathCustody.ps1`, `Test-CompletionGate.ps1`,
+`Test-FailureDiagnosis.ps1`, and `Test-AuditArtifacts.ps1` also require
+`git`. Tier 2 is Windows-specific today;
 contributors working on other platforms can still review and improve Tier 1 and
 documentation, but should state which checks they could not run.
 

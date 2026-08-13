@@ -43,6 +43,10 @@ jobs:
         shell: powershell
         run: powershell.exe -NoProfile -File .\tests\governance\Test-FailureDiagnosis.ps1
 
+      - name: Exercise governed audit artifacts
+        shell: powershell
+        run: powershell.exe -NoProfile -File .\tests\governance\Test-AuditArtifacts.ps1
+
       - name: Validate relative Markdown links
         shell: powershell
         run: powershell.exe -NoProfile -File .\tests\docs\Test-MarkdownLinks.ps1

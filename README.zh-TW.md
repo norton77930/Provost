@@ -40,7 +40,7 @@ flowchart TD
 - [`.claude/agents/`](.claude/agents/) 下的六個 Claude Code role definitions。
 - Tier 1 [`orchestration.md`](orchestration.md)：plan-first、單一 active writer 與 evidence-based completion discipline。
 - [`skills/`](skills/) 中的 TDD、診斷、review 與完成前驗證方法；第三方歸屬保留於 [`skills/NOTICE.md`](skills/NOTICE.md)。
-- Windows 上的 Tier 2 write-gate、ref-guard、manifest-pin、path-custody、completion-gate 與 failure-diagnosis decision test；見 [governed write-scope demo](docs/examples/governed-write-scope-demo.md)、[governed ref-guard demo](docs/examples/governed-ref-guard-demo.md)、[governed manifest-pin demo](docs/examples/governed-manifest-pin-demo.md)、[governed path-custody demo](docs/examples/governed-path-custody-demo.md)、[governed completion-gate demo](docs/examples/governed-completion-gate-demo.md) 與 [governed failure-diagnosis demo](docs/examples/governed-failure-diagnosis-demo.md)。
+- Windows 上的 Tier 2 write-gate、ref-guard、manifest-pin、path-custody、completion-gate、failure-diagnosis 與 audit-artifacts decision test；見 [governed write-scope demo](docs/examples/governed-write-scope-demo.md)、[governed ref-guard demo](docs/examples/governed-ref-guard-demo.md)、[governed manifest-pin demo](docs/examples/governed-manifest-pin-demo.md)、[governed path-custody demo](docs/examples/governed-path-custody-demo.md)、[governed completion-gate demo](docs/examples/governed-completion-gate-demo.md)、[governed failure-diagnosis demo](docs/examples/governed-failure-diagnosis-demo.md) 與 [governed audit-artifacts demo](docs/examples/governed-audit-artifacts-demo.md)。
 
 ### Experimental／reference implementation
 
@@ -155,6 +155,16 @@ powershell.exe -NoProfile -File .\tests\governance\Test-FailureDiagnosis.ps1
 ```
 
 測試要求 `Complete FAIL` 帶 signature、等價 signature 正規化成同一 hash，並在同一失敗重複後要求新的 diagnosis。它不會修改 repository。見 [demo walkthrough](docs/examples/governed-failure-diagnosis-demo.md)。
+
+### Tier 2 audit-artifacts decision
+
+在 Windows 且 `git` 可用時執行：
+
+```powershell
+powershell.exe -NoProfile -File .\tests\governance\Test-AuditArtifacts.ps1
+```
+
+測試確認 Initialize 寫入可解析的 `run_initialized` ledger 事件、terminal receipt 釘住 manifest、ledger 與 receipt hash，以及後續 Initialize 在 ledger 被改後拒絕。它不會修改 repository。見 [demo walkthrough](docs/examples/governed-audit-artifacts-demo.md)。
 
 ## Tier 2 治理細節
 

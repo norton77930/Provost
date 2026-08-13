@@ -58,13 +58,15 @@ boundaries between tiers.
   verification, with third-party attribution preserved in
   [`skills/NOTICE.md`](skills/NOTICE.md).
 - Windows tests for the Tier 2 write-gate, ref-guard, manifest-pin,
-  path-custody, completion-gate, and failure-diagnosis decision logic; see the
+  path-custody, completion-gate, failure-diagnosis, and audit-artifacts
+  decision logic; see the
   [governed write-scope demo](docs/examples/governed-write-scope-demo.md),
   [governed ref-guard demo](docs/examples/governed-ref-guard-demo.md),
   [governed manifest-pin demo](docs/examples/governed-manifest-pin-demo.md),
   [governed path-custody demo](docs/examples/governed-path-custody-demo.md),
   [governed completion-gate demo](docs/examples/governed-completion-gate-demo.md),
-  and [governed failure-diagnosis demo](docs/examples/governed-failure-diagnosis-demo.md).
+  [governed failure-diagnosis demo](docs/examples/governed-failure-diagnosis-demo.md),
+  and [governed audit-artifacts demo](docs/examples/governed-audit-artifacts-demo.md).
 
 ### Experimental / reference implementation
 
@@ -214,6 +216,20 @@ The test requires a signature on `Complete FAIL`, checks that equivalent
 signatures share one hash, and requires a new diagnosis after the same failure
 repeats. It does not modify the repository. See the
 [demo walkthrough](docs/examples/governed-failure-diagnosis-demo.md).
+
+### Tier 2 audit-artifacts decision
+
+On Windows, with `git` available, run:
+
+```powershell
+powershell.exe -NoProfile -File .\tests\governance\Test-AuditArtifacts.ps1
+```
+
+The test checks that Initialize writes a parseable `run_initialized` ledger
+event, that a terminal receipt pins manifest, ledger, and receipt hashes, and
+that a later Initialize rejects a ledger that changed after the receipt. It
+does not modify the repository. See the
+[demo walkthrough](docs/examples/governed-audit-artifacts-demo.md).
 
 ## Tier 2 governance details
 

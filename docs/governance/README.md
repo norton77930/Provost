@@ -18,7 +18,7 @@ internally named "Foreman."
 | Completion gate | A PASS completion requires every declared task to be PASS. The schema requires a code-verifier task, and an optional required architecture verifier must depend on every non-review task. A public test rejects `Complete PASS` until every task is PASS, then confirms the lock is removed. | The repository does not include the original launcher that creates fresh agent contexts. Context freshness is therefore a workflow/launcher responsibility, not something this helper alone proves. |
 | Acceptance evidence | Tasks declare acceptance entries (`id`, `command`, `expect`) and may write one verification summary to the ledger. | Evidence is not yet bound and validated separately for every acceptance claim. Full per-claim evidence enforcement remains planned. |
 | Failure diagnosis | Manifest v2 records normalized failure signatures and checks prior terminal receipts; repeated signatures require new diagnosis fields and evidence delta. A public test covers unsigned FAIL, signature persistence, hash normalization, the diagnosis brake, and reused-diagnosis rejection. | This is a helper-level multi-revision check, not an end-to-end governed session. A packaged launcher is not included. |
-| Audit artifacts | Lifecycle actions append JSONL events. Terminal handoff receipts pin manifest, ledger, and workspace snapshots by hash, and later flows verify those hashes. | The ledger is helper-appended, not protected from arbitrary filesystem modification. Hash checks make some tampering detectable; they do not provide an external append-only store. |
+| Audit artifacts | Lifecycle actions append JSONL events. Terminal handoff receipts pin manifest, ledger, and workspace snapshots by hash, and later flows verify those hashes. A public test checks the initialize ledger event, receipt hash pins, and a later Initialize that rejects a tampered ledger. | The ledger is helper-appended, not protected from arbitrary filesystem modification. Hash checks make some tampering detectable; they do not provide an external append-only store. |
 
 ## Reference implementation
 
@@ -118,6 +118,19 @@ The test requires a signature on `Complete FAIL`, checks that equivalent
 signatures normalize to one hash, and requires a new diagnosis after the same
 failure repeats. It requires `git`. See the
 [walkthrough](../examples/governed-failure-diagnosis-demo.md).
+
+## Audit-artifacts demo
+
+A seventh Windows test exercises ledger append and receipt hash pins:
+
+```powershell
+powershell.exe -NoProfile -File .\tests\governance\Test-AuditArtifacts.ps1
+```
+
+The test checks that Initialize writes a `run_initialized` ledger event, that
+a terminal receipt pins manifest and ledger hashes, and that a later
+Initialize rejects a ledger that changed after the receipt. It requires `git`.
+See the [walkthrough](../examples/governed-audit-artifacts-demo.md).
 
 ## Design direction
 

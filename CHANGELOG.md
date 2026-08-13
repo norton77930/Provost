@@ -12,6 +12,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - A Windows helper test for v2 failure diagnosis (unsigned FAIL rejected,
   signature persistence, hash normalization, diagnosis brake, reused
   diagnosis rejected), with a walkthrough and CI coverage. Requires `git`.
+- A Windows helper test for audit artifacts (`run_initialized` ledger event,
+  terminal receipt hash pins, later Initialize rejects a tampered ledger),
+  with a walkthrough and CI coverage. Requires `git`.
 
 ## [0.1.3] - 2026-08-13
 

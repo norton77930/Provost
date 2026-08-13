@@ -10,8 +10,8 @@ This roadmap describes intended work, not promised dates. Items move to
 - Methodology skills for TDD, diagnosis, review, and completion verification.
 - Windows/PowerShell Tier 2 reference helper and hook implementations.
 - Hook-level write-scope and ref-guard enforcement demos, helper-level
-  v1 manifest-pin, v2 path-custody, completion-gate, and failure-diagnosis
-  tests, and basic Windows CI checks.
+  v1 manifest-pin, v2 path-custody, completion-gate, failure-diagnosis,
+  and audit-artifacts tests, and basic Windows CI checks.
 - Governance capability matrix that separates implemented behavior, design
   intent, and limitations.
 
