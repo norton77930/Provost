@@ -1,18 +1,27 @@
 # Provost
 
-**Match oversight to blast radius.**（依風險調節監督強度）— coding-agent 工作的分級治理框架。
+**Match oversight to blast radius.**（依風險調節監督強度）— AI coding agents 的分級治理框架。
 
 *[English →](README.md)*
 
 Provost 用來判斷一次 AI coding 任務需要多少監督，並讓高風險工作更可問責。修 typo 不需要和 auth 改動、migration 或 public API 變更一樣的流程；Provost 提供三個 tier，讓治理成本跟著可能造成的損害上升。
 
-治理模型是 model-agnostic；目前的 reference host 與 integrations 以 **Claude Code** 為目標，交付的 role files 也使用 Claude model identifiers。更廣的 agent-host 相容性是規劃方向，不是現在已可用的能力。
+治理模型本身是 host-agnostic；目前的 reference host 是 **Claude Code**，交付的 role files 也使用 Claude model identifiers，對其他 agent host 的支援是規劃方向，不是現在已可用的能力。
+
+Tier 2 是寫成 code 的 reference implementation，不是一份說明：其中包含 lifecycle state、manifest hashing、write-gate decisions、workspace snapshots、custody records、failure signatures 與 audit ledger。這是它和「一包 prompts」的差別。
+
+## 現在可用
+
+- [`.claude/agents/`](.claude/agents/) 下的六個 Claude Code role definitions。
+- Tier 1 [`orchestration.md`](orchestration.md)：plan-first、單一 active writer 與 evidence-based completion discipline。
+- [`skills/`](skills/) 中的 TDD、診斷、review 與完成前驗證方法；第三方歸屬保留於 [`skills/NOTICE.md`](skills/NOTICE.md)。
+- Windows 上涵蓋全部七項 Tier 2 治理決策的 decision test — write-gate、ref-guard、manifest-pin、path-custody、completion-gate、failure-diagnosis 與 audit-artifacts，每項都有 demo walkthrough：[write-scope](docs/examples/governed-write-scope-demo.md)、[ref-guard](docs/examples/governed-ref-guard-demo.md)、[manifest-pin](docs/examples/governed-manifest-pin-demo.md)、[path-custody](docs/examples/governed-path-custody-demo.md)、[completion-gate](docs/examples/governed-completion-gate-demo.md)、[failure-diagnosis](docs/examples/governed-failure-diagnosis-demo.md) 與 [audit-artifacts](docs/examples/governed-audit-artifacts-demo.md)。
 
 ## 為什麼需要 Provost
 
 Prompt 指示很有用，但 agent 可能誤解或忽略。對高 blast-radius 工作，Provost 探索更強的控制：把核准計畫釘在 manifest、依允許清單檢查檔案寫入、在交接時保留 path custody，並讓完成狀態經過宣告好的 verifier tasks。
 
-因此 Provost 不只是一組 prompts。Tier 2 reference code 包含 lifecycle state、manifest hashing、write-gate decisions、workspace snapshots、custody records、failure signatures 與 audit ledger。由於 repository 尚未交付原始 launcher 或 turnkey installer，目前應把它視為 reference implementation。
+由於 repository 尚未交付原始 launcher 或 turnkey installer，目前應把它視為 reference implementation。
 
 ## 三級治理
 
@@ -35,12 +44,7 @@ flowchart TD
 
 ## 專案狀態
 
-### 現在可用
-
-- [`.claude/agents/`](.claude/agents/) 下的六個 Claude Code role definitions。
-- Tier 1 [`orchestration.md`](orchestration.md)：plan-first、單一 active writer 與 evidence-based completion discipline。
-- [`skills/`](skills/) 中的 TDD、診斷、review 與完成前驗證方法；第三方歸屬保留於 [`skills/NOTICE.md`](skills/NOTICE.md)。
-- Windows 上的 Tier 2 write-gate、ref-guard、manifest-pin、path-custody、completion-gate、failure-diagnosis 與 audit-artifacts decision test；見 [governed write-scope demo](docs/examples/governed-write-scope-demo.md)、[governed ref-guard demo](docs/examples/governed-ref-guard-demo.md)、[governed manifest-pin demo](docs/examples/governed-manifest-pin-demo.md)、[governed path-custody demo](docs/examples/governed-path-custody-demo.md)、[governed completion-gate demo](docs/examples/governed-completion-gate-demo.md)、[governed failure-diagnosis demo](docs/examples/governed-failure-diagnosis-demo.md) 與 [governed audit-artifacts demo](docs/examples/governed-audit-artifacts-demo.md)。
+現在已經可用的部分列在上方「現在可用」一節；Tier 2 其餘部分屬於 reference implementation，已知落差集中在下方「Roadmap／已知限制」。
 
 ### Experimental／reference implementation
 
@@ -48,15 +52,6 @@ flowchart TD
 - Hash checks 能偵測已核准 manifest 被變更；變更 intent 必須建立新 revision，但作業系統並沒有把檔案設成不可修改。
 - 當 hook 已安裝且 governed environment 啟用時，`PreToolUse` write gate 會對不在 running task literal `write_set` 內的 `Edit`、`Write` 或 `NotebookEdit` target 回傳 machine-readable deny。
 - Helper 實作 workspace snapshots、path-custody hashes、task state、failure-signature handling、verifier-task completion gates、由 helper append 的 JSONL events，以及 hashed terminal handoff receipts。
-
-### 尚未交付
-
-- 原始 launcher 與可直接安裝的 Claude Code hook configuration。
-- 乾淨的 end-to-end governed-session quickstart 或 packaged runtime。
-- 完整逐 claim evidence binding。目前 acceptance entries 會被驗證，task 也可以記錄整體 verification summary，但 helper 不要求每個 acceptance claim 都有獨立 evidence record。
-- Linux/macOS support，以及其他 coding-agent environment adapters。
-
-精確能力邊界與下一步見 [governance capability matrix](docs/governance/README.md) 與 [`ROADMAP.md`](ROADMAP.md)。
 
 ## 如何試用
 
@@ -191,6 +186,15 @@ Provost 建在 Claude Code 的 subagents、hooks 與 skills 上。Collaborator p
 - [claude-agent-team](https://github.com/ek33450505/claude-agent-team) 聚焦 local session observability。
 
 Provost 聚焦 graduated governance：依 blast radius 提高監督強度，並在最高 tier 探索可強制的 scope、custody、verification 與 auditability。
+
+## Roadmap／已知限制
+
+- 原始 launcher 與可直接安裝的 Claude Code hook configuration。
+- 乾淨的 end-to-end governed-session quickstart 或 packaged runtime。
+- 完整逐 claim evidence binding。目前 acceptance entries 會被驗證，task 也可以記錄整體 verification summary，但 helper 不要求每個 acceptance claim 都有獨立 evidence record。
+- Linux/macOS support，以及其他 coding-agent environment adapters。
+
+精確能力邊界與下一步見 [governance capability matrix](docs/governance/README.md) 與 [`ROADMAP.md`](ROADMAP.md)。
 
 ## 貢獻
 
