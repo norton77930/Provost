@@ -1,6 +1,6 @@
 # Provost
 
-**Match oversight to blast radius.** — graduated governance for coding-agent work.
+**Match oversight to blast radius.** — graduated governance for AI coding agents.
 
 *[中文說明 →](README.zh-TW.md)*
 
@@ -9,10 +9,33 @@ task needs and making high-risk work more accountable. A typo does not need the
 same process as an authentication change, a migration, or a public API change.
 Provost provides three tiers so the process can rise with the potential damage.
 
-The governance model is model-agnostic. The current reference host and
-integrations target **Claude Code**, and the shipped role files use Claude model
-identifiers. Broader agent-host compatibility is planned, not claimed as
-available today.
+The governance model itself is host-agnostic; the current reference host is
+**Claude Code** and the shipped role files use Claude model identifiers, with
+support for other agent hosts planned rather than available today.
+
+Tier 2 is a reference implementation in code, not prose: it contains lifecycle
+state, manifest hashing, write-gate decisions, workspace snapshots, custody
+records, failure signatures, and an audit ledger. That is what separates Provost
+from a prompt collection.
+
+## What works today
+
+- Six Claude Code role definitions under [`.claude/agents/`](.claude/agents/).
+- The Tier 1 [orchestration policy](orchestration.md), including plan-first work,
+  one active writer, and evidence-based completion discipline.
+- Reusable methodology [skills](skills/) for TDD, diagnosis, review, and
+  verification, with third-party attribution preserved in
+  [`skills/NOTICE.md`](skills/NOTICE.md).
+- Windows tests for all seven Tier 2 governance decisions — write-gate,
+  ref-guard, manifest-pin, path-custody, completion-gate, failure-diagnosis, and
+  audit-artifacts — covering their decision logic, each with a demo walkthrough:
+  [write-scope](docs/examples/governed-write-scope-demo.md),
+  [ref-guard](docs/examples/governed-ref-guard-demo.md),
+  [manifest-pin](docs/examples/governed-manifest-pin-demo.md),
+  [path-custody](docs/examples/governed-path-custody-demo.md),
+  [completion-gate](docs/examples/governed-completion-gate-demo.md),
+  [failure-diagnosis](docs/examples/governed-failure-diagnosis-demo.md),
+  and [audit-artifacts](docs/examples/governed-audit-artifacts-demo.md).
 
 ## Why this exists
 
@@ -21,11 +44,9 @@ For high-blast-radius work, Provost explores stronger controls: a plan is pinned
 to a manifest, file writes are checked against an approved set, handoffs retain
 path custody, and completion passes through declared verifier tasks.
 
-That makes Provost more than a prompt collection. Its Tier 2 reference code
-contains lifecycle state, manifest hashing, write-gate decisions, workspace
-snapshots, custody records, failure signatures, and an audit ledger. The current
-implementation is deliberately described as a reference implementation because
-the repository does not yet ship its original launcher or a turnkey installer.
+The current implementation is deliberately described as a reference
+implementation because the repository does not yet ship its original launcher or
+a turnkey installer.
 
 ## The dial
 
@@ -49,24 +70,10 @@ boundaries between tiers.
 
 ## Project status
 
-### Available now
-
-- Six Claude Code role definitions under [`.claude/agents/`](.claude/agents/).
-- The Tier 1 [orchestration policy](orchestration.md), including plan-first work,
-  one active writer, and evidence-based completion discipline.
-- Reusable methodology [skills](skills/) for TDD, diagnosis, review, and
-  verification, with third-party attribution preserved in
-  [`skills/NOTICE.md`](skills/NOTICE.md).
-- Windows tests for the Tier 2 write-gate, ref-guard, manifest-pin,
-  path-custody, completion-gate, failure-diagnosis, and audit-artifacts
-  decision logic; see the
-  [governed write-scope demo](docs/examples/governed-write-scope-demo.md),
-  [governed ref-guard demo](docs/examples/governed-ref-guard-demo.md),
-  [governed manifest-pin demo](docs/examples/governed-manifest-pin-demo.md),
-  [governed path-custody demo](docs/examples/governed-path-custody-demo.md),
-  [governed completion-gate demo](docs/examples/governed-completion-gate-demo.md),
-  [governed failure-diagnosis demo](docs/examples/governed-failure-diagnosis-demo.md),
-  and [governed audit-artifacts demo](docs/examples/governed-audit-artifacts-demo.md).
+What already works is listed under [What works today](#what-works-today) above.
+The rest of the Tier 2 surface is a reference implementation, and the known gaps
+are collected under [Roadmap / Known limitations](#roadmap--known-limitations)
+below.
 
 ### Experimental / reference implementation
 
@@ -81,18 +88,6 @@ boundaries between tiers.
 - The helper implements workspace snapshots, path-custody hashes, task state,
   failure-signature handling, verifier-task completion gates, helper-appended
   JSONL events, and hashed terminal handoff receipts.
-
-### Not yet shipped
-
-- The original launcher and ready-to-install Claude Code hook configuration.
-- A clean end-to-end governed-session quickstart or packaged runtime.
-- Complete per-claim evidence binding. Acceptance entries are validated, and a
-  task may record a verification summary, but the helper does not yet require a
-  separate evidence record for every acceptance claim.
-- Linux/macOS support and adapters for additional coding-agent environments.
-
-See the [governance capability matrix](docs/governance/README.md) and
-[`ROADMAP.md`](ROADMAP.md) for the exact implementation boundary and next steps.
 
 ## Try it
 
@@ -275,6 +270,18 @@ collaborator pattern is well explored elsewhere:
 Provost's focus is graduated governance: increasing oversight with blast radius
 and exploring enforceable scope, custody, verification, and auditability for the
 highest tier.
+
+## Roadmap / Known limitations
+
+- The original launcher and ready-to-install Claude Code hook configuration.
+- A clean end-to-end governed-session quickstart or packaged runtime.
+- Complete per-claim evidence binding. Acceptance entries are validated, and a
+  task may record a verification summary, but the helper does not yet require a
+  separate evidence record for every acceptance claim.
+- Linux/macOS support and adapters for additional coding-agent environments.
+
+See the [governance capability matrix](docs/governance/README.md) and
+[`ROADMAP.md`](ROADMAP.md) for the exact implementation boundary and next steps.
 
 ## Contributing
 
