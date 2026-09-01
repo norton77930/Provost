@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $roots = @(
     (Join-Path $repositoryRoot 'docs\governance\reference'),
+    (Join-Path $repositoryRoot 'skills'),
     (Join-Path $repositoryRoot 'tests')
 )
 $scripts = @($roots | ForEach-Object { Get-ChildItem -LiteralPath $_ -Recurse -File -Filter '*.ps1' })
