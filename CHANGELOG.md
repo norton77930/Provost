@@ -7,6 +7,22 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- A role-definition check (`tests/roles/Test-RoleDefinitions.ps1`) that validates
+  the shipped `.claude/agents` frontmatter and fails when the role table in
+  `README.md` or `README.zh-TW.md` drifts from it, with CI coverage.
+- `SECURITY.md` with a private reporting channel, an explicit scope, and a
+  statement of what Tier 2 does not claim to defend against.
+- A Dependabot configuration for GitHub Actions updates.
+
+### Changed
+
+- The PowerShell syntax check now also covers `skills/`, which had left
+  `hitl-loop.template.ps1` unchecked.
+- CI pins `actions/checkout` to a commit SHA, limits push runs to `main`, and
+  cancels superseded runs.
+
 ## [0.1.4] - 2026-08-13
 
 Failure-diagnosis and audit-artifacts coverage since 0.1.3.

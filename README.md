@@ -290,6 +290,9 @@ and cross-platform work are welcome. Start with [`CONTRIBUTING.md`](CONTRIBUTING
 and keep pull requests narrowly scoped. Changes must not silently weaken a stated
 governance guarantee. Notable changes are listed in [`CHANGELOG.md`](CHANGELOG.md).
 
+Report a suspected vulnerability through the private channel in
+[`SECURITY.md`](SECURITY.md) rather than a public issue.
+
 ## License
 
 MIT — see [`LICENSE`](LICENSE). Vendored skills retain their original MIT

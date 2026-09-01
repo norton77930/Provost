@@ -11,10 +11,9 @@ PowerShell or Claude Code version where relevant, the smallest reproduction, and
 the expected and actual result. Redact credentials, private paths, and private
 repository content.
 
-Security-sensitive reports should not include exploit details or secrets in a
-public issue. Contact the maintainer through an appropriate private GitHub
-channel before disclosure; the project does not currently publish a dedicated
-security mailbox.
+Do not report a suspected vulnerability in a public issue. Use the private
+channel described in [`SECURITY.md`](SECURITY.md), which also records what is in
+scope and what Provost does not claim to defend against.
 
 ## Propose a governance feature
 
@@ -32,6 +31,9 @@ request description.
   `README.zh-TW.md`, and the governance capability matrix consistent.
 - If you add or remove a methodology skill directory, update the install
   command lists in both `README.md` and `README.zh-TW.md`.
+- If you change a role model in `.claude/agents/`, update the role table in both
+  `README.md` and `README.zh-TW.md`. `Test-RoleDefinitions.ps1` fails on drift
+  between the shipped frontmatter and either table.
 - Vendored skills stay pinned to the snapshot recorded in
   [`skills/NOTICE.md`](skills/NOTICE.md). Do not auto-follow upstream. Adopt a
   later change only when it is a safety or methodology fix that does not change
@@ -49,6 +51,7 @@ From the repository root on Windows:
 
 ```powershell
 powershell.exe -NoProfile -File .\tests\governance\Test-PowerShellSyntax.ps1
+powershell.exe -NoProfile -File .\tests\roles\Test-RoleDefinitions.ps1
 powershell.exe -NoProfile -File .\tests\governance\Test-WriteScope.ps1
 powershell.exe -NoProfile -File .\tests\governance\Test-RefGuard.ps1
 powershell.exe -NoProfile -File .\tests\governance\Test-ManifestPin.ps1

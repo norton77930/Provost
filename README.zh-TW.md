@@ -200,6 +200,8 @@ Provost 聚焦 graduated governance：依 blast radius 提高監督強度，並�
 
 歡迎 bug reports、governance proposals、文件、測試、packaging 與 cross-platform work。請先讀 [`CONTRIBUTING.md`](CONTRIBUTING.md)，保持 PR scope 精簡，且不得無聲削弱已宣告的治理保證。顯著變更見 [`CHANGELOG.md`](CHANGELOG.md)。
 
+疑似安全漏洞請透過 [`SECURITY.md`](SECURITY.md) 的私密管道回報，不要開公開 issue。
+
 ## 授權
 
 MIT — 見 [`LICENSE`](LICENSE)。Vendored skills 的原始 MIT 歸屬保留於 [`skills/NOTICE.md`](skills/NOTICE.md)。
