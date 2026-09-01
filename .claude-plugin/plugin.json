@@ -1,0 +1,20 @@
+{
+  "name": "provost",
+  "description": "Graduated governance for AI coding agents: match oversight to blast radius. Ships the collaborator role pack, the orchestration policy, and methodology skills for TDD, diagnosis, review, and verification.",
+  "version": "0.2.0",
+  "author": {
+    "name": "Norton",
+    "email": "75159321+norton77930@users.noreply.github.com"
+  },
+  "homepage": "https://github.com/norton77930/Provost",
+  "repository": "https://github.com/norton77930/Provost",
+  "license": "MIT",
+  "keywords": [
+    "governance",
+    "code-review",
+    "subagents",
+    "tdd",
+    "verification",
+    "risk"
+  ]
+}

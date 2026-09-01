@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# SessionStart hook for the Provost plugin.
+#
+# Injects the Tier 1 orchestration policy into the session so that installing
+# the plugin is enough. Without this the policy has to be merged into the host
+# project's CLAUDE.md by hand, which was the largest install-time step.
+#
+# Tier 2 hooks are deliberately not registered here: they are opt-in and
+# require a governed workspace and the PROVOST_* environment.
+
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+plugin_root="$(cd "${script_dir}/.." && pwd)"
+policy_file="${plugin_root}/orchestration.md"
+
+if [ ! -r "${policy_file}" ]; then
+    exit 0
+fi
+
+# The replacement text is held in a variable because a literal backslash in the
+# replacement half of ${var//pat/rep} is unescaped twice inside double quotes,
+# which silently turns every newline into a bare "n".
+escape_for_json() {
+    local s="$1"
+    local bs='\'
+    s="${s//${bs}/${bs}${bs}}"
+    s="${s//\"/${bs}\"}"
+    s="${s//$'\r'/${bs}r}"
+    s="${s//$'\n'/${bs}n}"
+    s="${s//$'\t'/${bs}t}"
+    printf '%s' "$s"
+}
+
+policy_escaped="$(escape_for_json "$(cat "${policy_file}")")"
+session_context="Provost Tier 1 orchestration policy, supplied by the provost plugin. Apply it to work in this session:\n\n${policy_escaped}"
+
+printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "SessionStart",\n    "additionalContext": "%s"\n  }\n}\n' "${session_context}"
+
+exit 0

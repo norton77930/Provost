@@ -32,7 +32,7 @@ expected, stop at a reviewable boundary and re-plan it under Tier 2 controls.
 ## Tier 1: collaborator workflow
 
 Tier 1 ships as six Claude Code role files in
-[`../.claude/agents/`](../.claude/agents/) plus the policy in
+[`../agents/`](../agents/) plus the policy in
 [`../orchestration.md`](../orchestration.md):
 
 | Role | Current model ID | Boundary |

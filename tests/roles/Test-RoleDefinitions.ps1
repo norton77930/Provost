@@ -5,7 +5,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-$agentDirectory = Join-Path $repositoryRoot '.claude\agents'
+$agentDirectory = Join-Path $repositoryRoot 'agents'
 $requiredKeys = @('name', 'description', 'tools', 'model')
 $modelAliases = @('haiku', 'sonnet', 'opus', 'fable', 'inherit', 'default')
 $readmeNames = @('README.md', 'README.zh-TW.md')
@@ -15,12 +15,12 @@ $declaredModels = @{}
 
 $agentFiles = @(Get-ChildItem -LiteralPath $agentDirectory -File -Filter '*.md' | Sort-Object Name)
 if ($agentFiles.Count -eq 0) {
-    Write-Error 'No role definitions found under .claude/agents.'
+    Write-Error 'No role definitions found under agents/.'
     exit 1
 }
 
 foreach ($agentFile in $agentFiles) {
-    $relativeFile = '.claude/agents/' + $agentFile.Name
+    $relativeFile = 'agents/' + $agentFile.Name
     $lines = @([System.IO.File]::ReadAllLines($agentFile.FullName))
 
     if ($lines.Count -eq 0 -or $lines[0].Trim() -ne '---') {
@@ -108,7 +108,7 @@ foreach ($readmeName in $readmeNames) {
             $checkedCells++
             if ($declaredModels[$roles[$index]] -ne $models[$index]) {
                 $failures += ($readmeName + ": role '" + $roles[$index] + "' is documented as '" +
-                    $models[$index] + "' but .claude/agents declares '" + $declaredModels[$roles[$index]] + "'")
+                    $models[$index] + "' but agents/ declares '" + $declaredModels[$roles[$index]] + "'")
             }
         }
     }

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "provost",
+  "description": "Graduated governance for AI coding agents.",
+  "owner": {
+    "name": "Norton",
+    "email": "75159321+norton77930@users.noreply.github.com"
+  },
+  "plugins": [
+    {
+      "name": "provost",
+      "description": "Graduated governance for AI coding agents: match oversight to blast radius. Ships the collaborator role pack, the orchestration policy, and methodology skills for TDD, diagnosis, review, and verification.",
+      "author": {
+        "name": "Norton"
+      },
+      "category": "workflow",
+      "source": "./",
+      "homepage": "https://github.com/norton77930/Provost"
+    }
+  ]
+}

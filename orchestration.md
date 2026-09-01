@@ -2,13 +2,14 @@
 
 This is the orchestration policy for the **collaborator tier** of Provost — a
 coordinated crew of read-only and writer subagents running on vanilla Claude
-Code. To adopt it, drop the role files in [`.claude/agents/`](.claude/agents/)
-into your project (or `~/.claude/agents/`) and merge this policy into your
-project's `CLAUDE.md` (or `~/.claude/CLAUDE.md`) so the main agent follows it.
+Code. Installing the Provost plugin supplies this policy to each session and
+ships the roles in [`agents/`](agents/); see the [install steps](README.md#install).
+Copying the files in by hand still works, in which case merge this policy into
+your project's `CLAUDE.md` (or `~/.claude/CLAUDE.md`) yourself.
 
 ## Roles
 
-The collaborator roles live in `.claude/agents/`:
+The collaborator roles live in `agents/`:
 
 - `explorer` (read-only) — locate files, trace behavior, gather evidence.
 - `implementer` / `implementer-deep` (writers) — bounded TDD implementation.
