@@ -31,7 +31,7 @@ request description.
   `README.zh-TW.md`, and the governance capability matrix consistent.
 - If you add or remove a methodology skill directory, update the install
   command lists in both `README.md` and `README.zh-TW.md`.
-- If you change a role model in `.claude/agents/`, update the role table in both
+- If you change a role model in `agents/`, update the role table in both
   `README.md` and `README.zh-TW.md`. `Test-RoleDefinitions.ps1` fails on drift
   between the shipped frontmatter and either table.
 - Vendored skills stay pinned to the snapshot recorded in
@@ -44,6 +44,23 @@ request description.
 - Cross-platform work should preserve fail-closed behavior and literal path
   semantics unless a proposal explicitly changes the contract.
 - Do not remove third-party attribution from `skills/NOTICE.md`.
+
+## Work on Provost with Provost
+
+This repository is itself the plugin, so load the working copy rather than an
+installed release:
+
+```bash
+claude --plugin-dir .
+```
+
+That session gets the six roles, the six skills, and the orchestration policy
+from the files you are editing. Confirm what a change ships with:
+
+```bash
+claude plugin validate .
+claude --plugin-dir . plugin details provost
+```
 
 ## Run the checks
 

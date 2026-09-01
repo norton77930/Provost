@@ -7,21 +7,31 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
-### Added
-
-- A role-definition check (`tests/roles/Test-RoleDefinitions.ps1`) that validates
-  the shipped `.claude/agents` frontmatter and fails when the role table in
-  `README.md` or `README.zh-TW.md` drifts from it, with CI coverage.
-- `SECURITY.md` with a private reporting channel, an explicit scope, and a
-  statement of what Tier 2 does not claim to defend against.
-- A Dependabot configuration for GitHub Actions updates.
-
 ### Changed
 
+- **Breaking:** the collaborator role definitions moved from `.claude/agents/`
+  to `agents/` so that the repository is installable as a Claude Code plugin.
+  A copy step that referenced the old path must be updated, or replaced by
+  installing the plugin.
 - The PowerShell syntax check now also covers `skills/`, which had left
   `hitl-loop.template.ps1` unchecked.
 - CI pins `actions/checkout` to a commit SHA, limits push runs to `main`, and
   cancels superseded runs.
+
+### Added
+
+- A Claude Code plugin manifest (`.claude-plugin/plugin.json`) and a marketplace
+  entry (`.claude-plugin/marketplace.json`), so the collaborator tier can be
+  installed rather than copied directory by directory.
+- A `SessionStart` hook that supplies `orchestration.md` to the session, which
+  removes the manual merge into the host project's `CLAUDE.md`. Tier 2 hooks are
+  deliberately not registered by the plugin; they remain opt-in.
+- A role-definition check (`tests/roles/Test-RoleDefinitions.ps1`) that validates
+  the shipped `agents/` frontmatter and fails when the role table in
+  `README.md` or `README.zh-TW.md` drifts from it, with CI coverage.
+- `SECURITY.md` with a private reporting channel, an explicit scope, and a
+  statement of what Tier 2 does not claim to defend against.
+- A Dependabot configuration for GitHub Actions updates.
 
 ## [0.1.4] - 2026-08-13
 

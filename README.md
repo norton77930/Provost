@@ -20,22 +20,17 @@ from a prompt collection.
 
 ## What works today
 
-- Six Claude Code role definitions under [`.claude/agents/`](.claude/agents/).
+- Six Claude Code role definitions under [`agents/`](agents/), installable as a
+  plugin — see [Install](#install).
 - The Tier 1 [orchestration policy](orchestration.md), including plan-first work,
-  one active writer, and evidence-based completion discipline.
+  one active writer, and evidence-based completion discipline, supplied to each
+  session by the plugin rather than merged in by hand.
 - Reusable methodology [skills](skills/) for TDD, diagnosis, review, and
   verification, with third-party attribution preserved in
   [`skills/NOTICE.md`](skills/NOTICE.md).
-- Windows tests for all seven Tier 2 governance decisions — write-gate,
-  ref-guard, manifest-pin, path-custody, completion-gate, failure-diagnosis, and
-  audit-artifacts — covering their decision logic, each with a demo walkthrough:
-  [write-scope](docs/examples/governed-write-scope-demo.md),
-  [ref-guard](docs/examples/governed-ref-guard-demo.md),
-  [manifest-pin](docs/examples/governed-manifest-pin-demo.md),
-  [path-custody](docs/examples/governed-path-custody-demo.md),
-  [completion-gate](docs/examples/governed-completion-gate-demo.md),
-  [failure-diagnosis](docs/examples/governed-failure-diagnosis-demo.md),
-  and [audit-artifacts](docs/examples/governed-audit-artifacts-demo.md).
+- Windows checks covering the decision logic of all seven Tier 2 governance
+  decisions, each with a demo walkthrough — see
+  [Tier 2 reference checks](#tier-2-reference-checks-windows).
 
 ## Why this exists
 
@@ -89,26 +84,35 @@ below.
   failure-signature handling, verifier-task completion gates, helper-appended
   JSONL events, and hashed terminal handoff receipts.
 
-## Try it
+## Install
 
-### Tier 1 collaborator workflow
+Provost ships as a Claude Code plugin:
 
-The collaborator workflow uses vanilla Claude Code and needs no proxy or extra
-service:
+```bash
+claude plugin marketplace add norton77930/Provost
+claude plugin install provost@provost
+```
 
-1. Copy the role files into your project (or your user-level `.claude` directory):
+The same two steps are available in a session as `/plugin marketplace add` and
+`/plugin install`.
 
-   ```bash
-   cp -r .claude/agents/ your-project/.claude/agents/
-   ```
+That installs the six collaborator roles, the six methodology skills, and the
+orchestration policy. The policy reaches each session through a `SessionStart`
+hook, so there is nothing to merge into a `CLAUDE.md` by hand.
 
-2. Merge [`orchestration.md`](orchestration.md) into the project's `CLAUDE.md`.
-3. Start with a plan and a finite Completion Contract. Delegate read-only
-   exploration and review as needed, while keeping exactly one active writer.
+The collaborator tier is plain Claude Code configuration. It runs wherever
+Claude Code runs and needs no proxy, gateway, or extra service. The Tier 2
+reference runtime described further down is Windows-only today.
 
-The shipped role mapping is:
+To run against a local checkout instead of a release:
 
-| Role | Current model ID | Responsibility |
+```bash
+claude --plugin-dir .
+```
+
+### What the plugin ships
+
+| Role | Model | Responsibility |
 |---|---|---|
 | `explorer` | haiku | Read-only evidence gathering |
 | `implementer` / `implementer-deep` | sonnet / opus | Bounded TDD implementation |
@@ -119,112 +123,42 @@ These are configuration choices, not portable model abstractions. You can edit
 the role mapping for another model available to your Claude Code environment;
 Provost does not ship or certify a third-party gateway.
 
-### Methodology skills
+Alongside the roles are six methodology skills — TDD, bug diagnosis, design
+grilling, two-axis review, and completion verification. Attribution for the
+vendored skills is in [`skills/NOTICE.md`](skills/NOTICE.md).
 
-Claude Code does not load the repository-root [`skills/`](skills/) directory
-automatically. Copy the skill folders — not [`NOTICE.md`](skills/NOTICE.md) —
-into the project's or your user-level `.claude/skills/` directory:
+## Try it
 
-```bash
-cp -r skills/tdd skills/diagnosing-bugs skills/grilling skills/grill-me \
-  skills/two-axis-review skills/verification-before-completion \
-  your-project/.claude/skills/
-```
+Start with a plan and a finite Completion Contract. Delegate read-only
+exploration and review as needed, and keep exactly one active writer. The
+[orchestration policy](orchestration.md) is what the crew follows, and the
+[concepts guide](docs/concepts.md) explains when to move between tiers.
 
-Attribution for the vendored skills is in [`skills/NOTICE.md`](skills/NOTICE.md).
+## Tier 2 reference checks (Windows)
 
-### Tier 2 write-scope decision
+Tier 2 is a reference implementation and its launcher is not part of this
+repository yet, so the way to see each governance decision is to run its check.
+Every check builds an isolated workspace, drives the shipped hook or helper
+through its real interface, and leaves the repository unmodified.
 
-On Windows, run:
+From the repository root on Windows:
 
 ```powershell
 powershell.exe -NoProfile -File .\tests\governance\Test-WriteScope.ps1
 ```
 
-The test constructs an isolated manifest and active-run lock, invokes the shipped
-hook through its stdin protocol, confirms an approved path is allowed, and
-confirms out-of-scope and invalid-state writes are denied. It does not modify the
-repository. Full prerequisites, expected output, and limitations are documented
-in the [demo walkthrough](docs/examples/governed-write-scope-demo.md).
+| Decision | Check | Needs `git` | Walkthrough |
+|---|---|---|---|
+| Write scope | `Test-WriteScope.ps1` | no | [demo](docs/examples/governed-write-scope-demo.md) |
+| Ref guard | `Test-RefGuard.ps1` | no | [demo](docs/examples/governed-ref-guard-demo.md) |
+| Manifest pin | `Test-ManifestPin.ps1` | yes | [demo](docs/examples/governed-manifest-pin-demo.md) |
+| Path custody | `Test-PathCustody.ps1` | yes | [demo](docs/examples/governed-path-custody-demo.md) |
+| Completion gate | `Test-CompletionGate.ps1` | yes | [demo](docs/examples/governed-completion-gate-demo.md) |
+| Failure diagnosis | `Test-FailureDiagnosis.ps1` | yes | [demo](docs/examples/governed-failure-diagnosis-demo.md) |
+| Audit artifacts | `Test-AuditArtifacts.ps1` | yes | [demo](docs/examples/governed-audit-artifacts-demo.md) |
 
-### Tier 2 ref-guard decision
-
-On Windows, run:
-
-```powershell
-powershell.exe -NoProfile -File .\tests\governance\Test-RefGuard.ps1
-```
-
-The test treats a temporary directory as a declared external read root, confirms
-that write-like commands are denied, a narrow read is allowed, and an
-unclassified command asks for review. It does not modify the repository. See the
-[demo walkthrough](docs/examples/governed-ref-guard-demo.md).
-
-### Tier 2 manifest-pin decision
-
-On Windows, with `git` available, run:
-
-```powershell
-powershell.exe -NoProfile -File .\tests\governance\Test-ManifestPin.ps1
-```
-
-The test initializes a minimal v1 manifest in an isolated Git workspace,
-validates it, and confirms that a tampered Plan or approved manifest is
-rejected. It does not modify the repository. See the
-[demo walkthrough](docs/examples/governed-manifest-pin-demo.md).
-
-### Tier 2 path-custody decision
-
-On Windows, with `git` available, run:
-
-```powershell
-powershell.exe -NoProfile -File .\tests\governance\Test-PathCustody.ps1
-```
-
-The test rejects unordered writers that share a path, records and transfers
-custody when they are dependency-ordered, and escalates if shared content
-drifts before the next writer. It does not modify the
-repository. See the
-[demo walkthrough](docs/examples/governed-path-custody-demo.md).
-
-### Tier 2 completion-gate decision
-
-On Windows, with `git` available, run:
-
-```powershell
-powershell.exe -NoProfile -File .\tests\governance\Test-CompletionGate.ps1
-```
-
-The test rejects `Complete PASS` until every declared task is PASS, then
-confirms the active lock is removed. It does not modify the repository. See the
-[demo walkthrough](docs/examples/governed-completion-gate-demo.md).
-
-### Tier 2 failure-diagnosis decision
-
-On Windows, with `git` available, run:
-
-```powershell
-powershell.exe -NoProfile -File .\tests\governance\Test-FailureDiagnosis.ps1
-```
-
-The test requires a signature on `Complete FAIL`, checks that equivalent
-signatures share one hash, and requires a new diagnosis after the same failure
-repeats. It does not modify the repository. See the
-[demo walkthrough](docs/examples/governed-failure-diagnosis-demo.md).
-
-### Tier 2 audit-artifacts decision
-
-On Windows, with `git` available, run:
-
-```powershell
-powershell.exe -NoProfile -File .\tests\governance\Test-AuditArtifacts.ps1
-```
-
-The test checks that Initialize writes a parseable `run_initialized` ledger
-event, that a terminal receipt pins manifest, ledger, and receipt hashes, and
-that a later Initialize rejects a ledger that changed after the receipt. It
-does not modify the repository. See the
-[demo walkthrough](docs/examples/governed-audit-artifacts-demo.md).
+Each walkthrough records the prerequisites, the expected output, and the
+limitations of what that check proves.
 
 ## Tier 2 governance details
 

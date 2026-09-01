@@ -12,10 +12,10 @@ Tier 2 是寫成 code 的 reference implementation，不是一份說明：其中
 
 ## 現在可用
 
-- [`.claude/agents/`](.claude/agents/) 下的六個 Claude Code role definitions。
-- Tier 1 [`orchestration.md`](orchestration.md)：plan-first、單一 active writer 與 evidence-based completion discipline。
+- [`agents/`](agents/) 下的六個 Claude Code role definitions，可用 plugin 安裝（見下方「安裝」）。
+- Tier 1 [`orchestration.md`](orchestration.md)：plan-first、單一 active writer 與 evidence-based completion discipline，由 plugin 直接送進每個 session，不需手動合併。
 - [`skills/`](skills/) 中的 TDD、診斷、review 與完成前驗證方法；第三方歸屬保留於 [`skills/NOTICE.md`](skills/NOTICE.md)。
-- Windows 上涵蓋全部七項 Tier 2 治理決策的 decision test — write-gate、ref-guard、manifest-pin、path-custody、completion-gate、failure-diagnosis 與 audit-artifacts，每項都有 demo walkthrough：[write-scope](docs/examples/governed-write-scope-demo.md)、[ref-guard](docs/examples/governed-ref-guard-demo.md)、[manifest-pin](docs/examples/governed-manifest-pin-demo.md)、[path-custody](docs/examples/governed-path-custody-demo.md)、[completion-gate](docs/examples/governed-completion-gate-demo.md)、[failure-diagnosis](docs/examples/governed-failure-diagnosis-demo.md) 與 [audit-artifacts](docs/examples/governed-audit-artifacts-demo.md)。
+- Windows 上涵蓋全部七項 Tier 2 治理決策的 decision test，每項都有 demo walkthrough（見下方「Tier 2 reference 檢查」）。
 
 ## 為什麼需要 Provost
 
@@ -53,24 +53,30 @@ flowchart TD
 - 當 hook 已安裝且 governed environment 啟用時，`PreToolUse` write gate 會對不在 running task literal `write_set` 內的 `Edit`、`Write` 或 `NotebookEdit` target 回傳 machine-readable deny。
 - Helper 實作 workspace snapshots、path-custody hashes、task state、failure-signature handling、verifier-task completion gates、由 helper append 的 JSONL events，以及 hashed terminal handoff receipts。
 
-## 如何試用
+## 安裝
 
-### Tier 1 collaborator workflow
+Provost 以 Claude Code plugin 形式交付：
 
-Collaborator workflow 使用原生 Claude Code，不需要 proxy 或額外 service：
+```bash
+claude plugin marketplace add norton77930/Provost
+claude plugin install provost@provost
+```
 
-1. 把角色檔複製到專案或使用者層級的 `.claude` directory：
+在 session 內也可以用 `/plugin marketplace add` 與 `/plugin install`。
 
-   ```bash
-   cp -r .claude/agents/ your-project/.claude/agents/
-   ```
+安裝後會得到六個 collaborator roles、六個 methodology skills 與 orchestration policy。policy 透過 `SessionStart` hook 進入每個 session，不需要手動合併進 `CLAUDE.md`。
 
-2. 把 [`orchestration.md`](orchestration.md) 合併到專案的 `CLAUDE.md`。
-3. 先建立 plan 與有限的 Completion Contract；需要時委派唯讀探索與 review，並維持單一 active writer。
+Collaborator tier 就是單純的 Claude Code 設定：Claude Code 能跑的地方它就能跑，不需要 proxy、gateway 或額外服務。下方的 Tier 2 reference runtime 目前僅支援 Windows。
 
-目前交付的 role mapping：
+若要改用本機工作副本而非發布版：
 
-| Role | 現有 model ID | 職責 |
+```bash
+claude --plugin-dir .
+```
+
+### plugin 交付的內容
+
+| Role | Model | 職責 |
 |---|---|---|
 | `explorer` | haiku | 唯讀 evidence gathering |
 | `implementer` / `implementer-deep` | sonnet / opus | 有界的 TDD implementation |
@@ -79,87 +85,33 @@ Collaborator workflow 使用原生 Claude Code，不需要 proxy 或額外 servi
 
 這些是設定選擇，不是 portable model abstractions。你可以依 Claude Code environment 可用的 model 調整 mapping；Provost 不交付或認證第三方 gateway。
 
-### Methodology skills
+隨附的六個 methodology skills 涵蓋 TDD、bug 診斷、design grilling、two-axis review 與完成前驗證。第三方歸屬見 [`skills/NOTICE.md`](skills/NOTICE.md)。
 
-Claude Code **不會**自動載入 repo 根目錄的 [`skills/`](skills/)。把各 skill 目錄（不要複製 [`NOTICE.md`](skills/NOTICE.md)）拷到專案或使用者層級的 `.claude/skills/`：
+## 如何試用
 
-```bash
-cp -r skills/tdd skills/diagnosing-bugs skills/grilling skills/grill-me \
-  skills/two-axis-review skills/verification-before-completion \
-  your-project/.claude/skills/
-```
+從一份計畫與有限的 Completion Contract 開始。視需要委派唯讀的探索與審查，並保持恰好一位 active writer。crew 遵循的是 [orchestration policy](orchestration.md)，[concepts guide](docs/concepts.md) 說明何時該在 tier 之間移動。
 
-Vendored skills 的歸屬見 [`skills/NOTICE.md`](skills/NOTICE.md)。
+## Tier 2 reference 檢查（Windows）
 
-### Tier 2 write-scope decision
+Tier 2 是 reference implementation，launcher 尚未包含在本 repo，因此觀察各項治理決策的方式是執行它的檢查。每項檢查都會建立隔離的 workspace，透過真實介面驅動所交付的 hook 或 helper，且不修改 repository。
 
-在 Windows 執行：
+在 repo 根目錄、Windows 上：
 
 ```powershell
 powershell.exe -NoProfile -File .\tests\governance\Test-WriteScope.ps1
 ```
 
-測試會建立隔離的 manifest 與 active-run lock，透過 stdin protocol 呼叫 repository 內的 hook，確認核准路徑被允許，並確認 scope 外或無效 state 的寫入被拒絕。它不會修改 repository。Prerequisites、預期輸出與限制見 [demo walkthrough](docs/examples/governed-write-scope-demo.md)。
+| 決策 | 檢查 | 需要 `git` | 說明 |
+|---|---|---|---|
+| Write scope | `Test-WriteScope.ps1` | 否 | [demo](docs/examples/governed-write-scope-demo.md) |
+| Ref guard | `Test-RefGuard.ps1` | 否 | [demo](docs/examples/governed-ref-guard-demo.md) |
+| Manifest pin | `Test-ManifestPin.ps1` | 是 | [demo](docs/examples/governed-manifest-pin-demo.md) |
+| Path custody | `Test-PathCustody.ps1` | 是 | [demo](docs/examples/governed-path-custody-demo.md) |
+| Completion gate | `Test-CompletionGate.ps1` | 是 | [demo](docs/examples/governed-completion-gate-demo.md) |
+| Failure diagnosis | `Test-FailureDiagnosis.ps1` | 是 | [demo](docs/examples/governed-failure-diagnosis-demo.md) |
+| Audit artifacts | `Test-AuditArtifacts.ps1` | 是 | [demo](docs/examples/governed-audit-artifacts-demo.md) |
 
-### Tier 2 ref-guard decision
-
-在 Windows 執行：
-
-```powershell
-powershell.exe -NoProfile -File .\tests\governance\Test-RefGuard.ps1
-```
-
-測試會把暫存目錄當成宣告的外部 read root，確認寫入類命令被拒絕、窄型讀取被允許、無法分類的命令改為 ask。它不會修改 repository。見 [demo walkthrough](docs/examples/governed-ref-guard-demo.md)。
-
-### Tier 2 manifest-pin decision
-
-在 Windows 且 `git` 可用時執行：
-
-```powershell
-powershell.exe -NoProfile -File .\tests\governance\Test-ManifestPin.ps1
-```
-
-測試會在隔離的 Git workspace 初始化最小 v1 manifest、通過 Validate，並確認被改過的 Plan 或已核准 manifest 會被拒絕。它不會修改 repository。見 [demo walkthrough](docs/examples/governed-manifest-pin-demo.md)。
-
-### Tier 2 path-custody decision
-
-在 Windows 且 `git` 可用時執行：
-
-```powershell
-powershell.exe -NoProfile -File .\tests\governance\Test-PathCustody.ps1
-```
-
-測試會拒絕共用 path 但沒有依賴順序的兩個 writer，在有依賴時記錄並交接 custody，並在下一手開始前檔案被改時 escalation。它不會修改 repository。見 [demo walkthrough](docs/examples/governed-path-custody-demo.md)。
-
-### Tier 2 completion-gate decision
-
-在 Windows 且 `git` 可用時執行：
-
-```powershell
-powershell.exe -NoProfile -File .\tests\governance\Test-CompletionGate.ps1
-```
-
-測試會在每個宣告 task 都 PASS 之前拒絕 `Complete PASS`，通過後確認 active lock 被刪除。它不會修改 repository。見 [demo walkthrough](docs/examples/governed-completion-gate-demo.md)。
-
-### Tier 2 failure-diagnosis decision
-
-在 Windows 且 `git` 可用時執行：
-
-```powershell
-powershell.exe -NoProfile -File .\tests\governance\Test-FailureDiagnosis.ps1
-```
-
-測試要求 `Complete FAIL` 帶 signature、等價 signature 正規化成同一 hash，並在同一失敗重複後要求新的 diagnosis。它不會修改 repository。見 [demo walkthrough](docs/examples/governed-failure-diagnosis-demo.md)。
-
-### Tier 2 audit-artifacts decision
-
-在 Windows 且 `git` 可用時執行：
-
-```powershell
-powershell.exe -NoProfile -File .\tests\governance\Test-AuditArtifacts.ps1
-```
-
-測試確認 Initialize 寫入可解析的 `run_initialized` ledger 事件、terminal receipt 釘住 manifest、ledger 與 receipt hash，以及後續 Initialize 在 ledger 被改後拒絕。它不會修改 repository。見 [demo walkthrough](docs/examples/governed-audit-artifacts-demo.md)。
+每份 walkthrough 記錄該檢查的前置條件、預期輸出，以及它能證明與不能證明的界線。
 
 ## Tier 2 治理細節
 
