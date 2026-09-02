@@ -36,7 +36,8 @@ This roadmap describes intended work, not promised dates. Items move to
 - A short demo of a governed decision being made — a write outside an approved
   scope being denied — rather than a clean run finishing.
 - A listing in the Claude Code plugin marketplace, once the demo exists.
-- Tie a running lock to the session that opened it. The enforcement record is
+- Tie a running lock to the session that opened it
+  ([proposal](docs/proposals/tie-lock-to-session.md)). The enforcement record is
   open-time truth, so a lock opened under enforcement can be driven through
   StartTask, FinishTask, and Complete from a later plain session, and the
   resulting receipt still reads as enforced. With `enforcement.session_id` now
