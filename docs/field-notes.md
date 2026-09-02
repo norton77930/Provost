@@ -101,3 +101,62 @@ your bridge model — they can emit a native `claude-*` model ID, which a
 non-Anthropic gateway rejects (often as a 502). If you need a guaranteed model per
 delegation, pin it explicitly (exactly what Provost's per-role `model` fields do)
 or constrain delegation to roles you control.
+
+## Universal — a hook whose interpreter is missing does not block, and says nothing
+
+*Measured on Claude Code 2.1.257, Windows.*
+
+A `PreToolUse` hook that exits 2 blocks the tool call. A hook whose command
+cannot be found does not: the tool proceeds, and no hook event appears in the
+`stream-json` output at all. Not a warning, not a failed-hook record — nothing.
+
+This matters if you ship hooks written for one platform in something that
+installs on all of them. The tolerant behaviour is convenient until the hook was
+the thing enforcing a rule, at which point you have a session that believes it is
+protected and is not. If a hook is load-bearing, have whatever depends on it
+require positive evidence that it ran, rather than trusting that a missing hook
+would have complained.
+
+## Universal — nothing tells you which hooks are actually registered
+
+*Measured on Claude Code 2.1.257.*
+
+`claude doctor` reports the installation, not the hook configuration. There is no
+hooks subcommand. A tool subprocess sees `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`
+and friends, but nothing about hooks, and `CLAUDE_PLUGIN_ROOT` is set only for
+hook processes.
+
+What is available: a `SessionStart` hook's payload `session_id` is the same value
+a tool subprocess reads from `CLAUDE_CODE_SESSION_ID` in that session. So a
+`SessionStart` hook can write a marker carrying that id, and anything running as
+a tool call can require a marker matching its own session before trusting that
+hooks are live. Only a hook that actually ran can produce it, and the id match
+rules out a marker left by an earlier session.
+
+## Universal — `--settings` hooks are added to a project's, not swapped for them
+
+*Measured on Claude Code 2.1.257.*
+
+Hooks supplied through `claude --settings <file-or-json>` concatenate with the
+hooks a project's own `.claude/settings.json` declares — both fire on the same
+tool call. A project cannot displace an injected hook by declaring its own.
+
+`disableAllHooks: true` suppresses everything, `SessionStart` included. That is
+worth knowing if you rely on a marker written by a `SessionStart` hook: the
+combination that would be dangerous — the marker present while a `PreToolUse`
+gate is gone — does not occur, because disabling takes both.
+
+## Universal — every hook costs a process on every matching tool call
+
+*Measured on Windows PowerShell 5.1, an ordinary corporate laptop.*
+
+A `PreToolUse` hook that exits immediately still cost about 2.6 seconds per
+matching tool call, of which roughly 2.0 seconds was bare `powershell.exe
+-NoProfile` startup. WSL `bash` was not cheaper as a prefilter. Antivirus is the
+likely multiplier, but that is the machine users have.
+
+The consequence for anything distributed: a hook registered for `Edit|Write|Bash`
+taxes every one of those calls for everyone who installs it, including the
+majority who never use the feature it guards. Register per-invocation through
+`--settings` when the feature is opt-in, rather than shipping the hook in a
+plugin that installs for all.
