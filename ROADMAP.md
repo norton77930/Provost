@@ -21,6 +21,10 @@ This roadmap describes intended work, not promised dates. Items move to
   shipped frontmatter.
 - Governance capability matrix that separates implemented behavior, design
   intent, and limitations.
+- A Windows launcher that opens a governed session, registers the Tier 2 hooks
+  for that session alone, and refuses when they could not enforce. `Initialize`
+  will not open a run whose session shows no marker from the `SessionStart`
+  hook.
 - A published security policy with an explicit scope and a statement of what
   Tier 2 does not claim to defend against.
 
@@ -29,17 +33,20 @@ This roadmap describes intended work, not promised dates. Items move to
 - A short demo of a governed decision being made — a write outside an approved
   scope being denied — rather than a clean run finishing.
 - A listing in the Claude Code plugin marketplace, once the demo exists.
-- Ship the Tier 2 hooks with the plugin instead of registering them by hand.
-  Each already stands down outside a governed session — every one exits early
-  unless `PROVOST_SESSION_PROFILE` is `foreman` — and registering them is safe
-  where PowerShell is absent, because a hook whose interpreter cannot be found
-  does not block the tool call. That tolerance is also the hazard: a governed
-  session on such a platform would run with no write gate and no warning, so
-  the launcher must refuse to open one where the hooks cannot execute.
-- The governed launcher and the `PROVOST_*` environment the Tier 2 hooks
-  require. Plugin hook registration now covers the part that used to need a
-  launcher, so what remains is environment setup and lifecycle entry.
-- End-to-end examples, once the two items above make a governed session
+- Cover the producer half of the liveness contract. The check has tests; the
+  `SessionStart` hook that writes the marker does not, so a change to its path
+  or payload handling would refuse every real session while the suite stayed
+  green. Cover the launcher's environment contract at the same time — a
+  separator mismatch between the launcher and the ref guard shipped once
+  already, and nothing tested that seam.
+- Confirm how `claude --settings` hooks combine with a user's own settings. If a
+  user configuration can replace rather than extend the launcher's `PreToolUse`
+  array, the `SessionStart` marker would still appear while the write gate was
+  absent, and the liveness proof would be a false positive.
+- Carry enforcement evidence forward. The lock, the ledger, and the handoff
+  receipt record nothing about whether a run was under enforcement, so a later
+  governed run can adopt continuation state from one that was not.
+- End-to-end examples now that a governed session can be opened directly.
   reachable without hand-assembly.
 - Lifecycle fixtures and automated invariant tests for manifest revisions,
   custody handoffs, verifier completion, failure signatures, ledgers, and

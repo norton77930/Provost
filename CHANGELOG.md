@@ -13,14 +13,21 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   the `PROVOST_*` environment the hooks read, registers the Tier 2 hooks for
   that session only through `claude --settings`, and refuses when they could not
   enforce — a workspace that is not a Git repository, a hook that is missing or
-  does not parse, or no PowerShell interpreter at all.
+  does not parse, or no PowerShell interpreter at all. It restores the caller's
+  environment and location when the session ends, so a shell is not left marked
+  governed.
 - A session liveness marker. The `SessionStart` hook records the session it ran
   in, and `Initialize` refuses to open a governed run unless a marker names that
   same session. A hook whose interpreter cannot be found blocks nothing and
   reports nothing, so without this a governed run could proceed with no write
-  gate and no warning.
+  gate and no warning. The marker is evidence that the hooks loaded, not a
+  credential: it is a plain file in the workspace, so anything that can write
+  the workspace can write it.
 - `Test-SessionLiveness.ps1`, covering the refusal, a marker left by another
   session, and the accepting case, with CI coverage.
+- Ref-guard coverage for several declared read roots, and a check tying the
+  separator the launcher joins them with to the one the hook splits on. A
+  mismatch there left the guard silent on every command.
 
 ### Changed
 

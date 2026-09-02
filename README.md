@@ -43,7 +43,8 @@ to a manifest, file writes are checked against an approved set, handoffs retain
 path custody, and completion passes through declared verifier tasks.
 
 The current implementation is still described as a reference implementation. A
-launcher now ships and a governed session enforces end to end on Windows, but
+launcher now ships and a governed session was verified enforcing end to end on
+Windows, but
 there is no turnkey installer, and Linux and macOS remain unenforced.
 
 ## The dial
@@ -155,9 +156,11 @@ interpreter is available. The last case is the one that matters: a hook whose
 interpreter cannot be found blocks nothing and reports nothing, so a session
 would call itself governed while enforcing nothing.
 
-`Initialize` makes the authoritative check. It refuses to open a run unless the
-`SessionStart` hook has written a liveness marker naming that session, which
-only a hook that actually ran can do.
+`Initialize` makes the remaining check. It refuses to open a run unless the
+`SessionStart` hook has written a liveness marker naming that session. The
+marker is evidence that the hooks loaded and ran, not a credential: it is a
+plain file in the workspace, so anything that can write the workspace can write
+it. It catches a misconfigured session, not one that is lying on purpose.
 
 ## Tier 2 reference checks (Windows)
 
@@ -181,6 +184,7 @@ powershell.exe -NoProfile -File .\tests\governance\Test-WriteScope.ps1
 | Completion gate | `Test-CompletionGate.ps1` | yes | [demo](docs/examples/governed-completion-gate-demo.md) |
 | Failure diagnosis | `Test-FailureDiagnosis.ps1` | yes | [demo](docs/examples/governed-failure-diagnosis-demo.md) |
 | Audit artifacts | `Test-AuditArtifacts.ps1` | yes | [demo](docs/examples/governed-audit-artifacts-demo.md) |
+| Session liveness | `Test-SessionLiveness.ps1` | yes | — |
 
 Each walkthrough records the prerequisites, the expected output, and the
 limitations of what that check proves.

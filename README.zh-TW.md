@@ -22,7 +22,7 @@ Tier 2 是寫成 code 的 reference implementation，不是一份說明：其中
 
 Prompt 指示很有用，但 agent 可能誤解或忽略。對高 blast-radius 工作，Provost 探索更強的控制：把核准計畫釘在 manifest、依允許清單檢查檔案寫入、在交接時保留 path custody，並讓完成狀態經過宣告好的 verifier tasks。
 
-目前仍應把它視為 reference implementation。launcher 已交付，治理 session 在 Windows 上可端到端執行，但沒有 turnkey installer，Linux 與 macOS 仍不執行 enforcement。
+目前仍應把它視為 reference implementation。launcher 已交付，治理 session 在 Windows 上已驗證可端到端執行，但沒有 turnkey installer，Linux 與 macOS 仍不執行 enforcement。
 
 ## 三級治理
 
@@ -102,7 +102,7 @@ launcher 會設好 hooks 讀取的 `PROVOST_*` environment，並透過 `claude -
 
 遇到 workspace 不是 Git repository、治理 hook 缺失或無法解析、或沒有 PowerShell 直譯器時，它會拒絕而不是繼續。最後一項最關鍵:找不到直譯器的 hook 不會擋任何東西也不會報錯，session 會自稱受治理卻什麼都沒執行。
 
-真正的權威檢查在 `Initialize`：除非 `SessionStart` hook 已寫下標記該 session 的 liveness marker，否則拒絕開啟 run —— 而那只有真正執行過的 hook 寫得出來。
+剩下的檢查在 `Initialize`：除非 `SessionStart` hook 已寫下標記該 session 的 liveness marker，否則拒絕開啟 run。這個 marker 是「hooks 確實載入並執行過」的證據，不是憑證——它是 workspace 裡的一個純文字檔，任何能寫入 workspace 的東西都寫得出來。它擋的是設定錯誤的 session，不是刻意說謊的 session。
 
 ## Tier 2 reference 檢查（Windows）
 
@@ -123,6 +123,7 @@ powershell.exe -NoProfile -File .\tests\governance\Test-WriteScope.ps1
 | Completion gate | `Test-CompletionGate.ps1` | 是 | [demo](docs/examples/governed-completion-gate-demo.md) |
 | Failure diagnosis | `Test-FailureDiagnosis.ps1` | 是 | [demo](docs/examples/governed-failure-diagnosis-demo.md) |
 | Audit artifacts | `Test-AuditArtifacts.ps1` | 是 | [demo](docs/examples/governed-audit-artifacts-demo.md) |
+| Session liveness | `Test-SessionLiveness.ps1` | 是 | — |
 
 每份 walkthrough 記錄該檢查的前置條件、預期輸出，以及它能證明與不能證明的界線。
 

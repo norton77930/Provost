@@ -10,8 +10,11 @@ param(
 #
 # This script cannot prove that Claude Code has the hooks registered — nothing
 # reports that. What it can do is refuse the cases it can see, and leave the
-# authoritative check to Initialize, which requires a liveness marker that only
-# a hook that actually ran can write.
+# remaining check to Initialize, which requires a liveness marker the
+# SessionStart hook writes. That marker is evidence against misconfiguration —
+# a missing interpreter, hooks that never loaded — not against forgery. It is a
+# plain file in the workspace, and anything that can write the workspace can
+# write it.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -65,11 +68,21 @@ if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
     Remove-Item -LiteralPath $markerPath -Force
 }
 
-$env:PROVOST_SESSION_PROFILE = 'foreman'
+# Restored in the finally below. Setting these in the caller's process and
+# leaving them there would mark the operator's shell as governed for everything
+# that followed, including the helper tests, which would then be refused.
+$savedProfile = $env:PROVOST_SESSION_PROFILE
+$savedWorkspaceRoot = $env:PROVOST_FOREMAN_WORKSPACE_ROOT
+$savedExternalReadRoots = $env:PROVOST_FOREMAN_EXTERNAL_READ_ROOTS
+$savedLocation = (Get-Location).Path
+
 $env:PROVOST_SESSION_PROFILE = 'foreman'
 $env:PROVOST_FOREMAN_WORKSPACE_ROOT = $resolvedRoot
 if ($ExternalReadRoots.Count -gt 0) {
-    $env:PROVOST_FOREMAN_EXTERNAL_READ_ROOTS = ($ExternalReadRoots -join [System.IO.Path]::PathSeparator)
+    # PreToolUse-RefGuard.ps1 splits this on '|'. Joining on anything else
+    # leaves the guard matching one long string that no command contains, so it
+    # would exit silently on every command and declare nothing out of bounds.
+    $env:PROVOST_FOREMAN_EXTERNAL_READ_ROOTS = ($ExternalReadRoots -join '|')
 }
 else {
     $env:PROVOST_FOREMAN_EXTERNAL_READ_ROOTS = $null
@@ -104,8 +117,9 @@ $settingsPath = Join-Path ([System.IO.Path]::GetTempPath()) ('provost-governed-'
 [System.IO.File]::WriteAllText($settingsPath, ($governedSettings | ConvertTo-Json -Depth 12), [System.Text.UTF8Encoding]::new($false))
 
 Write-Output ('Governed workspace: ' + $resolvedRoot)
-Write-Output 'Tier 2 hooks registered for this session only. Enforcement is confirmed at Initialize, which requires a liveness marker the SessionStart hook writes.'
+Write-Output 'Tier 2 hooks registered for this session only. Initialize refuses a run whose session shows no marker from the SessionStart hook.'
 
+$claudeExitCode = 1
 try {
     Set-Location -LiteralPath $resolvedRoot
     & claude --settings $settingsPath @ClaudeArguments
@@ -113,5 +127,9 @@ try {
 }
 finally {
     Remove-Item -LiteralPath $settingsPath -Force -ErrorAction SilentlyContinue
+    Set-Location -LiteralPath $savedLocation
+    $env:PROVOST_SESSION_PROFILE = $savedProfile
+    $env:PROVOST_FOREMAN_WORKSPACE_ROOT = $savedWorkspaceRoot
+    $env:PROVOST_FOREMAN_EXTERNAL_READ_ROOTS = $savedExternalReadRoots
 }
 exit $claudeExitCode

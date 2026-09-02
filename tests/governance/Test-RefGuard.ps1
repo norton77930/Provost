@@ -121,6 +121,27 @@ try {
     $decision = Invoke-RefGuard -Profile 'foreman' -DeclaredRefs $resolvedTemporaryRoot -Command $unclassifiedCommand
     Assert-Decision -Decision $decision -Expected 'ask' -Label 'unclassified command that mentions a ref asked for review'
 
+    # The launcher joins declared roots into one variable and this hook splits
+    # them apart again. A mismatch shipped once: the launcher used the platform
+    # path separator while the hook splits on '|', so with two roots the guard
+    # matched nothing and stayed silent on every command — the silent fail-open
+    # the governed tier exists to prevent.
+    $secondRoot = Join-Path $resolvedTemporaryRoot 'second'
+    [System.IO.Directory]::CreateDirectory($secondRoot) | Out-Null
+    $secondRootFile = Join-Path $secondRoot 'b.txt'
+    $secondWriteCommand = 'Set-Content -LiteralPath "' + $secondRootFile + '" -Value x'
+    $joinedRoots = @($resolvedTemporaryRoot, $secondRoot) -join '|'
+    $decision = Invoke-RefGuard -Profile 'foreman' -DeclaredRefs $joinedRoots -Command $secondWriteCommand
+    Assert-Decision -Decision $decision -Expected 'deny' -Label 'write into the second of several declared refs was denied'
+
+    $launcherPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\docs\governance\reference\Start-GovernedSession.ps1'))
+    $launcherText = [System.IO.File]::ReadAllText($launcherPath)
+    if ($launcherText -notmatch "ExternalReadRoots\s+-join\s+'\|'") {
+        throw 'Start-GovernedSession.ps1 no longer joins declared read roots on the "|" this hook splits on.'
+    }
+    $script:Passed++
+    Write-Output ('PASS: The launcher joins declared refs on the separator this hook splits on')
+
     Write-Output ('Ref-guard checks passed: ' + $script:Passed)
 }
 finally {
