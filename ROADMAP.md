@@ -33,9 +33,6 @@ This roadmap describes intended work, not promised dates. Items move to
 - A short demo of a governed decision being made — a write outside an approved
   scope being denied — rather than a clean run finishing.
 - A listing in the Claude Code plugin marketplace, once the demo exists.
-- Carry enforcement evidence forward. The lock, the ledger, and the handoff
-  receipt record nothing about whether a run was under enforcement, so a later
-  governed run can adopt continuation state from one that was not.
 - End-to-end examples now that a governed session can be opened directly.
 - Lifecycle fixtures and automated invariant tests for manifest revisions,
   custody handoffs, verifier completion, failure signatures, ledgers, and

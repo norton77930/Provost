@@ -127,6 +127,25 @@ try {
     }
     Write-Pass -Label 'Initialize accepts the marker the hook itself wrote'
 
+    # The check is worth little if the fact it established is then discarded.
+    # A later run reads these to decide whether this run's work can be adopted.
+    $lockPath = Join-Path $foremanRoot 'active-run.lock'
+    $writtenLock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+    if ([string]$writtenLock.enforcement.mode -ne 'hooks') {
+        throw ('The lock recorded enforcement mode ' + [string]$writtenLock.enforcement.mode + ' for a governed run.')
+    }
+    if ([string]$writtenLock.enforcement.session_id -ne [string]$env:CLAUDE_CODE_SESSION_ID) {
+        throw 'The lock recorded a different session than the one that was verified.'
+    }
+    $initializedEvent = @(Get-Content -LiteralPath ([string]$writtenLock.ledger_path) |
+        ForEach-Object { $_ | ConvertFrom-Json } |
+        Where-Object { [string]$_.event -eq 'run_initialized' })
+    if ($initializedEvent.Count -lt 1) { throw 'No run_initialized event was appended.' }
+    if ([string]$initializedEvent[0].enforcement.mode -ne 'hooks') {
+        throw 'The run_initialized ledger event did not record that the run was enforced.'
+    }
+    Write-Pass -Label 'The lock and the ledger record that the run opened under enforcement'
+
     # The launcher is the only thing that sets these and the hooks the only
     # things that read them. Nothing else joins the two, so a hook that started
     # reading a new variable would read empty and stand down in silence.

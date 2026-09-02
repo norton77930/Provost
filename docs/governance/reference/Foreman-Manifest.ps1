@@ -886,6 +886,7 @@ function Write-TerminalHandoffReceipt {
         helper_version = '2'
         terminal_state = $terminalState
         session_id = [string]$Lock['session_id']
+        enforcement = $Lock['enforcement']
         run_id = [string]$Lock['run_id']
         spec_system = [string]$metadata['spec_system']
         change_id = [string]$metadata['change_id']
@@ -948,7 +949,8 @@ function Resolve-ContinuationAdoption {
         [string]$ManifestPath,
         [System.Collections.IDictionary]$Draft,
         [System.Collections.IDictionary]$Shape,
-        [AllowNull()][string[]]$WorkspaceMembers = $null
+        [AllowNull()][string[]]$WorkspaceMembers = $null,
+        [System.Collections.IDictionary]$Enforcement = $null
     )
     if ($null -eq $Shape['continuation']) { return @() }
     $continuation = $Shape['continuation']
@@ -973,6 +975,20 @@ function Resolve-ContinuationAdoption {
     $receipt = Read-JsonMap -Path $receiptPath -Context 'terminal handoff receipt'
     if ([string]$receipt['schema'] -ne 'provost-foreman-handoff/v1') { Stop-Foreman -Code 'CONTINUATION' -Message 'The terminal handoff receipt schema is unsupported.' }
     if (@('FAIL', 'BLOCKED', 'ESCALATE') -notcontains [string]$receipt['terminal_state']) { Stop-Foreman -Code 'CONTINUATION' -Message 'The handoff receipt is not terminal.' }
+
+    # An enforced run must not build on work that nothing was policing. The
+    # prior receipt records what was true when that run opened; a receipt with
+    # no record was written before this was tracked, which is a different claim
+    # from having been enforced.
+    if ($null -ne $Enforcement -and [string]$Enforcement['mode'] -eq 'hooks') {
+        $priorMode = '(none recorded)'
+        if ($receipt.Contains('enforcement') -and $null -ne $receipt['enforcement'] -and $receipt['enforcement'].Contains('mode')) {
+            $priorMode = [string]$receipt['enforcement']['mode']
+        }
+        if ($priorMode -ne 'hooks') {
+            Stop-Foreman -Code 'CONTINUATION' -Message ('This run is enforced, but the continuation source ran with enforcement ' + $priorMode + '. Refusing to adopt work that no write gate was policing.')
+        }
+    }
     if ([string]$receipt['revision'] -ne $previousRevision -or [string]$receipt['spec_system'] -ne [string]$Shape['spec_system'] -or [string]$receipt['change_id'] -ne [string]$Shape['change_id']) {
         Stop-Foreman -Code 'CONTINUATION' -Message 'The handoff receipt lineage does not match this revision.'
     }
@@ -1156,12 +1172,19 @@ function Assert-NoRepeatedFailureLoop {
     }
 }
 
-function Assert-SessionEnforcementLive {
+function Resolve-SessionEnforcement {
     param([string]$Root)
+    # Returns what was true about enforcement when this run opened, so the fact
+    # can be written into the lock, the ledger, and the handoff receipt instead
+    # of being checked and discarded. A later run reads it before adopting any
+    # of this run's work.
+    #
     # Only a session that calls itself governed has anything to prove, and the
     # hooks gate on the same variable, so this engages exactly when they would.
-    # Helper-level use outside a session is unaffected.
-    if ($env:PROVOST_SESSION_PROFILE -ne 'foreman') { return }
+    # Helper-level use is a supported mode, recorded plainly rather than omitted.
+    if ($env:PROVOST_SESSION_PROFILE -ne 'foreman') {
+        return [ordered]@{ mode = 'none'; session_id = $null; marker_written_utc = $null }
+    }
 
     $sessionId = [string]$env:CLAUDE_CODE_SESSION_ID
     if ([string]::IsNullOrWhiteSpace($sessionId)) {
@@ -1186,13 +1209,17 @@ function Assert-SessionEnforcementLive {
     if ($markedSession -ne $sessionId) {
         Stop-Foreman -Code 'ENFORCEMENT' -Message ('The session liveness marker names a different session (' + $markedSession + ') than this one (' + $sessionId + '), so the hooks cannot be confirmed live. Start a fresh governed session.')
     }
+
+    $markerWritten = $null
+    if ($marker.Contains('written_utc')) { $markerWritten = [string]$marker['written_utc'] }
+    return [ordered]@{ mode = 'hooks'; session_id = $sessionId; marker_written_utc = $markerWritten }
 }
 
 function Invoke-Initialize {
     if ([string]::IsNullOrWhiteSpace($DraftPath) -or [string]::IsNullOrWhiteSpace($ManifestPath) -or [string]::IsNullOrWhiteSpace($WorkspaceRoot) -or [string]::IsNullOrWhiteSpace($SessionId)) { Stop-Foreman -Code 'SCHEMA' -Message 'Initialize requires DraftPath, ManifestPath, WorkspaceRoot, and SessionId.' }
     $root = Get-NormalizedRoot -Path $WorkspaceRoot
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { Stop-Foreman -Code 'PATH' -Message 'WorkspaceRoot does not exist.' }
-    Assert-SessionEnforcementLive -Root $root
+    $enforcement = Resolve-SessionEnforcement -Root $root
     $foremanRoot = Get-ForemanRoot -Root $root
     $absoluteManifestPath = [System.IO.Path]::GetFullPath($ManifestPath)
     $foremanManifestsPrefix = (Join-Path $foremanRoot 'manifests').TrimEnd([char]92) + [char]92
@@ -1213,7 +1240,7 @@ function Invoke-Initialize {
     }
     if (-not $isGit -and $null -eq $workspaceMembers) { Stop-Foreman -Code 'NON_GIT' -Message 'Workspace root is not a Git repository. Either git init it, or declare sibling members in .claude/provost/foreman/workspace.json.' }
 
-    $adoptedPaths = @(Resolve-ContinuationAdoption -Root $root -ForemanRoot $foremanRoot -ManifestPath $absoluteManifestPath -Draft $draft -Shape $shape -WorkspaceMembers $workspaceMembers)
+    $adoptedPaths = @(Resolve-ContinuationAdoption -Root $root -ForemanRoot $foremanRoot -ManifestPath $absoluteManifestPath -Draft $draft -Shape $shape -WorkspaceMembers $workspaceMembers -Enforcement $enforcement)
     $writerPaths = @()
     foreach ($task in @($shape.tasks)) { if ($script:RoleCatalog[[string]$task['agent_key']].writer) { $writerPaths += @($task['write_set']) } }
     if ($null -ne $workspaceMembers) {
@@ -1271,6 +1298,7 @@ function Invoke-Initialize {
         ledger_path = $ledgerPath
         run_id = $runId
         created_at_utc = [DateTime]::UtcNow.ToString('o')
+        enforcement = $enforcement
         active_writer = $null
         active_readonly = @()
         task_states = [ordered]@{}
@@ -1300,7 +1328,7 @@ function Invoke-Initialize {
         $lockStream = [System.IO.File]::Open($lockPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
         $lockWriter = New-Object System.IO.StreamWriter($lockStream, [System.Text.UTF8Encoding]::new($false))
         $lockWriter.Write((ConvertTo-Json -InputObject $lock -Depth 32)); $lockWriter.Flush(); $lockWriter.Dispose(); $lockStream = $null
-        Append-LedgerEvent -LedgerPath $ledgerPath -Event ([ordered]@{ timestamp_utc = [DateTime]::UtcNow.ToString('o'); event = 'run_initialized'; run_id = $runId; session_id = $SessionId; assurance = $assurance; task_count = @($shape.tasks).Count })
+        Append-LedgerEvent -LedgerPath $ledgerPath -Event ([ordered]@{ timestamp_utc = [DateTime]::UtcNow.ToString('o'); event = 'run_initialized'; run_id = $runId; session_id = $SessionId; enforcement = $enforcement; assurance = $assurance; task_count = @($shape.tasks).Count })
         $temporaryManifest = $absoluteManifestPath + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
         Write-Utf8NoBom -Path $temporaryManifest -Text (ConvertTo-Json -InputObject $draft -Depth 64)
         if (Test-Path -LiteralPath $absoluteManifestPath) { Stop-Foreman -Code 'IMMUTABLE' -Message 'The target manifest revision already exists.' }

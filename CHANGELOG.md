@@ -9,6 +9,13 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
+- An enforcement record on every run. `Initialize` writes whether the run
+  opened under hook enforcement — and the session that proved it — into the
+  lock, the `run_initialized` ledger event, and the terminal handoff receipt.
+  An enforced run then refuses to adopt continuation work from a run recorded
+  as unenforced, or from a receipt carrying no record at all. The adoption path
+  had no test of any kind before this; it now has both directions.
+
 - Coverage for the producer half of the liveness contract. The `SessionStart`
   hook is now driven for real rather than the marker being hand-written, so a
   change to its path or payload handling fails the suite instead of silently
