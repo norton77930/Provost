@@ -47,9 +47,11 @@ This roadmap describes intended work, not promised dates. Items move to
   who will not read a walkthrough before deciding whether to care. It needs a
   screen recording, so it cannot be produced by an agent alone.
 - A listing in the Claude Code plugin marketplace.
-- Lifecycle fixtures and automated invariant tests for manifest revisions,
-  custody handoffs, verifier completion, failure signatures, ledgers, and
-  terminal receipts.
+- Cover the two lifecycle actions no test has ever run
+  ([proposal](docs/proposals/untested-lifecycle-actions.md)). `RecordRetry` and
+  `RecoverLock` have zero calls across the suite, and `RecoverLock` is the
+  operator escape hatch that the session binding deliberately exempts — an
+  exemption nothing currently holds in place.
 - Evidence records defined and enforced per acceptance claim.
 - A cross-platform Tier 2 runtime with equivalent fail-closed semantics for
   Linux and macOS. The collaborator tier already runs on all three.
