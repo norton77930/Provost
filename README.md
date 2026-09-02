@@ -30,9 +30,9 @@ from a prompt collection.
   [`skills/NOTICE.md`](skills/NOTICE.md).
 - A Windows launcher that opens a governed session, registers the Tier 2 hooks
   for it, and refuses when they could not enforce — with `Initialize` requiring
-  proof the hooks actually ran.
+  evidence the hooks actually ran.
 - Windows checks covering the decision logic of all seven Tier 2 governance
-  decisions, each with a demo walkthrough — see
+  decisions, each with a demo walkthrough, plus a session-liveness check — see
   [Tier 2 reference checks](#tier-2-reference-checks-windows).
 
 ## Why this exists

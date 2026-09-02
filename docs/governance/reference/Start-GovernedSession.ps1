@@ -126,10 +126,13 @@ try {
     $claudeExitCode = $LASTEXITCODE
 }
 finally {
-    Remove-Item -LiteralPath $settingsPath -Force -ErrorAction SilentlyContinue
-    Set-Location -LiteralPath $savedLocation
+    # Environment first. Restoring the location can throw if the session removed
+    # the directory it was launched from, and that must not leave the operator's
+    # shell marked governed.
     $env:PROVOST_SESSION_PROFILE = $savedProfile
     $env:PROVOST_FOREMAN_WORKSPACE_ROOT = $savedWorkspaceRoot
     $env:PROVOST_FOREMAN_EXTERNAL_READ_ROOTS = $savedExternalReadRoots
+    Remove-Item -LiteralPath $settingsPath -Force -ErrorAction SilentlyContinue
+    Set-Location -LiteralPath $savedLocation -ErrorAction SilentlyContinue
 }
 exit $claudeExitCode

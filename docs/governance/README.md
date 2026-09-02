@@ -32,7 +32,7 @@ internally named "Foreman."
 - `hooks/PreToolUse-RefGuard.ps1` — command guard for declared external read
   roots.
 - `hooks/SessionStart-WorkspaceCheck.ps1` — workspace-drift warning, and the
-  session liveness marker that `Initialize` requires as proof the hooks ran.
+  session liveness marker that `Initialize` requires as evidence the hooks ran.
 - `Start-GovernedSession.ps1` — opens a governed session: sets the `PROVOST_*`
   environment, registers the three hooks for that session only, and refuses when
   they could not enforce.

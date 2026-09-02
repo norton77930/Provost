@@ -47,7 +47,6 @@ This roadmap describes intended work, not promised dates. Items move to
   receipt record nothing about whether a run was under enforcement, so a later
   governed run can adopt continuation state from one that was not.
 - End-to-end examples now that a governed session can be opened directly.
-  reachable without hand-assembly.
 - Lifecycle fixtures and automated invariant tests for manifest revisions,
   custody handoffs, verifier completion, failure signatures, ledgers, and
   terminal receipts.

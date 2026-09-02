@@ -16,7 +16,7 @@ Tier 2 是寫成 code 的 reference implementation，不是一份說明：其中
 - Tier 1 [`orchestration.md`](orchestration.md)：plan-first、單一 active writer 與 evidence-based completion discipline，由 plugin 直接送進每個 session，不需手動合併。
 - [`skills/`](skills/) 中的 TDD、診斷、review 與完成前驗證方法；第三方歸屬保留於 [`skills/NOTICE.md`](skills/NOTICE.md)。
 - Windows launcher：開啟治理 session、為該 session 註冊 Tier 2 hooks、在無法執行 enforcement 時拒絕啟動；`Initialize` 會要求 hooks 確實執行過的證據。
-- Windows 上涵蓋全部七項 Tier 2 治理決策的 decision test，每項都有 demo walkthrough（見下方「Tier 2 reference 檢查」）。
+- Windows 上涵蓋全部七項 Tier 2 治理決策的 decision test，每項都有 demo walkthrough，另加一項 session-liveness 檢查（見下方「Tier 2 reference 檢查」）。
 
 ## 為什麼需要 Provost
 

@@ -126,7 +126,9 @@ try {
     # path separator while the hook splits on '|', so with two roots the guard
     # matched nothing and stayed silent on every command — the silent fail-open
     # the governed tier exists to prevent.
-    $secondRoot = Join-Path $resolvedTemporaryRoot 'second'
+    # A sibling, not a child: nested under the first root, the command would name
+    # the first root too and the deny could come from matching that instead.
+    $secondRoot = $resolvedTemporaryRoot + '-second'
     [System.IO.Directory]::CreateDirectory($secondRoot) | Out-Null
     $secondRootFile = Join-Path $secondRoot 'b.txt'
     $secondWriteCommand = 'Set-Content -LiteralPath "' + $secondRootFile + '" -Value x'
@@ -150,5 +152,8 @@ finally {
             throw 'Refusing to clean up a path outside the system temporary directory.'
         }
         Remove-Item -LiteralPath $resolvedTemporaryRoot -Recurse -Force
+    }
+    if (Test-Path -LiteralPath ($resolvedTemporaryRoot + '-second')) {
+        Remove-Item -LiteralPath ($resolvedTemporaryRoot + '-second') -Recurse -Force
     }
 }
