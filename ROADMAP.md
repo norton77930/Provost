@@ -40,7 +40,9 @@ This roadmap describes intended work, not promised dates. Items move to
 - A short demo of a governed decision being made — a write outside an approved
   scope being denied — rather than a clean run finishing.
 - A listing in the Claude Code plugin marketplace, once the demo exists.
-- End-to-end examples now that a governed session can be opened directly.
+- An end-to-end governed session walkthrough
+  ([proposal](docs/proposals/end-to-end-governed-session.md)). The seven existing
+  examples each run one check; none shows what using the tier is actually like.
 - Lifecycle fixtures and automated invariant tests for manifest revisions,
   custody handoffs, verifier completion, failure signatures, ledgers, and
   terminal receipts.
