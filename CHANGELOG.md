@@ -7,6 +7,31 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- `Start-GovernedSession.ps1`, a launcher that opens a governed session. It sets
+  the `PROVOST_*` environment the hooks read, registers the Tier 2 hooks for
+  that session only through `claude --settings`, and refuses when they could not
+  enforce — a workspace that is not a Git repository, a hook that is missing or
+  does not parse, or no PowerShell interpreter at all.
+- A session liveness marker. The `SessionStart` hook records the session it ran
+  in, and `Initialize` refuses to open a governed run unless a marker names that
+  same session. A hook whose interpreter cannot be found blocks nothing and
+  reports nothing, so without this a governed run could proceed with no write
+  gate and no warning.
+- `Test-SessionLiveness.ps1`, covering the refusal, a marker left by another
+  session, and the accepting case, with CI coverage.
+
+### Changed
+
+- The Tier 2 hooks are registered per launch rather than by the plugin. Each
+  costs a PowerShell process on every matching tool call — around two seconds on
+  a normal Windows machine — and the plugin installs for everyone, including the
+  majority who never open a governed session.
+- Documentation no longer says the launcher is absent. What remains missing is
+  narrower: a packaged installer, and the fresh per-task agent contexts the
+  original launcher created.
+
 ## [0.2.0] - 2026-09-02
 
 ### Changed

@@ -15,13 +15,14 @@ Tier 2 是寫成 code 的 reference implementation，不是一份說明：其中
 - [`agents/`](agents/) 下的六個 Claude Code role definitions，可用 plugin 安裝（見下方「安裝」）。
 - Tier 1 [`orchestration.md`](orchestration.md)：plan-first、單一 active writer 與 evidence-based completion discipline，由 plugin 直接送進每個 session，不需手動合併。
 - [`skills/`](skills/) 中的 TDD、診斷、review 與完成前驗證方法；第三方歸屬保留於 [`skills/NOTICE.md`](skills/NOTICE.md)。
+- Windows launcher：開啟治理 session、為該 session 註冊 Tier 2 hooks、在無法執行 enforcement 時拒絕啟動；`Initialize` 會要求 hooks 確實執行過的證據。
 - Windows 上涵蓋全部七項 Tier 2 治理決策的 decision test，每項都有 demo walkthrough（見下方「Tier 2 reference 檢查」）。
 
 ## 為什麼需要 Provost
 
 Prompt 指示很有用，但 agent 可能誤解或忽略。對高 blast-radius 工作，Provost 探索更強的控制：把核准計畫釘在 manifest、依允許清單檢查檔案寫入、在交接時保留 path custody，並讓完成狀態經過宣告好的 verifier tasks。
 
-由於 repository 尚未交付原始 launcher 或 turnkey installer，目前應把它視為 reference implementation。
+目前仍應把它視為 reference implementation。launcher 已交付，治理 session 在 Windows 上可端到端執行，但沒有 turnkey installer，Linux 與 macOS 仍不執行 enforcement。
 
 ## 三級治理
 
@@ -91,9 +92,21 @@ claude --plugin-dir .
 
 從一份計畫與有限的 Completion Contract 開始。視需要委派唯讀的探索與審查，並保持恰好一位 active writer。crew 遵循的是 [orchestration policy](orchestration.md)，[concepts guide](docs/concepts.md) 說明何時該在 tier 之間移動。
 
+## 開啟治理 session（Windows）
+
+```powershell
+.\docs\governance\reference\Start-GovernedSession.ps1 -WorkspaceRoot D:\path\to\repo
+```
+
+launcher 會設好 hooks 讀取的 `PROVOST_*` environment，並透過 `claude --settings` **只為該 session** 註冊 Tier 2 hooks。刻意不由 plugin 註冊：每個 hook 在每次符合的工具呼叫都要啟動一個 PowerShell 行程，而 plugin 是裝給所有人的，其中多數人不會開治理 session。
+
+遇到 workspace 不是 Git repository、治理 hook 缺失或無法解析、或沒有 PowerShell 直譯器時，它會拒絕而不是繼續。最後一項最關鍵:找不到直譯器的 hook 不會擋任何東西也不會報錯，session 會自稱受治理卻什麼都沒執行。
+
+真正的權威檢查在 `Initialize`：除非 `SessionStart` hook 已寫下標記該 session 的 liveness marker，否則拒絕開啟 run —— 而那只有真正執行過的 hook 寫得出來。
+
 ## Tier 2 reference 檢查（Windows）
 
-Tier 2 是 reference implementation，launcher 尚未包含在本 repo，因此觀察各項治理決策的方式是執行它的檢查。每項檢查都會建立隔離的 workspace，透過真實介面驅動所交付的 hook 或 helper，且不修改 repository。
+每項治理決策也各有一個獨立檢查，是不開 session 就能觀察單一決策的最快方式。每項檢查都會建立隔離的 workspace，透過真實介面驅動所交付的 hook 或 helper，且不修改 repository。
 
 在 repo 根目錄、Windows 上：
 
@@ -124,7 +137,7 @@ Governed tier 的 reference design 包含：
 - **Failure control：** 重複的 failure signature 可要求新的 diagnosis evidence 才能繼續下一個 revision。
 - **Audit artifacts：** lifecycle actions append JSONL events；terminal handoff receipt 以 hash 釘住 manifest、ledger 與 workspace snapshot。
 
-只有 hooks 已註冊到 Claude Code，且 launcher 設好必要的 `PROVOST_*` environment 時，這些 controls 才會成為 engine-enforced 行為。目前 public repository 尚未包含 launcher/configuration。評估或移植前請先讀 [governance documentation](docs/governance/README.md)。
+hooks 註冊到 Claude Code 且必要的 `PROVOST_*` environment 就緒時，這些 controls 就是 engine-enforced 行為。`Start-GovernedSession.ps1` 為單一 session 完成這兩件事，而 `Initialize` 會拒絕開啟無法證明 hooks 生效的 run。評估或移植前請先讀 [governance documentation](docs/governance/README.md)。
 
 ## 其他模型
 
@@ -141,7 +154,8 @@ Provost 聚焦 graduated governance：依 blast radius 提高監督強度，並�
 
 ## Roadmap／已知限制
 
-- 原始 launcher 與可直接安裝的 Claude Code hook configuration。
+- 打包好的 installer。launcher 以 session 為單位註冊 hooks，不寫入常駐設定。
+- 每個 task 的全新 agent context——原始 launcher 有做，這一版沒有。
 - 乾淨的 end-to-end governed-session quickstart 或 packaged runtime。
 - 完整逐 claim evidence binding。目前 acceptance entries 會被驗證，task 也可以記錄整體 verification summary，但 helper 不要求每個 acceptance claim 都有獨立 evidence record。
 - Linux/macOS support，以及其他 coding-agent environment adapters。

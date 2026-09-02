@@ -45,4 +45,4 @@ receipts and throws `[IMMUTABLE]` if the ledger no longer matches.
 
 This is a **helper-level integration test**, not an end-to-end governed
 Claude Code session. Hash checks detect some tampering; they do not provide
-an external append-only store. A packaged launcher is not included.
+an external append-only store. A launcher ships; a packaged runtime does not.

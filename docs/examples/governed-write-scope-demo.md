@@ -62,10 +62,10 @@ being asked to judge its own compliance.
 ## Limitations
 
 This is a **hook-level integration test**, not an end-to-end governed Claude Code
-session. The public repository does not yet include the original launcher or the
-hook-registration settings that activate these scripts in Claude Code. The test
-has been run in the repository's current Windows/PowerShell environment, but has
-not yet been independently verified on a fresh Windows VM. It also does not claim
+session. `Start-GovernedSession.ps1` supplies the environment and the hook
+registration that activate these scripts in Claude Code. The test has been run
+in the repository's current Windows/PowerShell environment, but has not yet been
+independently verified on a fresh Windows VM. It also does not claim
 operating-system sandboxing or coverage of arbitrary shell writes. The related
 reference guard classifies commands that touch external read-only roots, but a
 packaged command-execution policy remains future work.

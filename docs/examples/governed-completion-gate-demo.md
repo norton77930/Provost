@@ -2,7 +2,8 @@
 
 This helper-level demo exercises `Complete PASS` in `Foreman-Manifest.ps1`:
 every declared task must already be `PASS`, including the required code
-verifier. Context freshness is not claimed; that needs the missing launcher.
+verifier. Context freshness is not claimed; the shipped launcher does not create fresh
+per-task contexts.
 
 ## Prerequisites
 

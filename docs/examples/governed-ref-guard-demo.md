@@ -50,7 +50,7 @@ compliance.
 ## Limitations
 
 This is a **hook-level integration test**, not an end-to-end governed Claude
-Code session. The public repository does not include the launcher that declares
-`--ref` roots or registers the hook. The classifier inspects command text; it is
-not an operating-system sandbox and does not prove that every possible write
-into a ref is blocked.
+Code session. `Start-GovernedSession.ps1` declares `--ref` roots and registers
+the hook for one session. The classifier inspects command text; it is not an
+operating-system sandbox and does not prove that every possible write into a ref
+is blocked.

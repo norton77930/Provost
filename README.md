@@ -28,6 +28,9 @@ from a prompt collection.
 - Reusable methodology [skills](skills/) for TDD, diagnosis, review, and
   verification, with third-party attribution preserved in
   [`skills/NOTICE.md`](skills/NOTICE.md).
+- A Windows launcher that opens a governed session, registers the Tier 2 hooks
+  for it, and refuses when they could not enforce — with `Initialize` requiring
+  proof the hooks actually ran.
 - Windows checks covering the decision logic of all seven Tier 2 governance
   decisions, each with a demo walkthrough — see
   [Tier 2 reference checks](#tier-2-reference-checks-windows).
@@ -39,9 +42,9 @@ For high-blast-radius work, Provost explores stronger controls: a plan is pinned
 to a manifest, file writes are checked against an approved set, handoffs retain
 path custody, and completion passes through declared verifier tasks.
 
-The current implementation is deliberately described as a reference
-implementation because the repository does not yet ship its original launcher or
-a turnkey installer.
+The current implementation is still described as a reference implementation. A
+launcher now ships and a governed session enforces end to end on Windows, but
+there is no turnkey installer, and Linux and macOS remain unenforced.
 
 ## The dial
 
@@ -134,12 +137,34 @@ exploration and review as needed, and keep exactly one active writer. The
 [orchestration policy](orchestration.md) is what the crew follows, and the
 [concepts guide](docs/concepts.md) explains when to move between tiers.
 
+## Open a governed session (Windows)
+
+```powershell
+.\docs\governance\reference\Start-GovernedSession.ps1 -WorkspaceRoot D:\path\to\repo
+```
+
+The launcher sets the `PROVOST_*` environment the hooks read and registers the
+Tier 2 hooks for that session only, through `claude --settings`. They are not
+registered by the plugin on purpose: a hook costs a PowerShell process on every
+matching tool call, and the plugin installs for everyone, including the majority
+who never open a governed session.
+
+It refuses rather than proceeding when the workspace is not a Git repository,
+when a governance hook is missing or does not parse, or when no PowerShell
+interpreter is available. The last case is the one that matters: a hook whose
+interpreter cannot be found blocks nothing and reports nothing, so a session
+would call itself governed while enforcing nothing.
+
+`Initialize` makes the authoritative check. It refuses to open a run unless the
+`SessionStart` hook has written a liveness marker naming that session, which
+only a hook that actually ran can do.
+
 ## Tier 2 reference checks (Windows)
 
-Tier 2 is a reference implementation and its launcher is not part of this
-repository yet, so the way to see each governance decision is to run its check.
-Every check builds an isolated workspace, drives the shipped hook or helper
-through its real interface, and leaves the repository unmodified.
+Each governance decision also has a check that exercises it on its own, which is
+the quickest way to see one without opening a session. Every check builds an
+isolated workspace, drives the shipped hook or helper through its real
+interface, and leaves the repository unmodified.
 
 From the repository root on Windows:
 
@@ -177,9 +202,10 @@ The governed tier's reference design covers:
 - **Audit artifacts:** lifecycle actions append JSONL events; terminal handoff
   receipts pin the manifest, ledger, and workspace snapshot by hash.
 
-These controls become engine-enforced only when the hooks are registered with
-Claude Code and the required `PROVOST_*` environment is set by a launcher. The
-launcher/configuration is not part of this public repository yet. Read the
+These controls become engine-enforced when the hooks are registered with Claude
+Code and the required `PROVOST_*` environment is set. `Start-GovernedSession.ps1`
+does both for one session, and `Initialize` refuses to open a run that cannot
+show the hooks are live. Read the
 [governance documentation](docs/governance/README.md) before evaluating or
 adapting the reference implementation.
 
@@ -207,8 +233,12 @@ highest tier.
 
 ## Roadmap / Known limitations
 
-- The original launcher and ready-to-install Claude Code hook configuration.
-- A clean end-to-end governed-session quickstart or packaged runtime.
+- A packaged installer. The launcher registers hooks per session; it does not
+  write a persistent Claude Code configuration.
+- Fresh agent contexts per task, which the original launcher created and this one
+  does not.
+- A packaged runtime. Opening a governed session is documented and works, but
+  everything around it is still assembled by hand.
 - Complete per-claim evidence binding. Acceptance entries are validated, and a
   task may record a verification summary, but the helper does not yet require a
   separate evidence record for every acceptance claim.
