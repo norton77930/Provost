@@ -42,6 +42,10 @@ This roadmap describes intended work, not promised dates. Items move to
 
 ## Next
 
+- A recorded demo, sixty seconds, of the write gate denying a write. The
+  walkthrough covers the same ground in text; this is the artifact for people
+  who will not read a walkthrough before deciding whether to care. It needs a
+  screen recording, so it cannot be produced by an agent alone.
 - A listing in the Claude Code plugin marketplace.
 - Lifecycle fixtures and automated invariant tests for manifest revisions,
   custody handoffs, verifier completion, failure signatures, ledgers, and
