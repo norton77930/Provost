@@ -98,6 +98,9 @@ claude --plugin-dir .
 .\docs\governance\reference\Start-GovernedSession.ps1 -WorkspaceRoot D:\path\to\repo
 ```
 
+從 throwaway workspace 走到 write_set 外寫入被拒絕、以及 `Complete PASS`，見
+[治理 session walkthrough](docs/examples/governed-session-walkthrough.md)。
+
 launcher 會設好 hooks 讀取的 `PROVOST_*` environment，並透過 `claude --settings` **只為該 session** 註冊 Tier 2 hooks。刻意不由 plugin 註冊：每個 hook 在每次符合的工具呼叫都要啟動一個 PowerShell 行程，而 plugin 是裝給所有人的，其中多數人不會開治理 session。專案自己的 `PreToolUse` hooks 仍會執行——這樣注入的 hooks 是「附加」而非「取代」。
 
 遇到 workspace 不是 Git repository、治理 hook 缺失或無法解析、或沒有 PowerShell 直譯器時，它會拒絕而不是繼續。最後一項最關鍵:找不到直譯器的 hook 不會擋任何東西也不會報錯，session 會自稱受治理卻什麼都沒執行。
@@ -158,7 +161,8 @@ Provost 聚焦 graduated governance：依 blast radius 提高監督強度，並�
 
 - 打包好的 installer。launcher 以 session 為單位註冊 hooks，不寫入常駐設定。
 - 每個 task 的全新 agent context——原始 launcher 有做，這一版沒有。
-- 乾淨的 end-to-end governed-session quickstart 或 packaged runtime。
+- 打包好的 runtime。開啟治理 session 的過程已寫在
+  [session walkthrough](docs/examples/governed-session-walkthrough.md)，但周圍一切仍須手動組裝。
 - 完整逐 claim evidence binding。目前 acceptance entries 會被驗證，task 也可以記錄整體 verification summary，但 helper 不要求每個 acceptance claim 都有獨立 evidence record。
 - Linux/macOS support，以及其他 coding-agent environment adapters。
 

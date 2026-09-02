@@ -9,6 +9,12 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
+- An end-to-end governed session walkthrough. It opens a launcher session on a
+  throwaway Git workspace, shows a `Write` outside the running task's
+  `write_set` denied by the hook, and completes `PASS`. It is documentation of
+  a path the existing twelve checks already cover in pieces; it does not add a
+  thirteenth CI step.
+
 - A running lock opened under enforcement can only be advanced by the session
   that opened it. `StartTask`, `FinishTask`, `RecordRetry`, and `Complete` now
   refuse when `CLAUDE_CODE_SESSION_ID` is not the `enforcement.session_id`

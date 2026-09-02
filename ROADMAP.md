@@ -34,15 +34,15 @@ This roadmap describes intended work, not promised dates. Items move to
   A `mode = 'none'` lock is unaffected. `RecoverLock` stays operator-driven.
 - A published security policy with an explicit scope and a statement of what
   Tier 2 does not claim to defend against.
+- An end-to-end governed session walkthrough
+  ([`docs/examples/governed-session-walkthrough.md`](docs/examples/governed-session-walkthrough.md)).
+  It runs from a throwaway Git workspace through a write-gate denial and a
+  `Complete PASS`. The seven isolated examples remain the fastest way to see
+  one decision without opening a session.
 
 ## Next
 
-- A short demo of a governed decision being made — a write outside an approved
-  scope being denied — rather than a clean run finishing.
-- A listing in the Claude Code plugin marketplace, once the demo exists.
-- An end-to-end governed session walkthrough
-  ([proposal](docs/proposals/end-to-end-governed-session.md)). The seven existing
-  examples each run one check; none shows what using the tier is actually like.
+- A listing in the Claude Code plugin marketplace.
 - Lifecycle fixtures and automated invariant tests for manifest revisions,
   custody handoffs, verifier completion, failure signatures, ledgers, and
   terminal receipts.

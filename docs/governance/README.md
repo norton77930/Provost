@@ -44,6 +44,14 @@ variables; the wider local configuration the original launcher carried is not in
 this repository. Treat these scripts as inspectable and executable reference
 code rather than a packaged dependency.
 
+## Governed session walkthrough
+
+The isolated demos below each exercise one decision against a fixture. A
+[session walkthrough](../examples/governed-session-walkthrough.md) opens a
+governed Claude Code session from a throwaway Git workspace, shows a `Write`
+outside the running task's `write_set` denied by the hook, and completes
+`PASS`.
+
 ## Write-scope enforcement demo
 
 The repository includes a dependency-free Windows test for the write-gate

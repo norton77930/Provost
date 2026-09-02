@@ -144,6 +144,10 @@ exploration and review as needed, and keep exactly one active writer. The
 .\docs\governance\reference\Start-GovernedSession.ps1 -WorkspaceRoot D:\path\to\repo
 ```
 
+A throwaway workspace through a denied out-of-scope write and `Complete PASS`
+is the
+[governed session walkthrough](docs/examples/governed-session-walkthrough.md).
+
 The launcher sets the `PROVOST_*` environment the hooks read and registers the
 Tier 2 hooks for that session only, through `claude --settings`. They are not
 registered by the plugin on purpose: a hook costs a PowerShell process on every
@@ -246,7 +250,8 @@ highest tier.
   write a persistent Claude Code configuration.
 - Fresh agent contexts per task, which the original launcher created and this one
   does not.
-- A packaged runtime. Opening a governed session is documented and works, but
+- A packaged runtime. Opening a governed session is documented in the
+  [session walkthrough](docs/examples/governed-session-walkthrough.md), but
   everything around it is still assembled by hand.
 - Complete per-claim evidence binding. Acceptance entries are validated, and a
   task may record a verification summary, but the helper does not yet require a
