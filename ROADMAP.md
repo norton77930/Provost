@@ -32,6 +32,11 @@ This roadmap describes intended work, not promised dates. Items move to
   it. `StartTask`, `FinishTask`, `RecordRetry`, and `Complete` refuse a caller
   whose `CLAUDE_CODE_SESSION_ID` is not the recorded `enforcement.session_id`.
   A `mode = 'none'` lock is unaffected. `RecoverLock` stays operator-driven.
+- Coverage for the two lifecycle actions no test had ever run. `RecordRetry`
+  and `RecoverLock` are exercised against the real helper, and `RecoverLock`'s
+  exemption from the session binding is asserted rather than assumed — a change
+  that routed it through the same gate would now fail CI instead of silently
+  closing the operator's escape hatch.
 - A published security policy with an explicit scope and a statement of what
   Tier 2 does not claim to defend against.
 - An end-to-end governed session walkthrough
@@ -47,11 +52,6 @@ This roadmap describes intended work, not promised dates. Items move to
   who will not read a walkthrough before deciding whether to care. It needs a
   screen recording, so it cannot be produced by an agent alone.
 - A listing in the Claude Code plugin marketplace.
-- Cover the two lifecycle actions no test has ever run
-  ([proposal](docs/proposals/untested-lifecycle-actions.md)). `RecordRetry` and
-  `RecoverLock` have zero calls across the suite, and `RecoverLock` is the
-  operator escape hatch that the session binding deliberately exempts — an
-  exemption nothing currently holds in place.
 - Evidence records defined and enforced per acceptance claim.
 - A cross-platform Tier 2 runtime with equivalent fail-closed semantics for
   Linux and macOS. The collaborator tier already runs on all three.

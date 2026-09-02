@@ -9,6 +9,14 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
+- Coverage for `RecordRetry` and `RecoverLock`, the two lifecycle actions that
+  no test had ever called. `RecordRetry` is checked for its running-task
+  precondition, the ledger event it appends, the one-retry-per-task rule, and
+  its session binding; `RecoverLock` for the `-Acknowledge` requirement, the
+  collision-resistant archive name, and — the reason the check exists — that it
+  still succeeds from a session other than the one that opened an enforced
+  lock. That exemption is deliberate and nothing was holding it in place.
+
 - An end-to-end governed session walkthrough. It opens a launcher session on a
   throwaway Git workspace, shows a `Write` outside the running task's
   `write_set` denied by the hook, and completes `PASS`. It is documentation of
