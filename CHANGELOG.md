@@ -31,6 +31,13 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Changed
 
+- The launcher records what `claude --settings` actually does with hooks,
+  because the liveness proof depends on it. Measured: hooks supplied that way
+  are added to a project's own rather than replacing them, and
+  `disableAllHooks` suppresses everything including `SessionStart`, so the
+  marker is absent and `Initialize` refuses. No combination leaves the marker
+  present while the write gate is gone.
+
 - The Tier 2 hooks are registered per launch rather than by the plugin. Each
   costs a PowerShell process on every matching tool call — around two seconds on
   a normal Windows machine — and the plugin installs for everyone, including the

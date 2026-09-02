@@ -98,7 +98,7 @@ claude --plugin-dir .
 .\docs\governance\reference\Start-GovernedSession.ps1 -WorkspaceRoot D:\path\to\repo
 ```
 
-launcher 會設好 hooks 讀取的 `PROVOST_*` environment，並透過 `claude --settings` **只為該 session** 註冊 Tier 2 hooks。刻意不由 plugin 註冊：每個 hook 在每次符合的工具呼叫都要啟動一個 PowerShell 行程，而 plugin 是裝給所有人的，其中多數人不會開治理 session。
+launcher 會設好 hooks 讀取的 `PROVOST_*` environment，並透過 `claude --settings` **只為該 session** 註冊 Tier 2 hooks。刻意不由 plugin 註冊：每個 hook 在每次符合的工具呼叫都要啟動一個 PowerShell 行程，而 plugin 是裝給所有人的，其中多數人不會開治理 session。專案自己的 `PreToolUse` hooks 仍會執行——這樣注入的 hooks 是「附加」而非「取代」。
 
 遇到 workspace 不是 Git repository、治理 hook 缺失或無法解析、或沒有 PowerShell 直譯器時，它會拒絕而不是繼續。最後一項最關鍵:找不到直譯器的 hook 不會擋任何東西也不會報錯，session 會自稱受治理卻什麼都沒執行。
 

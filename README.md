@@ -148,7 +148,8 @@ The launcher sets the `PROVOST_*` environment the hooks read and registers the
 Tier 2 hooks for that session only, through `claude --settings`. They are not
 registered by the plugin on purpose: a hook costs a PowerShell process on every
 matching tool call, and the plugin installs for everyone, including the majority
-who never open a governed session.
+who never open a governed session. A project's own `PreToolUse` hooks still
+run: hooks supplied this way are added to them, not swapped for them.
 
 It refuses rather than proceeding when the workspace is not a Git repository,
 when a governance hook is missing or does not parse, or when no PowerShell

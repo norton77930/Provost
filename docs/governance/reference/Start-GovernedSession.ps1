@@ -93,6 +93,13 @@ else {
 # seconds on a normal Windows machine — and the plugin installs for everyone,
 # including the majority who never open a governed session. Registering them per
 # launch keeps that cost with the people who asked for it.
+#
+# Measured, because the liveness proof depends on it: hooks supplied this way
+# concatenate with a project's own rather than replacing them, so a project that
+# registers its own PreToolUse hooks does not displace the write gate. And
+# `disableAllHooks` suppresses everything including SessionStart, so the marker
+# is absent and Initialize refuses. There is no combination that leaves the
+# marker present while the write gate is gone.
 function New-HookEntry {
     param([string]$ScriptName)
     return [ordered]@{

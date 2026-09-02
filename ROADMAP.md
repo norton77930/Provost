@@ -39,10 +39,6 @@ This roadmap describes intended work, not promised dates. Items move to
   green. Cover the launcher's environment contract at the same time — a
   separator mismatch between the launcher and the ref guard shipped once
   already, and nothing tested that seam.
-- Confirm how `claude --settings` hooks combine with a user's own settings. If a
-  user configuration can replace rather than extend the launcher's `PreToolUse`
-  array, the `SessionStart` marker would still appear while the write gate was
-  absent, and the liveness proof would be a false positive.
 - Carry enforcement evidence forward. The lock, the ledger, and the handoff
   receipt record nothing about whether a run was under enforcement, so a later
   governed run can adopt continuation state from one that was not.
