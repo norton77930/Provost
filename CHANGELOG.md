@@ -24,6 +24,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
+- A Linux CI job that runs the `SessionStart` hook under Linux bash and parses
+  the plugin manifests, so the claim that the collaborator tier runs wherever
+  Claude Code runs is backed by a check rather than asserted.
 - A Claude Code plugin manifest (`.claude-plugin/plugin.json`) and a marketplace
   entry (`.claude-plugin/marketplace.json`), so the collaborator tier can be
   installed rather than copied directory by directory.

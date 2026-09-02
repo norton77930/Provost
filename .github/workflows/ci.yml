@@ -59,3 +59,30 @@ jobs:
       - name: Validate relative Markdown links
         shell: powershell
         run: powershell.exe -NoProfile -File .\tests\docs\Test-MarkdownLinks.ps1
+
+  collaborator-tier-checks:
+    name: Linux collaborator-tier checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Session hook is executable
+        run: test -x hooks/session-start
+
+      - name: Session hook emits valid JSON under Linux bash
+        run: |
+          ./hooks/session-start > hook-output.json
+          python3 - <<'PY'
+          import json
+          context = json.load(open('hook-output.json'))['hookSpecificOutput']['additionalContext']
+          assert len(context.split(chr(10))) > 50, 'the injected policy looks truncated'
+          assert ')nn' not in context, 'newline escaping collapsed to bare "n"'
+          print('policy injected:', len(context), 'chars')
+          PY
+
+      - name: Plugin manifests parse
+        run: |
+          for manifest in .claude-plugin/plugin.json .claude-plugin/marketplace.json hooks/hooks.json; do
+            python3 -m json.tool "$manifest" > /dev/null
+          done
