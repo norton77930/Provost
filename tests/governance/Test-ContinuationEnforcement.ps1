@@ -185,7 +185,7 @@ try {
     # Nineteen different checks raise CONTINUATION, so the code alone would not
     # tell us the refusal came from the enforcement gate rather than a hash or
     # ordering complaint.
-    if ((Get-ForemanLastThrowMessage) -notmatch 'enforcement none') {
+    if ((Get-ForemanLastThrowMessage) -notmatch 'source recorded none') {
         throw ('The refusal did not come from the enforcement gate: ' + (Get-ForemanLastThrowMessage))
     }
 

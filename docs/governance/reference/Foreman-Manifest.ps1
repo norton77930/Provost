@@ -950,7 +950,7 @@ function Resolve-ContinuationAdoption {
         [System.Collections.IDictionary]$Draft,
         [System.Collections.IDictionary]$Shape,
         [AllowNull()][string[]]$WorkspaceMembers = $null,
-        [System.Collections.IDictionary]$Enforcement = $null
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Enforcement
     )
     if ($null -eq $Shape['continuation']) { return @() }
     $continuation = $Shape['continuation']
@@ -976,17 +976,24 @@ function Resolve-ContinuationAdoption {
     if ([string]$receipt['schema'] -ne 'provost-foreman-handoff/v1') { Stop-Foreman -Code 'CONTINUATION' -Message 'The terminal handoff receipt schema is unsupported.' }
     if (@('FAIL', 'BLOCKED', 'ESCALATE') -notcontains [string]$receipt['terminal_state']) { Stop-Foreman -Code 'CONTINUATION' -Message 'The handoff receipt is not terminal.' }
 
-    # An enforced run must not build on work that nothing was policing. The
-    # prior receipt records what was true when that run opened; a receipt with
-    # no record was written before this was tracked, which is a different claim
-    # from having been enforced.
-    if ($null -ne $Enforcement -and [string]$Enforcement['mode'] -eq 'hooks') {
+    # An enforced run must not build on a source that was not. The record is
+    # open-time truth: it says the hooks were live when that run began, not that
+    # every write in it was policed. A receipt with no record was written before
+    # this was tracked, which is a different claim from having been unenforced,
+    # and both are refused.
+    #
+    # The engagement test is "not none" rather than "is hooks" on purpose. A
+    # later, stronger mode must not quietly stop the gate from engaging for the
+    # runs that need it most.
+    if ([string]$Enforcement['mode'] -ne 'none') {
         $priorMode = '(none recorded)'
-        if ($receipt.Contains('enforcement') -and $null -ne $receipt['enforcement'] -and $receipt['enforcement'].Contains('mode')) {
-            $priorMode = [string]$receipt['enforcement']['mode']
+        $priorRecord = $null
+        if ($receipt.Contains('enforcement')) { $priorRecord = $receipt['enforcement'] }
+        if ($priorRecord -is [System.Collections.IDictionary] -and $priorRecord.Contains('mode')) {
+            $priorMode = [string]$priorRecord['mode']
         }
-        if ($priorMode -ne 'hooks') {
-            Stop-Foreman -Code 'CONTINUATION' -Message ('This run is enforced, but the continuation source ran with enforcement ' + $priorMode + '. Refusing to adopt work that no write gate was policing.')
+        if ($priorMode -eq 'none' -or $priorMode -eq '(none recorded)') {
+            Stop-Foreman -Code 'CONTINUATION' -Message ('This run opened under enforcement ' + [string]$Enforcement['mode'] + ', but the continuation source recorded ' + $priorMode + '. Refusing to adopt work from a run that opened with nothing enforcing.')
         }
     }
     if ([string]$receipt['revision'] -ne $previousRevision -or [string]$receipt['spec_system'] -ne [string]$Shape['spec_system'] -or [string]$receipt['change_id'] -ne [string]$Shape['change_id']) {
@@ -1172,6 +1179,25 @@ function Assert-NoRepeatedFailureLoop {
     }
 }
 
+function New-EnforcementRecord {
+    param(
+        [Parameter(Mandatory = $true)][string]$Mode,
+        [string]$SessionId,
+        [string]$MarkerWrittenUtc
+    )
+    # One vocabulary, validated in one place. A mode that is not known here is a
+    # schema error rather than a string that quietly fails an equality test at
+    # some distant call site.
+    if (@('hooks', 'none') -notcontains $Mode) {
+        Stop-Foreman -Code 'SCHEMA' -Message ('Unknown enforcement mode: ' + $Mode)
+    }
+    $sessionValue = $null
+    if (-not [string]::IsNullOrWhiteSpace($SessionId)) { $sessionValue = $SessionId }
+    $markerValue = $null
+    if (-not [string]::IsNullOrWhiteSpace($MarkerWrittenUtc)) { $markerValue = $MarkerWrittenUtc }
+    return [ordered]@{ mode = $Mode; session_id = $sessionValue; marker_written_utc = $markerValue }
+}
+
 function Resolve-SessionEnforcement {
     param([string]$Root)
     # Returns what was true about enforcement when this run opened, so the fact
@@ -1183,7 +1209,7 @@ function Resolve-SessionEnforcement {
     # hooks gate on the same variable, so this engages exactly when they would.
     # Helper-level use is a supported mode, recorded plainly rather than omitted.
     if ($env:PROVOST_SESSION_PROFILE -ne 'foreman') {
-        return [ordered]@{ mode = 'none'; session_id = $null; marker_written_utc = $null }
+        return New-EnforcementRecord -Mode 'none'
     }
 
     $sessionId = [string]$env:CLAUDE_CODE_SESSION_ID
@@ -1212,7 +1238,7 @@ function Resolve-SessionEnforcement {
 
     $markerWritten = $null
     if ($marker.Contains('written_utc')) { $markerWritten = [string]$marker['written_utc'] }
-    return [ordered]@{ mode = 'hooks'; session_id = $sessionId; marker_written_utc = $markerWritten }
+    return New-EnforcementRecord -Mode 'hooks' -SessionId $sessionId -MarkerWrittenUtc $markerWritten
 }
 
 function Invoke-Initialize {

@@ -124,6 +124,7 @@ powershell.exe -NoProfile -File .\tests\governance\Test-WriteScope.ps1
 | Failure diagnosis | `Test-FailureDiagnosis.ps1` | 是 | [demo](docs/examples/governed-failure-diagnosis-demo.md) |
 | Audit artifacts | `Test-AuditArtifacts.ps1` | 是 | [demo](docs/examples/governed-audit-artifacts-demo.md) |
 | Session liveness | `Test-SessionLiveness.ps1` | 是 | — |
+| Continuation enforcement | `Test-ContinuationEnforcement.ps1` | 是 | — |
 
 每份 walkthrough 記錄該檢查的前置條件、預期輸出，以及它能證明與不能證明的界線。
 

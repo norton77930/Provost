@@ -14,7 +14,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   lock, the `run_initialized` ledger event, and the terminal handoff receipt.
   An enforced run then refuses to adopt continuation work from a run recorded
   as unenforced, or from a receipt carrying no record at all. The adoption path
-  had no test of any kind before this; it now has both directions.
+  had no test of any kind before this; it now has both directions. The record
+  is open-time truth: it says the hooks were live when the run began, not that
+  every write in it was policed.
 
 - Coverage for the producer half of the liveness contract. The `SessionStart`
   hook is now driven for real rather than the marker being hand-written, so a

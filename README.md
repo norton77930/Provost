@@ -186,6 +186,7 @@ powershell.exe -NoProfile -File .\tests\governance\Test-WriteScope.ps1
 | Failure diagnosis | `Test-FailureDiagnosis.ps1` | yes | [demo](docs/examples/governed-failure-diagnosis-demo.md) |
 | Audit artifacts | `Test-AuditArtifacts.ps1` | yes | [demo](docs/examples/governed-audit-artifacts-demo.md) |
 | Session liveness | `Test-SessionLiveness.ps1` | yes | — |
+| Continuation enforcement | `Test-ContinuationEnforcement.ps1` | yes | — |
 
 Each walkthrough records the prerequisites, the expected output, and the
 limitations of what that check proves.
