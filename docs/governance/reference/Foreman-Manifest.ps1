@@ -1734,13 +1734,30 @@ function Invoke-Complete {
     [pscustomobject]@{ status = $Outcome }
 }
 
+function New-LockArchivePath {
+    param([string]$LockPath, [string]$Prefix)
+    # A second-resolution stamp alone collided whenever two locks were archived
+    # inside the same second, and Copy-Item overwrites silently. The earlier
+    # archive was lost, and with it the trust record for a handoff receipt still
+    # on disk, which a later Initialize then reported as tampering. Carry a
+    # random suffix as run identifiers already do, and refuse to overwrite.
+    $directory = Split-Path -Parent $LockPath
+    $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')
+    $suffix = [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $archivePath = Join-Path $directory ($Prefix + '-' + $stamp + '-' + $suffix + '.json')
+    if (Test-Path -LiteralPath $archivePath) {
+        Stop-Foreman -Code 'IMMUTABLE' -Message ('Refusing to overwrite an existing lock archive: ' + $archivePath)
+    }
+    return $archivePath
+}
+
 function Invoke-CloseBlocked {
     if (-not $Acknowledge -or [string]::IsNullOrWhiteSpace($WorkspaceRoot)) { Stop-Foreman -Code 'ACTIVE_LOCK' -Message 'CloseBlocked requires WorkspaceRoot and explicit -Acknowledge.' }
     $root = Get-NormalizedRoot -Path $WorkspaceRoot
     $lockInfo = Read-Lock -Root $root
     $state = [string]$lockInfo.value['state']
     if (@('FAIL', 'BLOCKED', 'ESCALATE') -notcontains $state) { Stop-Foreman -Code 'ACTIVE_LOCK' -Message 'Only a terminal non-PASS lock can be closed.' }
-    $archive = Join-Path (Split-Path -Parent $lockInfo.path) ('archived-lock-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '.json')
+    $archive = New-LockArchivePath -LockPath $lockInfo.path -Prefix 'archived-lock'
     Copy-Item -LiteralPath $lockInfo.path -Destination $archive -ErrorAction Stop
     Remove-Item -LiteralPath $lockInfo.path -Force -ErrorAction Stop
     [pscustomobject]@{ status = 'CLOSED'; archive = $archive }
@@ -1750,7 +1767,7 @@ function Invoke-RecoverLock {
     if (-not $Acknowledge -or [string]::IsNullOrWhiteSpace($WorkspaceRoot)) { Stop-Foreman -Code 'ACTIVE_LOCK' -Message 'RecoverLock requires WorkspaceRoot and explicit -Acknowledge.' }
     $root = Get-NormalizedRoot -Path $WorkspaceRoot
     $lockInfo = Read-Lock -Root $root
-    $archive = Join-Path (Split-Path -Parent $lockInfo.path) ('abandoned-lock-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '.json')
+    $archive = New-LockArchivePath -LockPath $lockInfo.path -Prefix 'abandoned-lock'
     Copy-Item -LiteralPath $lockInfo.path -Destination $archive -ErrorAction Stop
     Remove-Item -LiteralPath $lockInfo.path -Force -ErrorAction Stop
     [pscustomobject]@{ status = 'RECOVERED'; archive = $archive }

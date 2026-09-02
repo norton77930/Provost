@@ -209,6 +209,22 @@ try {
         }
     }
 
+    # Each closed lock must archive to its own file. A timestamp-only name
+    # collided when two locks were closed inside the same second, and the
+    # overwrite silently dropped the trust record of a handoff receipt that was
+    # still on disk, which a later Initialize reported as tampering.
+    $foremanRoot = Join-Path $resolvedTemporaryRoot '.claude\provost\foreman'
+    $lockArchives = @(Get-ChildItem -LiteralPath $foremanRoot -Filter 'archived-lock-*.json' -File)
+    if ($lockArchives.Count -lt 2) {
+        throw ('Expected one archive per closed lock, found ' + $lockArchives.Count + '.')
+    }
+    foreach ($lockArchive in $lockArchives) {
+        if ($lockArchive.Name -notmatch '^archived-lock-\d{8}-\d{6}-[0-9a-f]{8}\.json$') {
+            throw ('Lock archive name carries no collision-resistant suffix: ' + $lockArchive.Name)
+        }
+    }
+    Write-Pass -Label 'Each closed lock archives to a file of its own'
+
     Write-Output ('Failure-diagnosis checks passed: ' + (Get-ForemanTestPassCount))
 }
 finally {

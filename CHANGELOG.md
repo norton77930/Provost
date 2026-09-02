@@ -40,6 +40,16 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   statement of what Tier 2 does not claim to defend against.
 - A Dependabot configuration for GitHub Actions updates.
 
+### Fixed
+
+- Closing two locks inside the same second overwrote the first lock archive.
+  The archive file was named from a second-resolution timestamp alone and
+  `Copy-Item` overwrites silently, so the lost archive took the trust record
+  for a handoff receipt still on disk with it, and the next `Initialize`
+  reported that genuine receipt as tampering. Lock archives now carry a random
+  suffix and refuse to overwrite an existing file. This is what had failed CI
+  on every push since 0.1.4.
+
 ## [0.1.4] - 2026-08-13
 
 Failure-diagnosis and audit-artifacts coverage since 0.1.3.
