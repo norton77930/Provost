@@ -9,6 +9,13 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
+- A running lock opened under enforcement can only be advanced by the session
+  that opened it. `StartTask`, `FinishTask`, `RecordRetry`, and `Complete` now
+  refuse when `CLAUDE_CODE_SESSION_ID` is not the `enforcement.session_id`
+  recorded at `Initialize`. The helper `-SessionId` is agent-supplied and does
+  not recover the refusal. A lock opened with `mode = 'none'` is unchanged.
+  `RecoverLock` stays operator-driven and does not go through this check.
+
 - An enforcement record on every run. `Initialize` writes whether the run
   opened under hook enforcement — and the session that proved it — into the
   lock, the `run_initialized` ledger event, and the terminal handoff receipt.

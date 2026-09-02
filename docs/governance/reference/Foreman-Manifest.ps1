@@ -1403,6 +1403,28 @@ function Get-ActiveLockForSession {
     foreach ($name in @('task_states', 'retries', 'active_readonly', 'ledger_path')) {
         if (-not $lock.Contains($name)) { Stop-Foreman -Code 'ACTIVE_LOCK' -Message ('The active Foreman lock is missing ' + $name + '.') }
     }
+    # A lock opened under enforcement is bound to the session that proved the
+    # hooks were live. The helper -SessionId is agent-supplied and is not that
+    # proof; CLAUDE_CODE_SESSION_ID is. RecoverLock does not call this function:
+    # a stuck lock still needs an operator-driven way out.
+    #
+    # The engagement test is "not none" rather than "is hooks" on purpose. A
+    # later, stronger mode must not quietly stop the gate from engaging for the
+    # runs that need it most.
+    if ($lock.Contains('enforcement') -and $lock['enforcement'] -is [System.Collections.IDictionary]) {
+        $mode = ''
+        if ($lock['enforcement'].Contains('mode')) { $mode = [string]$lock['enforcement']['mode'] }
+        if ($mode -ne 'none') {
+            $owner = ''
+            if ($lock['enforcement'].Contains('session_id') -and $null -ne $lock['enforcement']['session_id']) {
+                $owner = [string]$lock['enforcement']['session_id']
+            }
+            $caller = [string]$env:CLAUDE_CODE_SESSION_ID
+            if ([string]::IsNullOrWhiteSpace($caller) -or $caller -ne $owner) {
+                Stop-Foreman -Code 'SESSION' -Message ('The active Foreman lock was opened under enforcement by session ' + $owner + ', not this one. Refusing to advance it from a different session.')
+            }
+        }
+    }
     return $lockInfo
 }
 
@@ -1851,6 +1873,8 @@ function Invoke-CloseBlocked {
 }
 
 function Invoke-RecoverLock {
+    # RecoverLock does not go through Get-ActiveLockForSession. A stuck lock
+    # still needs an operator-driven way out, and -Acknowledge is that way.
     if (-not $Acknowledge -or [string]::IsNullOrWhiteSpace($WorkspaceRoot)) { Stop-Foreman -Code 'ACTIVE_LOCK' -Message 'RecoverLock requires WorkspaceRoot and explicit -Acknowledge.' }
     $root = Get-NormalizedRoot -Path $WorkspaceRoot
     $lockInfo = Read-Lock -Root $root

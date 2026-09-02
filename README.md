@@ -162,6 +162,9 @@ would call itself governed while enforcing nothing.
 marker is evidence that the hooks loaded and ran, not a credential: it is a
 plain file in the workspace, so anything that can write the workspace can write
 it. It catches a misconfigured session, not one that is lying on purpose.
+`StartTask`, `FinishTask`, `RecordRetry`, and `Complete` of an enforced lock
+then require the same Claude Code session that opened it; supplying a different
+helper `-SessionId` does not recover the refusal.
 
 ## Tier 2 reference checks (Windows)
 

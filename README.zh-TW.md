@@ -102,7 +102,7 @@ launcher 會設好 hooks 讀取的 `PROVOST_*` environment，並透過 `claude -
 
 遇到 workspace 不是 Git repository、治理 hook 缺失或無法解析、或沒有 PowerShell 直譯器時，它會拒絕而不是繼續。最後一項最關鍵:找不到直譯器的 hook 不會擋任何東西也不會報錯，session 會自稱受治理卻什麼都沒執行。
 
-剩下的檢查在 `Initialize`：除非 `SessionStart` hook 已寫下標記該 session 的 liveness marker，否則拒絕開啟 run。這個 marker 是「hooks 確實載入並執行過」的證據，不是憑證——它是 workspace 裡的一個純文字檔，任何能寫入 workspace 的東西都寫得出來。它擋的是設定錯誤的 session，不是刻意說謊的 session。
+剩下的檢查在 `Initialize`：除非 `SessionStart` hook 已寫下標記該 session 的 liveness marker，否則拒絕開啟 run。這個 marker 是「hooks 確實載入並執行過」的證據，不是憑證——它是 workspace 裡的一個純文字檔，任何能寫入 workspace 的東西都寫得出來。它擋的是設定錯誤的 session，不是刻意說謊的 session。對以 enforcement 開啟的 lock 做 `StartTask`、`FinishTask`、`RecordRetry` 與 `Complete`，必須由開啟它的同一個 Claude Code session 執行；改傳 helper 的 `-SessionId` 無法繞過。
 
 ## Tier 2 reference 檢查（Windows）
 

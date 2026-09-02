@@ -28,6 +28,10 @@ This roadmap describes intended work, not promised dates. Items move to
 - An enforcement record on every run — in the lock, the initialize ledger
   event, and the terminal handoff receipt — and a continuation gate that
   refuses to adopt work from a run that opened with nothing enforcing.
+- A running lock opened under enforcement is bound to the session that opened
+  it. `StartTask`, `FinishTask`, `RecordRetry`, and `Complete` refuse a caller
+  whose `CLAUDE_CODE_SESSION_ID` is not the recorded `enforcement.session_id`.
+  A `mode = 'none'` lock is unaffected. `RecoverLock` stays operator-driven.
 - A published security policy with an explicit scope and a statement of what
   Tier 2 does not claim to defend against.
 
@@ -36,12 +40,6 @@ This roadmap describes intended work, not promised dates. Items move to
 - A short demo of a governed decision being made — a write outside an approved
   scope being denied — rather than a clean run finishing.
 - A listing in the Claude Code plugin marketplace, once the demo exists.
-- Tie a running lock to the session that opened it
-  ([proposal](docs/proposals/tie-lock-to-session.md)). The enforcement record is
-  open-time truth, so a lock opened under enforcement can be driven through
-  StartTask, FinishTask, and Complete from a later plain session, and the
-  resulting receipt still reads as enforced. With `enforcement.session_id` now
-  in the lock this is a check in `Get-ActiveLockForSession`.
 - End-to-end examples now that a governed session can be opened directly.
 - Lifecycle fixtures and automated invariant tests for manifest revisions,
   custody handoffs, verifier completion, failure signatures, ledgers, and

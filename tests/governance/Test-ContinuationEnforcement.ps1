@@ -163,12 +163,37 @@ function New-TerminatedPriorRun {
     return [pscustomobject]@{ ManifestPath = $r001.ManifestPath; HandoffPath = $handoffPath }
 }
 
+function New-InitializedRun {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][bool]$Governed,
+        [string]$SessionId = 'provost-lock-session'
+    )
+    New-GitWorkspace -Root $Root -RelativeFile 'src/sample.txt' -Content 'baseline'
+    $foremanRoot = Join-Path $Root '.claude\provost\foreman'
+    $plans = Join-Path $foremanRoot 'plans'
+    [System.IO.Directory]::CreateDirectory($plans) | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $plans 'plan.md'), '# Continuation plan', [System.Text.UTF8Encoding]::new($false))
+    Set-SessionEnforcement -Root $Root -Governed $Governed
+    $r001 = New-ContinuationDraft -Root $Root -RevisionNumber 1
+    Invoke-ForemanHelper -Parameters @{
+        Action = 'Initialize'
+        DraftPath = $r001.DraftPath
+        ManifestPath = $r001.ManifestPath
+        WorkspaceRoot = $Root
+        SessionId = $SessionId
+    } | Out-Null
+    return [pscustomobject]@{ ManifestPath = $r001.ManifestPath; SessionId = $SessionId }
+}
+
 # Continuation adopts work in progress from a prior run. Nothing recorded
 # whether that run was under enforcement, so an enforced run could build on
 # unpoliced work and the audit trail would not show the join.
 $refusedRoot = New-IsolatedTempRoot -Prefix 'provost-continuation-refuse-'
 $acceptedRoot = New-IsolatedTempRoot -Prefix 'provost-continuation-accept-'
 $legacyRoot = New-IsolatedTempRoot -Prefix 'provost-continuation-legacy-'
+$ownedRoot = New-IsolatedTempRoot -Prefix 'provost-lock-session-owned-'
+$noneRoot = New-IsolatedTempRoot -Prefix 'provost-lock-session-none-'
 try {
     $unpoliced = New-TerminatedPriorRun -Root $refusedRoot -Governed $false
     Set-SessionEnforcement -Root $refusedRoot -Governed $true
@@ -250,6 +275,62 @@ try {
         throw ('The refusal did not come from the enforcement gate: ' + (Get-ForemanLastThrowMessage))
     }
 
+    # A lock opened under enforcement must only be advanced by the session that
+    # opened it. -SessionId is agent-supplied; CLAUDE_CODE_SESSION_ID is not.
+    $owned = New-InitializedRun -Root $ownedRoot -Governed $true
+    $ownerSessionId = [string]$env:CLAUDE_CODE_SESSION_ID
+    $ownedMarkerPath = Join-Path $ownedRoot '.claude\provost\foreman\session-liveness.json'
+    $ownerMarker = [System.IO.File]::ReadAllText($ownedMarkerPath)
+    $startOwnedTask = @{
+        Action = 'StartTask'
+        ManifestPath = $owned.ManifestPath
+        WorkspaceRoot = $ownedRoot
+        SessionId = $owned.SessionId
+        TaskId = 'T01'
+    }
+
+    $env:PROVOST_SESSION_PROFILE = $null
+    Remove-Item -LiteralPath 'Env:CLAUDE_CODE_SESSION_ID' -ErrorAction SilentlyContinue
+    Assert-ThrowsCode -Code 'SESSION' -Label 'A plain session is refused when it tries to advance an enforced lock' -Action {
+        Invoke-ForemanHelper -Parameters $startOwnedTask
+    }
+    if ((Get-ForemanLastThrowMessage) -notmatch 'from a different session') {
+        throw ('The refusal did not come from the session-binding gate: ' + (Get-ForemanLastThrowMessage))
+    }
+
+    Set-SessionEnforcement -Root $ownedRoot -Governed $true
+    Assert-ThrowsCode -Code 'SESSION' -Label 'A different governed session is refused when it tries to advance a lock it did not open' -Action {
+        Invoke-ForemanHelper -Parameters $startOwnedTask
+    }
+    if ((Get-ForemanLastThrowMessage) -notmatch 'from a different session') {
+        throw ('The refusal did not come from the session-binding gate: ' + (Get-ForemanLastThrowMessage))
+    }
+
+    $env:PROVOST_SESSION_PROFILE = 'foreman'
+    $env:CLAUDE_CODE_SESSION_ID = $ownerSessionId
+    [System.IO.File]::WriteAllText($ownedMarkerPath, $ownerMarker, [System.Text.UTF8Encoding]::new($false))
+    Invoke-ForemanHelper -Parameters $startOwnedTask | Out-Null
+    Invoke-ForemanHelper -Parameters @{
+        Action = 'FinishTask'
+        ManifestPath = $owned.ManifestPath
+        WorkspaceRoot = $ownedRoot
+        SessionId = $owned.SessionId
+        TaskId = 'T01'
+        Outcome = 'PASS'
+        ChangedFilesJson = '[]'
+    } | Out-Null
+    Write-Pass -Label 'A governed run advances its own lock through StartTask and FinishTask'
+
+    $none = New-InitializedRun -Root $noneRoot -Governed $false
+    Invoke-ForemanHelper -Parameters @{
+        Action = 'StartTask'
+        ManifestPath = $none.ManifestPath
+        WorkspaceRoot = $noneRoot
+        SessionId = $none.SessionId
+        TaskId = 'T01'
+    } | Out-Null
+    Write-Pass -Label 'A mode=none lock is advanced by a caller with profile unset'
+
     Write-Output ('Continuation-enforcement checks passed: ' + (Get-ForemanTestPassCount))
 }
 finally {
@@ -258,4 +339,6 @@ finally {
     Remove-IsolatedTempRoot -Root $refusedRoot
     Remove-IsolatedTempRoot -Root $acceptedRoot
     Remove-IsolatedTempRoot -Root $legacyRoot
+    Remove-IsolatedTempRoot -Root $ownedRoot
+    Remove-IsolatedTempRoot -Root $noneRoot
 }
