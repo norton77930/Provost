@@ -9,6 +9,12 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
+- Coverage for the producer half of the liveness contract. The `SessionStart`
+  hook is now driven for real rather than the marker being hand-written, so a
+  change to its path or payload handling fails the suite instead of silently
+  refusing every session. A companion check asserts the launcher sets every
+  `PROVOST_*` variable the hooks read.
+
 - `Start-GovernedSession.ps1`, a launcher that opens a governed session. It sets
   the `PROVOST_*` environment the hooks read, registers the Tier 2 hooks for
   that session only through `claude --settings`, and refuses when they could not

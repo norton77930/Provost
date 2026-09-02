@@ -33,12 +33,6 @@ This roadmap describes intended work, not promised dates. Items move to
 - A short demo of a governed decision being made — a write outside an approved
   scope being denied — rather than a clean run finishing.
 - A listing in the Claude Code plugin marketplace, once the demo exists.
-- Cover the producer half of the liveness contract. The check has tests; the
-  `SessionStart` hook that writes the marker does not, so a change to its path
-  or payload handling would refuse every real session while the suite stayed
-  green. Cover the launcher's environment contract at the same time — a
-  separator mismatch between the launcher and the ref guard shipped once
-  already, and nothing tested that seam.
 - Carry enforcement evidence forward. The lock, the ledger, and the handoff
   receipt record nothing about whether a run was under enforcement, so a later
   governed run can adopt continuation state from one that was not.
