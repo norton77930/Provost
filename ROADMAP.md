@@ -6,27 +6,45 @@ This roadmap describes intended work, not promised dates. Items move to
 ## Current
 
 - Tier 0/1/2 graduated-governance model and decision rule.
-- Tier 1 Claude Code collaborator roles and orchestration policy.
+- Tier 1 Claude Code collaborator roles and orchestration policy, installable
+  as a Claude Code plugin. The orchestration policy reaches a session through a
+  `SessionStart` hook rather than a manual merge into `CLAUDE.md`.
 - Methodology skills for TDD, diagnosis, review, and completion verification.
 - Windows/PowerShell Tier 2 reference helper and hook implementations.
 - Hook-level write-scope and ref-guard enforcement demos, helper-level
   v1 manifest-pin, v2 path-custody, completion-gate, failure-diagnosis,
-  and audit-artifacts tests, and basic Windows CI checks.
+  and audit-artifacts tests.
+- CI on Windows for the Tier 2 reference checks and on Linux for the
+  collaborator tier, so the claim that the collaborator tier runs wherever
+  Claude Code runs is checked rather than asserted.
+- A role-definition check that fails when the README role tables drift from the
+  shipped frontmatter.
 - Governance capability matrix that separates implemented behavior, design
   intent, and limitations.
+- A published security policy with an explicit scope and a statement of what
+  Tier 2 does not claim to defend against.
 
 ## Next
 
-- Package the governed launcher and Claude Code hook registration needed for a
-  clean end-to-end setup.
-- Add lifecycle fixtures and automated invariant tests for manifest revisions,
+- A short demo of a governed decision being made — a write outside an approved
+  scope being denied — rather than a clean run finishing.
+- A listing in the Claude Code plugin marketplace, once the demo exists.
+- Conditional activation for the Tier 2 hooks, so they can ship with the plugin
+  instead of being installed by hand. A plugin's hooks apply to every session
+  once enabled, and the write gate fails closed outside a governed run, so it
+  must stand down silently when no governed workspace is active — as the ref
+  guard already does.
+- The governed launcher and the `PROVOST_*` environment the Tier 2 hooks
+  require. Plugin hook registration now covers the part that used to need a
+  launcher, so what remains is environment setup and lifecycle entry.
+- End-to-end examples, once the two items above make a governed session
+  reachable without hand-assembly.
+- Lifecycle fixtures and automated invariant tests for manifest revisions,
   custody handoffs, verifier completion, failure signatures, ledgers, and
   terminal receipts.
-- Define and enforce evidence records per acceptance claim.
-- Improve installation, configuration, and versioned release packaging.
-- Build a cross-platform governed runtime with equivalent fail-closed semantics
-  for Windows, Linux, and macOS.
-- Add end-to-end examples once the public launcher exists.
+- Evidence records defined and enforced per acceptance claim.
+- A cross-platform Tier 2 runtime with equivalent fail-closed semantics for
+  Linux and macOS. The collaborator tier already runs on all three.
 
 ## Later / exploration
 
