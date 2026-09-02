@@ -64,6 +64,10 @@ jobs:
         shell: powershell
         run: powershell.exe -NoProfile -File .\tests\governance\Test-ContinuationEnforcement.ps1
 
+      - name: Exercise governed lifecycle actions
+        shell: powershell
+        run: powershell.exe -NoProfile -File .\tests\governance\Test-LifecycleActions.ps1
+
       - name: Validate relative Markdown links
         shell: powershell
         run: powershell.exe -NoProfile -File .\tests\docs\Test-MarkdownLinks.ps1

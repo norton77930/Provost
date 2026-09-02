@@ -78,6 +78,7 @@ powershell.exe -NoProfile -File .\tests\governance\Test-FailureDiagnosis.ps1
 powershell.exe -NoProfile -File .\tests\governance\Test-AuditArtifacts.ps1
 powershell.exe -NoProfile -File .\tests\governance\Test-SessionLiveness.ps1
 powershell.exe -NoProfile -File .\tests\governance\Test-ContinuationEnforcement.ps1
+powershell.exe -NoProfile -File .\tests\governance\Test-LifecycleActions.ps1
 powershell.exe -NoProfile -File .\tests\docs\Test-MarkdownLinks.ps1
 ```
 
