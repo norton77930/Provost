@@ -168,6 +168,7 @@ function New-TerminatedPriorRun {
 # unpoliced work and the audit trail would not show the join.
 $refusedRoot = New-IsolatedTempRoot -Prefix 'provost-continuation-refuse-'
 $acceptedRoot = New-IsolatedTempRoot -Prefix 'provost-continuation-accept-'
+$legacyRoot = New-IsolatedTempRoot -Prefix 'provost-continuation-legacy-'
 try {
     $unpoliced = New-TerminatedPriorRun -Root $refusedRoot -Governed $false
     Set-SessionEnforcement -Root $refusedRoot -Governed $true
@@ -181,8 +182,25 @@ try {
             SessionId = 'provost-continuation'
         }
     }
+    # Nineteen different checks raise CONTINUATION, so the code alone would not
+    # tell us the refusal came from the enforcement gate rather than a hash or
+    # ordering complaint.
+    if ((Get-ForemanLastThrowMessage) -notmatch 'enforcement none') {
+        throw ('The refusal did not come from the enforcement gate: ' + (Get-ForemanLastThrowMessage))
+    }
 
     $policed = New-TerminatedPriorRun -Root $acceptedRoot -Governed $true
+
+    # StartTask, FinishTask, and Complete each rewrite the lock, and the receipt
+    # takes its record from the lock. If any of them dropped the field the
+    # receipt would silently carry nothing, so name the invariant rather than
+    # leaving it to be implied by the adoption succeeding.
+    $policedReceipt = Get-Content -LiteralPath $policed.HandoffPath -Raw | ConvertFrom-Json
+    if ([string]$policedReceipt.enforcement.mode -ne 'hooks') {
+        throw ('The receipt of an enforced run recorded mode ' + [string]$policedReceipt.enforcement.mode + ' after the lifecycle rewrote the lock.')
+    }
+    Write-Pass -Label 'The enforcement record survives the lock rewrites into the terminal receipt'
+
     Set-SessionEnforcement -Root $acceptedRoot -Governed $true
     $afterPoliced = New-ContinuationDraft -Root $acceptedRoot -RevisionNumber 2 -PreviousManifestPath $policed.ManifestPath -PreviousHandoffPath $policed.HandoffPath
     Invoke-ForemanHelper -Parameters @{
@@ -197,6 +215,41 @@ try {
     }
     Write-Pass -Label 'An enforced run adopts work from a prior enforced run'
 
+    # A receipt written before any of this was tracked carries no record at all,
+    # which is a different claim from having been unenforced and must be refused
+    # just the same. Reproducing that state means restating the archived lock's
+    # hash too, because the two are pinned to each other.
+    $legacy = New-TerminatedPriorRun -Root $legacyRoot -Governed $true
+    $legacyReceipt = Get-Content -LiteralPath $legacy.HandoffPath -Raw | ConvertFrom-Json
+    $rewritten = [ordered]@{}
+    foreach ($property in $legacyReceipt.PSObject.Properties) {
+        if ($property.Name -ne 'enforcement') { $rewritten[$property.Name] = $property.Value }
+    }
+    Write-JsonFile -Path $legacy.HandoffPath -Value $rewritten
+    $legacyHash = Get-FileSha256 -Path $legacy.HandoffPath
+    $legacyForemanRoot = Join-Path $legacyRoot '.claude\provost\foreman'
+    foreach ($archive in @(Get-ChildItem -LiteralPath $legacyForemanRoot -Filter 'archived-lock-*.json' -File)) {
+        $archivedLock = Get-Content -LiteralPath $archive.FullName -Raw | ConvertFrom-Json
+        if ([string]$archivedLock.handoff_path -ne $legacy.HandoffPath) { continue }
+        $archivedLock.handoff_sha256 = $legacyHash
+        Write-JsonFile -Path $archive.FullName -Value $archivedLock
+    }
+
+    Set-SessionEnforcement -Root $legacyRoot -Governed $true
+    $afterLegacy = New-ContinuationDraft -Root $legacyRoot -RevisionNumber 2 -PreviousManifestPath $legacy.ManifestPath -PreviousHandoffPath $legacy.HandoffPath
+    Assert-ThrowsCode -Code 'CONTINUATION' -Label 'An enforced run refuses a source receipt that records no enforcement at all' -Action {
+        Invoke-ForemanHelper -Parameters @{
+            Action = 'Initialize'
+            DraftPath = $afterLegacy.DraftPath
+            ManifestPath = $afterLegacy.ManifestPath
+            WorkspaceRoot = $legacyRoot
+            SessionId = 'provost-continuation'
+        }
+    }
+    if ((Get-ForemanLastThrowMessage) -notmatch 'none recorded') {
+        throw ('The refusal did not come from the enforcement gate: ' + (Get-ForemanLastThrowMessage))
+    }
+
     Write-Output ('Continuation-enforcement checks passed: ' + (Get-ForemanTestPassCount))
 }
 finally {
@@ -204,4 +257,5 @@ finally {
     $env:CLAUDE_CODE_SESSION_ID = $savedSessionId
     Remove-IsolatedTempRoot -Root $refusedRoot
     Remove-IsolatedTempRoot -Root $acceptedRoot
+    Remove-IsolatedTempRoot -Root $legacyRoot
 }
