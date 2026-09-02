@@ -29,11 +29,13 @@ This roadmap describes intended work, not promised dates. Items move to
 - A short demo of a governed decision being made — a write outside an approved
   scope being denied — rather than a clean run finishing.
 - A listing in the Claude Code plugin marketplace, once the demo exists.
-- Conditional activation for the Tier 2 hooks, so they can ship with the plugin
-  instead of being installed by hand. A plugin's hooks apply to every session
-  once enabled, and the write gate fails closed outside a governed run, so it
-  must stand down silently when no governed workspace is active — as the ref
-  guard already does.
+- Ship the Tier 2 hooks with the plugin instead of registering them by hand.
+  Each already stands down outside a governed session — every one exits early
+  unless `PROVOST_SESSION_PROFILE` is `foreman` — and registering them is safe
+  where PowerShell is absent, because a hook whose interpreter cannot be found
+  does not block the tool call. That tolerance is also the hazard: a governed
+  session on such a platform would run with no write gate and no warning, so
+  the launcher must refuse to open one where the hooks cannot execute.
 - The governed launcher and the `PROVOST_*` environment the Tier 2 hooks
   require. Plugin hook registration now covers the part that used to need a
   launcher, so what remains is environment setup and lifecycle entry.
