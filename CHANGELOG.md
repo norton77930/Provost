@@ -17,6 +17,10 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   `hitl-loop.template.ps1` unchecked.
 - CI pins `actions/checkout` to a commit SHA, limits push runs to `main`, and
   cancels superseded runs.
+- Temporary-workspace cleanup in the governance test helper retries briefly
+  instead of failing the run. An external scanner can still hold a just-written
+  ledger file when the whole suite runs back to back, which reported a run
+  whose assertions all passed as a failure.
 
 ### Added
 

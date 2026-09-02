@@ -91,7 +91,22 @@ function Remove-IsolatedTempRoot {
     if (-not $resolvedRoot.StartsWith($resolvedSystemTemp, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw 'Refusing to clean up a path outside the system temporary directory.'
     }
-    Remove-Item -LiteralPath $resolvedRoot -Recurse -Force
+    # A file written moments earlier can still be held briefly by an external
+    # scanner, which surfaces here as an IOException on the recursive delete.
+    # It reproduces only when the whole suite runs back to back, never when a
+    # check runs on its own. Cleanup is not a governance result, so a run whose
+    # assertions all passed must not be reported as a failure because of it.
+    $retryDelaysMs = @(50, 150, 400, 1000)
+    for ($attempt = 0; ; $attempt++) {
+        try {
+            Remove-Item -LiteralPath $resolvedRoot -Recurse -Force -ErrorAction Stop
+            return
+        }
+        catch {
+            if ($attempt -ge $retryDelaysMs.Count) { throw }
+            Start-Sleep -Milliseconds $retryDelaysMs[$attempt]
+        }
+    }
 }
 
 function New-GitWorkspace {
