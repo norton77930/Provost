@@ -56,6 +56,10 @@ jobs:
         shell: powershell
         run: powershell.exe -NoProfile -File .\tests\governance\Test-AuditArtifacts.ps1
 
+      - name: Exercise governed session liveness
+        shell: powershell
+        run: powershell.exe -NoProfile -File .\tests\governance\Test-SessionLiveness.ps1
+
       - name: Validate relative Markdown links
         shell: powershell
         run: powershell.exe -NoProfile -File .\tests\docs\Test-MarkdownLinks.ps1

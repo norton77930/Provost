@@ -1156,10 +1156,43 @@ function Assert-NoRepeatedFailureLoop {
     }
 }
 
+function Assert-SessionEnforcementLive {
+    param([string]$Root)
+    # Only a session that calls itself governed has anything to prove, and the
+    # hooks gate on the same variable, so this engages exactly when they would.
+    # Helper-level use outside a session is unaffected.
+    if ($env:PROVOST_SESSION_PROFILE -ne 'foreman') { return }
+
+    $sessionId = [string]$env:CLAUDE_CODE_SESSION_ID
+    if ([string]::IsNullOrWhiteSpace($sessionId)) {
+        Stop-Foreman -Code 'ENFORCEMENT' -Message 'This session is marked governed but carries no CLAUDE_CODE_SESSION_ID, so hook enforcement cannot be confirmed. Start it through the governed launcher.'
+    }
+
+    # The SessionStart hook writes this marker, so its presence is evidence that
+    # the hooks are registered and running. A hook whose interpreter is missing
+    # does not block a tool call and reports nothing, so without this check a
+    # governed run could proceed with no write gate and no warning.
+    $markerPath = Join-Path (Get-ForemanRoot -Root $Root) 'session-liveness.json'
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
+        Stop-Foreman -Code 'ENFORCEMENT' -Message ('No session liveness marker at ' + $markerPath + '. The Provost SessionStart hook did not run, so the write gate is not enforcing. Refusing to open a governed run that nothing would police.')
+    }
+
+    $marker = $null
+    try { $marker = Read-JsonMap -Path $markerPath -Context 'session liveness marker' }
+    catch { Stop-Foreman -Code 'ENFORCEMENT' -Message ('The session liveness marker is unreadable: ' + $markerPath) }
+
+    $markedSession = ''
+    if ($marker.Contains('session_id')) { $markedSession = [string]$marker['session_id'] }
+    if ($markedSession -ne $sessionId) {
+        Stop-Foreman -Code 'ENFORCEMENT' -Message ('The session liveness marker names a different session (' + $markedSession + ') than this one (' + $sessionId + '), so the hooks cannot be confirmed live. Start a fresh governed session.')
+    }
+}
+
 function Invoke-Initialize {
     if ([string]::IsNullOrWhiteSpace($DraftPath) -or [string]::IsNullOrWhiteSpace($ManifestPath) -or [string]::IsNullOrWhiteSpace($WorkspaceRoot) -or [string]::IsNullOrWhiteSpace($SessionId)) { Stop-Foreman -Code 'SCHEMA' -Message 'Initialize requires DraftPath, ManifestPath, WorkspaceRoot, and SessionId.' }
     $root = Get-NormalizedRoot -Path $WorkspaceRoot
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { Stop-Foreman -Code 'PATH' -Message 'WorkspaceRoot does not exist.' }
+    Assert-SessionEnforcementLive -Root $root
     $foremanRoot = Get-ForemanRoot -Root $root
     $absoluteManifestPath = [System.IO.Path]::GetFullPath($ManifestPath)
     $foremanManifestsPrefix = (Join-Path $foremanRoot 'manifests').TrimEnd([char]92) + [char]92

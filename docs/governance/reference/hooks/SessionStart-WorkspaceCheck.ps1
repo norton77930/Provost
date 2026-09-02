@@ -1,5 +1,6 @@
-# Provost Foreman SessionStart hook: warn loudly when the session location has
-# drifted away from the governed workspace root. Informational only (SessionStart
+# Provost Foreman SessionStart hook: record that hook enforcement is live in
+# this session, and warn loudly when the session location has drifted away from
+# the governed workspace root. The warning is informational only (SessionStart
 # cannot block) and fail-open by design: any uncertainty exits 0 in silence.
 # Self-gated: inert unless the launching wrapper marked this session as foreman.
 if ($env:PROVOST_SESSION_PROFILE -ne 'foreman') { exit 0 }
@@ -11,6 +12,26 @@ try {
     $rawInput = [Console]::In.ReadToEnd()
     if ([string]::IsNullOrWhiteSpace($rawInput)) { exit 0 }
     $payload = $rawInput | ConvertFrom-Json -ErrorAction Stop
+
+    # Evidence that the hooks are registered and running in this session. A hook
+    # whose interpreter is missing blocks nothing and reports nothing, so
+    # Initialize refuses to open a governed run without a marker naming its own
+    # session id. Writing it is the only way that check can ever pass.
+    $sessionId = [string]$payload.session_id
+    if (-not [string]::IsNullOrWhiteSpace($sessionId)) {
+        $foremanRoot = Join-Path ([System.IO.Path]::GetFullPath($expectedRoot)) '.claude\provost\foreman'
+        [System.IO.Directory]::CreateDirectory($foremanRoot) | Out-Null
+        $marker = [ordered]@{
+            session_id = $sessionId
+            written_utc = [DateTime]::UtcNow.ToString('o')
+            hook = 'SessionStart-WorkspaceCheck'
+        }
+        [System.IO.File]::WriteAllText(
+            (Join-Path $foremanRoot 'session-liveness.json'),
+            ($marker | ConvertTo-Json -Depth 8),
+            [System.Text.UTF8Encoding]::new($false))
+    }
+
     $actualLocation = [string]$payload.cwd
     if ([string]::IsNullOrWhiteSpace($actualLocation)) { exit 0 }
 
