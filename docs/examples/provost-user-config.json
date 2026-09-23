@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "mode": "adaptive",
+  "workspace_roots": [
+    "D:/work/example-project"
+  ],
+  "all_workspaces": false,
+  "max_writers": 2,
+  "burst_writers": 3,
+  "handoff": true
+}

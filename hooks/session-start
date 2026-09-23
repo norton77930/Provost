@@ -14,6 +14,22 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 plugin_root="$(cd "${script_dir}/.." && pwd)"
 policy_file="${plugin_root}/orchestration.md"
 
+input="$(cat)"
+config="${PROVOST_CONFIG:-${HOME}/.claude/provost/config.json}"
+warning=""
+if [ -f "$config" ]; then
+    if output="$(printf '%s' "$input" | bash "${script_dir}/runtime" hook)"; then
+        printf '%s\n' "$output"
+        exit 0
+    fi
+    warning='"systemMessage":"Provost runtime unavailable; legacy policy retained.",'
+fi
+# These events were not handled by the legacy plugin.
+if [[ "$input" =~ \"source\"[[:space:]]*:[[:space:]]*\"(resume|fork)\" ]]; then
+    if [ -z "$warning" ]; then printf '{}\n'; else printf '{%s"continue":true}\n' "$warning"; fi
+    exit 0
+fi
+
 if [ ! -r "${policy_file}" ]; then
     exit 0
 fi
@@ -35,6 +51,6 @@ escape_for_json() {
 policy_escaped="$(escape_for_json "$(cat "${policy_file}")")"
 session_context="Provost Tier 1 orchestration policy, supplied by the provost plugin. Apply it to work in this session:\n\n${policy_escaped}"
 
-printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "SessionStart",\n    "additionalContext": "%s"\n  }\n}\n' "${session_context}"
+printf '{\n  %s"hookSpecificOutput": {\n    "hookEventName": "SessionStart",\n    "additionalContext": "%s"\n  }\n}\n' "${warning}" "${session_context}"
 
 exit 0

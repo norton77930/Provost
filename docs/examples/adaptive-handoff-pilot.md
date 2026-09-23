@@ -1,0 +1,115 @@
+# Adaptive orchestration and handoff pilot
+
+Experimental and opt-in. Legacy Tier 1 is the default. Adaptive writer scheduling
+is a prompt policy, not an enforced lock. Stricter project rules win.
+
+## Personal setup
+
+Use Bash (Git Bash on Windows), Python 3.11+ and Git for Git workspaces.
+Python uses only its standard library; nothing is installed by hooks. The legacy
+no-config path does not require Python.
+
+Place personal JSON at ~/.claude/provost/config.json or set PROVOST_CONFIG to an
+absolute path. Copy [the example](provost-user-config.json), replacing its placeholder
+with the exact checkout root. Keep all_workspaces false for a pilot. Root allowlisting
+limits personal rollout; it is not shared project or company configuration.
+
+Before handoff writes in Git, verify .provost/handoffs is not tracked. Add
+/.provost/handoffs/ to the checkout's local Git info/exclude with approval (or use
+an existing ignore rule). Provost does not alter excludes or untrack files.
+Non-Git workspaces require an explicitly selected directory.
+
+## Runtime commands
+
+SessionStart supplies the runtime path, workspace root and real session ID.
+Do not invent the session ID. Session-specific writes require a matching
+SessionStart binding; SESSION_NOT_BOUND means fix the host context first. In Bash:
+
+```bash
+bash "<plugin-root>/hooks/runtime" doctor --workspace "<root>"
+bash "<plugin-root>/hooks/runtime" list --workspace "<root>"
+```
+
+Alternatively set PYTHONPATH to the plugin scripts directory for that process and
+use python -m provost_runtime.cli. Do not replace persistent environment settings.
+Doctor reports selected mode, Python support, storage readiness and host_verified=false.
+It does not diagnose project policy conflicts or prove interactive host support.
+
+At meaningful milestones, main records compact state via JSON stdin:
+
+```bash
+bash "<plugin-root>/hooks/runtime" record --workspace "<root>" \
+  --session "<session>" --expected "null" --request-id "plan-1" <<'JSON'
+{
+  "work_id": "example",
+  "phase": "approved",
+  "sources": [{"kind": "file", "ref": "docs/example-plan.md", "item": "T1"}],
+  "assignments": [],
+  "decisions": ["One approved bounded slice"],
+  "blockers": [],
+  "evidence": [],
+  "next": "Read actual sources before dispatch",
+  "suggested_skills": []
+}
+JSON
+```
+
+Replace illustrative sources with real ones. Later records use the returned revision
+as --expected and a new request ID. Retry IDs only for identical content. On conflict,
+reread the current chain; never force-overwrite. Evidence entries have claim/ref/state
+(pass-observed, fail, unverified or stale). Assignments have task/agent_id/observed_state/
+write_scope. Maximum payload is 32 KiB; exclude secrets and raw transcripts.
+
+```bash
+bash "<plugin-root>/hooks/runtime" snapshot --workspace "<root>" \
+  --session "<session>" --request-id "handoff-1"
+bash "<plugin-root>/hooks/runtime" resume --workspace "<root>" \
+  --session "<new-session>" --from "<snapshot-id>"
+```
+
+Users may invoke /provost:handoff or /provost:handoff resume <snapshot-id>.
+List entries with error identify damaged candidates; valid entries remain usable.
+Resume adopts observations, not worker ownership. Verify sources, affected evidence
+and worker state before continuing; do not duplicate potentially live work.
+
+## History and failures
+
+Data lives in .provost/handoffs/v1/sessions/<hashed-session>/{records,snapshots}.
+Complete objects are immutable by the application; current/latest indexes are
+replaceable hints. Reads reconcile complete chains, including completed objects
+left by interrupted index updates. Corrupt/branching chains are rejected.
+History is local, Git-ignored, not Git version control or source-code backup.
+No automatic deletion or remote issue mutation occurs.
+
+PreCompact snapshots the last full milestone without model summarization. Missing
+records report NO_CHECKPOINT, not an empty successful save. PostCompact stores metadata.
+Same-session compact/resume provides observations; startup/clear/fork never
+automatically adopt previous work. Decisions main never recorded can be missing.
+
+Save errors never block compaction. Interactive terminal notifications are best
+effort; noninteractive hosts may ignore them. First/changed failure and recovery
+notify; repeated errors use a brief message when the personal notification cache works.
+SessionStart reports remembered failures. If the cache fails, deduplication cannot
+be promised. Missing Python uses a fixed wrapper warning and cannot update that cache.
+
+## Source workflows and live acceptance
+
+Read [spec-kit](../compatibility/spec-kit.md),
+[OpenSpec](../compatibility/openspec.md) or
+[Matt-style skills](../compatibility/matt-workflow.md).
+These are main-agent guidance, not source parsers or proof of model judgment.
+
+1. Review exact personal config, local exclude and existing policy conflicts before enabling.
+2. Keep the project's single-writer rule. Complete one bounded task and checkpoint.
+3. Observe same-session compact, explicit new-session resume and controlled save
+   failure/recovery with disposable data; confirm notifications are visible.
+4. Verify actual Opus/high default and eligible Sonnet/high override separately.
+   Check existence of routing overrides without exposing values.
+5. Record time, waits, rework, main context and available usage; do not claim savings
+   from unrelated tasks or count cached tokens as equal billing units.
+
+Rollback: stop dispatch, reconcile workers, set mode legacy or remove the allowlist
+root, then start a fresh session at a safe boundary. Preserve history/excludes.
+Disabling does not cancel workers or retract already-injected context.
+
+See [host validation status](../analysis/adaptive-host-validation.md).

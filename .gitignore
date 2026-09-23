@@ -24,3 +24,7 @@ node_modules/
 
 # NOTE: .claude/agents/ is intentionally NOT ignored — the collaborator
 # role definitions are a shipped part of this project.
+
+# Python runtime caches
+__pycache__/
+*.py[cod]
