@@ -23,12 +23,37 @@ decisions, blockers and suggested_skills are string lists. Fields are required;
 empty lists are fine when truthful. No credentials, raw transcripts or large logs.
 Reference existing tasks/tickets rather than copying them. Maximum 32 KiB.
 
-Write UTF-8 JSON with Write/Edit to an allowed scratch file, then:
+Write UTF-8 JSON with Write/Edit to an allowed scratch file, for example:
+
+```json
+{
+  "work_id": "TICKET-123",
+  "phase": "implementation",
+  "sources": [
+    {"kind": "file", "ref": "docs/specs/feature.md", "item": "acceptance criteria"},
+    {"kind": "url", "ref": "https://example.com/tickets/TICKET-123"}
+  ],
+  "assignments": [
+    {"task": "T1 add parser", "agent_id": "implementer-1", "observed_state": "running", "write_scope": ["src/parser"]}
+  ],
+  "decisions": ["Keep the existing parser API"],
+  "blockers": [],
+  "evidence": [
+    {"claim": "parser tests pass", "ref": "tests/test_parser.py", "state": "pass-observed"}
+  ],
+  "next": "Review T1 result before dispatching T2",
+  "suggested_skills": []
+}
+```
+
+Then record it with a single-line command:
 
 ```bash
-bash "<runtime>/hooks/runtime" record --workspace "<root>" --session "<session>" \
-  --expected "<revision-or-null>" --request-id "<unique-milestone-id>" < "<payload-file>"
+bash "<runtime>/hooks/runtime" record --workspace "<root>" --session "<session>" --expected "<revision-or-null>" --request-id "<unique-milestone-id>" --input "<payload-file>"
 ```
+
+Keep each runtime call a single plain command: no heredoc, pipe, command
+substitution, env-var prefix or line continuation, because worktree guards refuse those.
 
 Use a new request ID for new content; retry the same ID only with identical content.
 After REVISION_CONFLICT rerun status and reconcile. Never force an overwrite.

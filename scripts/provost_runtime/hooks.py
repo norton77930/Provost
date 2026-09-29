@@ -136,13 +136,13 @@ def handle_event(event, config_path, *, native=False):
                     + "\nWriter limits: normal=" + str(cfg["max_writers"]) + ", burst=" + str(cfg["burst_writers"])
                     + "\nHandoff: " + ("enabled" if enabled else "disabled; do not record or snapshot")
                     + "\nSource guides: " + str(PLUGIN / "docs/compatibility")
-                    + "\nUse doctor/list/record/snapshot/resume through the runtime; JSON on stdin for record.")
+                    + "\nUse doctor/list/record/snapshot/resume through the runtime; record reads JSON from --input <payload-file>.")
             if native and enabled:
                 info += ("\nOperations guide: " + str(PLUGIN / "docs/native-handoff.md")
                          + "\nUse Bash: bash <quoted-runtime-path> status --workspace <quoted-workspace> --session <quoted-session>."
                          + "\nStatus is read-only and returns expected revision, checkpoint and a complete template."
                          + "\nFill the template with actual sources/decisions, then record --workspace <root> --session <id>"
-                         + " --expected <revision-or-null> --request-id <unique-milestone-id>, JSON via an input file on stdin."
+                         + " --expected <revision-or-null> --request-id <unique-milestone-id> --input <payload-file>."
                          + "\nRecord at plan approval, dispatch, result receipt or changed decisions/blockers."
                          + " Use snapshot for explicit /handoff. Never treat an unfilled template as saved work."
                          + "\nOn conflict rerun status and reconcile; do not force overwrite. Do not change workspace identity mid-session.")

@@ -84,6 +84,28 @@ class NativeTests(FixtureCase):
         self.assertEqual(r.returncode,0,r.stdout)
         self.assertEqual(json.loads(r.stdout)["adopted_from"],listed[0]["snapshot_id"])
 
+    def test_guidance_points_record_at_input_file_not_stdin(self):
+        text=self.context(handle_event(self.event(),self.config_path,native=True))
+        self.assertIn("--input <payload-file>",text)
+        self.assertNotIn("stdin",text)
+
+    def test_operations_guide_has_single_line_record_and_valid_example(self):
+        guide=(REPO/"docs"/"native-handoff.md").read_text(encoding="utf-8")
+        line=next(l for l in guide.splitlines() if " record --workspace" in l)
+        self.assertIn('--input "<payload-file>"',line)
+        self.assertFalse(line.rstrip().endswith("\\"))
+        self.assertNotIn(" < ",line)
+        flat=" ".join(guide.split())
+        self.assertIn("single plain command",flat)
+        for word in ("heredoc","pipe","command substitution","env-var prefix","line continuation"):
+            self.assertIn(word,flat)
+        block=guide.split("```json",1)[1].split("```",1)[0]
+        example=json.loads(block)
+        self.assertEqual({s["kind"] for s in example["sources"]},{"file","url"})
+        self.assertEqual((len(example["assignments"]),len(example["evidence"])),(1,1))
+        from provost_runtime.store import record
+        self.assertEqual(record(self.root,"s1",example,None,"doc-example")["payload"],example)
+
     def test_plugin_adapter_keeps_original_policy(self):
         text=self.context(handle_event(self.event(),self.config_path))
         self.assertIn("provost:adaptive-implementer",text)

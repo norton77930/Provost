@@ -21,9 +21,10 @@ A Python invocation is also documented in the pilot guide.
 1. Refresh relevant task/source status and the short checkpoint. Reference existing
    specs, tickets, ADRs and evidence. Include unresolved decisions, observed worker
    status and next actions. Exclude credentials and full transcripts.
-2. Use `record --workspace "<root>" --session "<id>" --expected "<revision-or-null>" --request-id "<unique-id>"`.
-   Send the documented JSON payload on stdin using a single-quoted heredoc or
-   input file; do not interpolate payload into executable shell text.
+2. Write the documented JSON payload to a file with the Write tool, then run one
+   plain command: `record --workspace "<root>" --session "<id>" --expected "<revision-or-null>" --request-id "<unique-id>" --input "<payload-file>"`.
+   Worktree guards refuse heredocs, pipes, command substitution and line
+   continuations; never interpolate payload into executable shell text.
    Use the checkpoint revision shown at resume, or read the current record
    reference from SessionStart. A revision conflict means reread, never overwrite.
 3. Use `snapshot --workspace "<root>" --session "<id>" --request-id "<unique-id>"`.

@@ -35,11 +35,16 @@ use python -m provost_runtime.cli. Do not replace persistent environment setting
 Doctor reports selected mode, Python support, storage readiness and host_verified=false.
 It does not diagnose project policy conflicts or prove interactive host support.
 
-At meaningful milestones, main records compact state via JSON stdin:
+At meaningful milestones, main writes compact state to a payload file and records
+it with one plain command (worktree guards refuse heredocs and line continuations):
 
 ```bash
-bash "<plugin-root>/hooks/runtime" record --workspace "<root>" \
-  --session "<session>" --expected "null" --request-id "plan-1" <<'JSON'
+bash "<plugin-root>/hooks/runtime" record --workspace "<root>" --session "<session>" --expected "null" --request-id "plan-1" --input "<payload-file>"
+```
+
+Payload file:
+
+```json
 {
   "work_id": "example",
   "phase": "approved",
@@ -51,7 +56,6 @@ bash "<plugin-root>/hooks/runtime" record --workspace "<root>" \
   "next": "Read actual sources before dispatch",
   "suggested_skills": []
 }
-JSON
 ```
 
 Replace illustrative sources with real ones. Later records use the returned revision

@@ -1,5 +1,6 @@
 """JSON-only CLI. No personal settings or Git excludes are modified."""
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -7,6 +8,24 @@ from pathlib import Path
 from .config import ConfigError, config_path, load_config, resolve_mode
 from .hooks import binding, cursor, handle_event, recovery_context, workspace_root
 from .store import StoreError, current, list_snapshots, record, resume, snapshot, storage_ready
+
+
+RUNTIME_ROOT = Path(__file__).resolve().parents[2]
+
+
+def runtime_hash(root=RUNTIME_ROOT):
+    """Line-ending-insensitive digest of the runtime files; a missing file changes it."""
+    root = Path(root)
+    rels = {p.relative_to(root).as_posix() for p in (root / "scripts" / "provost_runtime").glob("*.py")}
+    rels |= {"hooks/runtime", "hooks/native-event"}
+    digest = hashlib.sha256()
+    for rel in sorted(rels):
+        try:
+            body = (root / rel).read_bytes().replace(b"\r\n", b"\n")
+        except OSError:
+            body = b"<missing>"
+        digest.update(rel.encode("utf-8") + b"\0" + body + b"\0")
+    return digest.hexdigest()
 
 
 class Parser(argparse.ArgumentParser):
@@ -37,6 +56,7 @@ def main(argv=None):
         parser.add_argument("--expected")
         parser.add_argument("--request-id")
         parser.add_argument("--from", dest="source")
+        parser.add_argument("--input")
         options = parser.parse_args(args)
         root = workspace_root(options.workspace)
         cfg = load_config(config_path())
@@ -50,7 +70,8 @@ def main(argv=None):
             result = {"mode": mode, "python_supported": sys.version_info >= (3, 11),
                       "handoff": mode == "adaptive" and cfg.get("handoff", False),
                       "storage_ready": error is None, "storage_error": error,
-                      "host_verified": False}
+                      "host_verified": False,
+                      "runtime_root": str(RUNTIME_ROOT), "runtime_hash": runtime_hash(RUNTIME_ROOT)}
         else:
             if mode != "adaptive" or not cfg.get("handoff"):
                 raise StoreError("HANDOFF_DISABLED")
@@ -73,7 +94,11 @@ def main(argv=None):
                 elif options.command == "record":
                     if options.expected is None or not options.request_id:
                         raise StoreError("EXPECTED_REVISION_AND_REQUEST_REQUIRED")
-                    raw = sys.stdin.read(32769)
+                    if options.input is None:
+                        raw = sys.stdin.read(32769)
+                    else:
+                        with open(options.input, encoding="utf-8", newline="") as handle:
+                            raw = handle.read(32769)
                     if len(raw.encode("utf-8")) > 32768:
                         raise StoreError("PAYLOAD_TOO_LARGE")
                     payload = json.loads(raw)

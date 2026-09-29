@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 from unittest import mock
 from _support import FixtureCase
@@ -81,7 +82,19 @@ class StoreTests(FixtureCase):
             record(self.root, "s1", self.payload(), None, "r")
         self.assertEqual(list(outside.iterdir()), [])
 
+    def isolate_user_git_config(self):
+        tmp = tempfile.TemporaryDirectory(prefix="provost-gitcfg-")
+        self.addCleanup(tmp.cleanup)
+        empty_config = Path(tmp.name) / "empty-gitconfig"
+        empty_config.write_text("", encoding="utf-8")
+        xdg = Path(tmp.name) / "xdg"
+        xdg.mkdir()
+        patcher = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(empty_config), "XDG_CONFIG_HOME": str(xdg)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_git_storage_requires_exclusion_and_must_not_be_tracked(self):
+        self.isolate_user_git_config()
         subprocess.run(["git", "init", "-q", str(self.root)], check=True, capture_output=True)
         with self.assertRaises(StoreError):
             record(self.root, "s1", self.payload(), None, "r")
