@@ -83,3 +83,35 @@ PreCompact snapshots existing records without a model call. No checkpoint means
 NO_CHECKPOINT, not a successful empty save. Startup/clear/fork do not adopt old tasks.
 Notifications and host/model behavior still need a live pilot. Normal Bash path
 and payload input must satisfy project guards; report refusals rather than bypassing.
+
+## Reminder hook
+
+`hooks/native-reminder` is an optional, advisory nudge for the main session, which
+otherwise tends to skip milestone records. It fires on two events:
+
+- `PostToolUse` with matcher `Agent`: a writer subagent was just dispatched.
+- `SubagentStop`: a writer subagent finished.
+
+It only reminds for writer roles (default `implementer`, `implementer-high`,
+`implementer-sonnet`, `mech-executor`, `general-purpose`; override with the
+space-separated env var `PROVOST_REMINDER_ROLES`). Read-only roles, unknown events,
+malformed input and a config without `"handoff": true` produce `{}`. The hook adds
+context only: it never blocks, never records, and always exits 0. It is pure bash
+with no interpreter launch, so it stays cheap where process spawns are slow.
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {"matcher": "Agent", "hooks": [
+        {"type": "command", "command": "bash \"<runtime>/hooks/native-reminder\"", "timeout": 10}
+      ]}
+    ],
+    "SubagentStop": [
+      {"hooks": [
+        {"type": "command", "command": "bash \"<runtime>/hooks/native-reminder\"", "timeout": 10}
+      ]}
+    ]
+  }
+}
+```

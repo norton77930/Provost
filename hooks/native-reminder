@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Advisory handoff reminder for PostToolUse(Agent) and SubagentStop. Pure bash
+# builtins on every path: no interpreter, no external commands. Never blocks.
+set -uo pipefail
+config_file="${PROVOST_CONFIG:-${HOME}/.claude/provost/config.json}"
+config=""
+[[ -r "$config_file" ]] && { IFS= read -r -d '' config < "$config_file" || true; }
+if ! [[ "$config" =~ \"handoff\"[[:space:]]*:[[:space:]]*true([^A-Za-z0-9_]|$) ]]; then
+    printf '{}\n'
+    exit 0
+fi
+input=""
+IFS= read -r -d '' input || true
+event="" role=""
+if [[ "$input" =~ \"hook_event_name\"[[:space:]]*:[[:space:]]*\"([A-Za-z]+)\" ]]; then
+    event="${BASH_REMATCH[1]}"
+fi
+case "$event" in
+    PostToolUse) key="subagent_type" ;;
+    SubagentStop) key="agent_type" ;;
+    *) printf '{}\n'; exit 0 ;;
+esac
+if [[ "$input" =~ \"$key\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then
+    role="${BASH_REMATCH[1]}"
+fi
+writers="${PROVOST_REMINDER_ROLES:-implementer implementer-high implementer-sonnet mech-executor general-purpose}"
+if ! [[ "$role" =~ ^[A-Za-z0-9_.-]+$ && " $writers " == *" $role "* ]]; then
+    printf '{}\n'
+    exit 0
+fi
+if [[ "$event" == PostToolUse ]]; then
+    text="Handoff milestone: dispatched ${role}. Record it now unless already recorded: run status, write the payload with the Write tool, then one single-line record --input call (see the operations guide from SessionStart)."
+else
+    text="Handoff milestone: ${role} finished. After reading its report, record the result: run status, write the payload with the Write tool, then one single-line record --input call."
+fi
+printf '{"hookSpecificOutput":{"hookEventName":"%s","additionalContext":"%s"}}\n' "$event" "$text"
+exit 0
