@@ -104,7 +104,10 @@ is first moved to `.pruning-<digest>` and re-checked; if its `binding.json`
 changed meanwhile (a resume rebinding it) the directory is moved back untouched,
 and a failed delete is reported in `errors`: if `binding.json` itself could not be
 removed it is moved back; if only the final directory removal fails, an empty
-`.pruning-<digest>` is left and named in `left_at`. Age is the
+`.pruning-<digest>` is left and named in `left_at`. Later runs list such staging
+dirs in `leftovers` and, with `--apply`, reclaim the empty ones and those holding
+only an old `binding.json` (counted in `reclaimed`); any other content is kept.
+Linked or reparse-point entries are listed in `skipped` with the reason. Age is the
 only liveness signal: a session idle for longer than the threshold that never
 recorded looks the same as a finished one, and a later resume simply rebinds it.
 

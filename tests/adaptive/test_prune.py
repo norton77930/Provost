@@ -10,6 +10,28 @@ from provost_runtime.store import digest, prune, record, session_dir
 DAY = 86400
 
 
+def make_link(target, link, *, directory=True):
+    """Symlink, or on Windows without symlink rights a junction (directories only).
+    Returns False when neither can be created."""
+    try:
+        os.symlink(target, link, target_is_directory=directory)
+        return True
+    except OSError:
+        if not directory:
+            return False
+        try:
+            import _winapi
+            _winapi.CreateJunction(str(target), str(link))
+            return True
+        except (ImportError, AttributeError, OSError):
+            return False
+
+
+def age(path, days):
+    stamp = time.time() - days * DAY
+    os.utime(path, (stamp, stamp))
+
+
 class PruneTests(FixtureCase):
     def bound(self, session, age_days):
         bind(self.root, session, {})
@@ -84,6 +106,122 @@ class PruneTests(FixtureCase):
         result = prune(self.root, older_than_days=14, apply=True)
         self.assertEqual(result["candidates"], [])
         self.assertTrue((outside / "binding.json").exists())
+        os.lstat(link)  # the link entry itself is still there
+        self.assertIn({"entry": link.name, "reason": "LINKED_STORAGE"}, result["skipped"])
+
+    def test_linked_binding_file_in_a_real_session_dir_is_skipped(self):
+        real = self.bound("real", 30)
+        outside = self.root / "outside-binding.json"
+        outside.write_text("{}", encoding="utf-8")
+        age(outside, 30)
+        (real / "binding.json").unlink()
+        if not make_link(outside, real / "binding.json", directory=False):
+            self.skipTest("OS does not permit file symlinks")
+        result = prune(self.root, older_than_days=14, apply=True)
+        self.assertEqual(result["candidates"], [])
+        self.assertTrue(outside.exists())
+        self.assertIn({"entry": real.name, "reason": "LINKED_STORAGE"}, result["skipped"])
+
+    def test_rebind_after_the_move_lands_in_a_fresh_dir(self):
+        from unittest import mock
+        from provost_runtime import store
+        original_dir = self.bound("resumed", 30)
+        real_only = store._only_binding
+
+        def rebind_on_recheck(root, directory):
+            if directory.name.startswith(".pruning-"):
+                bind(self.root, "resumed", {})
+            return real_only(root, directory)
+
+        with mock.patch.object(store, "_only_binding", rebind_on_recheck):
+            result = prune(self.root, older_than_days=14, apply=True)
+        self.assertEqual(result["removed"], 1)
+        self.assertTrue((original_dir / "binding.json").exists())
+        self.assertGreater((original_dir / "binding.json").stat().st_mtime, time.time() - DAY)
+        self.assertEqual(list(original_dir.parent.glob(".pruning-*")), [])
+
+    def test_leftover_staging_dirs_are_reclaimed_before_their_session(self):
+        session = self.bound("again", 30)
+        sessions = session.parent
+        empty = sessions / (".pruning-" + "a" * 64)
+        empty.mkdir()
+        stale = sessions / (".pruning-" + session.name)
+        stale.mkdir()
+        (stale / "binding.json").write_text("{}", encoding="utf-8")
+        age(stale / "binding.json", 30)
+        busy = sessions / (".pruning-" + "b" * 64)
+        busy.mkdir()
+        (busy / "records").mkdir()
+        dry = prune(self.root, older_than_days=14)
+        self.assertEqual(sorted((x["staging_dir"], x["state"]) for x in dry["leftovers"]),
+                         sorted([(empty.name, "reclaimable"), (stale.name, "reclaimable"), (busy.name, "kept")]))
+        self.assertTrue(empty.exists() and stale.exists())
+        result = prune(self.root, older_than_days=14, apply=True)
+        self.assertEqual((result["reclaimed"], result["removed"], result["errors"]), (2, 1, []))
+        self.assertFalse(empty.exists() or stale.exists() or session.exists())
+        self.assertTrue((busy / "records").exists())
+
+    def test_reclaim_keeps_a_fresh_binding_that_arrives_after_the_check(self):
+        # POSIX: another prune can rename a session (with a just-rewritten binding)
+        # onto an empty leftover after it was judged reclaimable.
+        from unittest import mock
+        from provost_runtime import store
+        self.bound("anchor", 1)
+        leftover = session_dir(self.root, "anchor").parent / (".pruning-" + "c" * 64)
+        leftover.mkdir()
+        real_state = store._leftover_state
+
+        def fresh_after_check(root, directory, cutoff):
+            state = real_state(root, directory, cutoff)
+            if directory == leftover:
+                (leftover / "binding.json").write_text("{}", encoding="utf-8")
+            return state
+
+        with mock.patch.object(store, "_leftover_state", fresh_after_check):
+            result = prune(self.root, older_than_days=14, apply=True)
+        self.assertEqual(result["reclaimed"], 0)
+        self.assertTrue((leftover / "binding.json").exists())
+
+    def test_final_rmdir_failure_leaves_an_empty_leftover_that_a_later_run_reclaims(self):
+        from unittest import mock
+        from pathlib import Path
+        session = self.bound("stuck", 30)
+        real_rmdir = Path.rmdir
+
+        def fail_on_staging(self_path):
+            if self_path.name.startswith(".pruning-"):
+                raise PermissionError("in use")
+            return real_rmdir(self_path)
+
+        with mock.patch.object(Path, "rmdir", fail_on_staging):
+            first = prune(self.root, older_than_days=14, apply=True)
+        leftover = session.parent / (".pruning-" + session.name)
+        self.assertEqual(first["removed"], 0)
+        self.assertEqual(first["errors"], [{"session_dir": session.name, "error": "PermissionError",
+                                            "left_at": leftover.name}])
+        self.assertTrue(leftover.is_dir())
+        self.assertEqual(list(leftover.iterdir()), [])
+        second = prune(self.root, older_than_days=14, apply=True)
+        self.assertEqual(second["reclaimed"], 1)
+        self.assertFalse(leftover.exists())
+
+    def test_recheck_store_error_moves_the_dir_back(self):
+        from unittest import mock
+        from provost_runtime import store
+        session = self.bound("flagged", 30)
+        real_only = store._only_binding
+
+        def linked_on_recheck(root, directory):
+            if directory.name.startswith(".pruning-"):
+                raise store.StoreError("LINKED_STORAGE")
+            return real_only(root, directory)
+
+        with mock.patch.object(store, "_only_binding", linked_on_recheck):
+            result = prune(self.root, older_than_days=14, apply=True)
+        self.assertEqual(result["removed"], 0)
+        self.assertTrue((session / "binding.json").exists())
+        self.assertEqual(list(session.parent.glob(".pruning-*")), [])
+        self.assertIn({"entry": session.name, "reason": "LINKED_STORAGE"}, result["skipped"])
 
     def test_concurrent_rebind_after_the_check_survives(self):
         # A resume of the stale session rewrites binding.json between the
@@ -111,8 +249,9 @@ class PruneTests(FixtureCase):
         with mock.patch.object(Path, "unlink", side_effect=PermissionError("in use")):
             result = prune(self.root, older_than_days=14, apply=True)
         self.assertEqual(result["removed"], 0)
-        self.assertEqual([e["session_dir"] for e in result["errors"]], [old.name])
+        self.assertEqual(result["errors"], [{"session_dir": old.name, "error": "PermissionError", "left_at": None}])
         self.assertTrue((old / "binding.json").exists())
+        self.assertEqual(list(old.parent.glob(".pruning-*")), [])
 
     def test_missing_store_is_empty_and_creates_nothing(self):
         result = prune(self.root, older_than_days=14, apply=True)
@@ -156,8 +295,19 @@ class PruneCliTests(FixtureCase):
                                   "--session", "b")
         self.assertEqual(code, 0, data)
         self.assertEqual([c["session_id"] for c in data["candidates"]], ["a"])
-        code, data = self.run_cli("prune", "--workspace", str(self.root), "--older-than-days", "0")
-        self.assertEqual((code, data), (1, {"error": "INVALID_ARGUMENTS"}))
+        for bad in ("0", "abc", "1.5"):
+            code, data = self.run_cli("prune", "--workspace", str(self.root), "--older-than-days", bad)
+            self.assertEqual((code, data), (1, {"error": "INVALID_ARGUMENTS"}), bad)
+
+    def test_doctor_reports_null_stale_count_for_a_linked_store(self):
+        outside = self.root / "outside-sessions"
+        outside.mkdir()
+        parent = self.root / ".provost" / "handoffs" / "v1"
+        parent.mkdir(parents=True)
+        if not make_link(outside, parent / "sessions"):
+            self.skipTest("OS permits neither symlinks nor junctions")
+        code, data = self.run_cli("doctor", "--workspace", str(self.root))
+        self.assertEqual((code, data["stale_sessions"]), (0, None))
 
     def test_doctor_reports_stale_session_count(self):
         code, data = self.run_cli("doctor", "--workspace", str(self.root))

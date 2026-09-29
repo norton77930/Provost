@@ -381,7 +381,11 @@ def _remove_stale(root, entry, staging, info):
     original dir, which prune never touches again. Returns True when removed.
     """
     entry.rename(staging)
-    again = _only_binding(root, staging)
+    try:
+        again = _only_binding(root, staging)
+    except StoreError:
+        staging.rename(entry)
+        raise
     if again is None or again[1].st_mtime_ns != info.st_mtime_ns:
         staging.rename(entry)
         return False
@@ -394,23 +398,68 @@ def _remove_stale(root, entry, staging, info):
     return True
 
 
+STAGING = re.compile(r"^\.pruning-[a-f0-9]{64}$")
+
+
+def _leftover_state(root, directory, cutoff):
+    """'reclaimable' for an empty staging dir or one holding only an old binding, else 'kept'."""
+    guard(root, directory / "binding.json")
+    if not directory.is_dir():
+        return "kept"
+    if not any(directory.iterdir()):
+        return "reclaimable"
+    found = _only_binding(root, directory)
+    return "reclaimable" if found and found[1].st_mtime < cutoff else "kept"
+
+
+def _reclaim(root, directory, cutoff):
+    """Delete a leftover staging dir, re-verifying at deletion time. True when removed.
+
+    A binding that is no longer old (another run moved a just-rebound session
+    onto this name) is kept; rmdir fails if anything else appeared.
+    """
+    found = _only_binding(root, directory)
+    if found is not None:
+        if found[1].st_mtime >= cutoff:
+            return False
+        found[0].unlink()
+    directory.rmdir()
+    return True
+
+
 def prune(root, *, older_than_days=14, keep_session=None, apply=False, now=None):
     """List (or with apply, remove) session dirs that hold only an old binding.json.
 
     Such a dir records only that a session started; it has no records, snapshots
-    or locks. Linked or foreign entries are skipped, never followed or removed.
+    or locks. Linked entries are skipped (listed in `skipped`), never followed or
+    removed. Staging dirs left by an interrupted earlier run (`.pruning-<digest>`)
+    are listed in `leftovers`; empty ones, or ones holding only an old binding,
+    are reclaimed under apply. They sort before session dirs, so a leftover is
+    cleared before its own session is moved aside again.
     """
     if not isinstance(older_than_days, int) or isinstance(older_than_days, bool) or older_than_days < 1:
         raise StoreError("INVALID_ARGUMENTS")
     sessions = _base(root) / "sessions"
     guard(root, sessions)
     result = {"older_than_days": older_than_days, "applied": bool(apply), "candidates": [],
-              "removed": 0, "errors": []}
+              "removed": 0, "leftovers": [], "reclaimed": 0, "skipped": [], "errors": []}
     if not sessions.is_dir():
         return result
     keep = digest(keep_session) if keep_session else None
     cutoff = (now if now is not None else datetime.now(timezone.utc).timestamp()) - older_than_days * 86400
     for entry in sorted(sessions.iterdir()):
+        if STAGING.fullmatch(entry.name):
+            try:
+                state = _leftover_state(root, entry, cutoff)
+                result["leftovers"].append({"staging_dir": entry.name, "state": state})
+                if apply and state == "reclaimable" and _reclaim(root, entry, cutoff):
+                    result["reclaimed"] += 1
+            except StoreError as exc:
+                result["skipped"].append({"entry": entry.name, "reason": str(exc)})
+            except OSError as exc:
+                result["errors"].append({"session_dir": entry.name, "error": type(exc).__name__,
+                                         "left_at": entry.name if entry.exists() else None})
+            continue
         if entry.name == keep:
             continue
         staging = sessions / (".pruning-" + entry.name)
@@ -428,8 +477,8 @@ def prune(root, *, older_than_days=14, keep_session=None, apply=False, now=None)
                 "bound_at": datetime.fromtimestamp(info.st_mtime, timezone.utc).isoformat()})
             if apply and _remove_stale(root, entry, staging, info):
                 result["removed"] += 1
-        except StoreError:
-            continue
+        except StoreError as exc:
+            result["skipped"].append({"entry": entry.name, "reason": str(exc)})
         except OSError as exc:
             result["errors"].append({"session_dir": entry.name, "error": type(exc).__name__,
                                      "left_at": staging.name if staging.exists() else None})
