@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Personal native entrypoint. Never inject a second orchestration policy.
+set -uo pipefail
+config_file="${PROVOST_CONFIG:-${HOME}/.claude/provost/config.json}"
+if [[ ! -e "$config_file" ]]; then
+    printf '{}\n'
+    exit 0
+fi
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if output="$(bash "${script_dir}/runtime" native-hook)"; then
+    printf '%s\n' "$output"
+else
+    printf '%s\n' '{"systemMessage":"Native handoff runtime unavailable; personal policy unchanged.","terminalSequence":"\u001b]9;Native handoff runtime unavailable. Compaction continues.\u0007"}'
+fi
+exit 0

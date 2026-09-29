@@ -102,7 +102,7 @@ def recovery_context(root, session):
             + ("Observed payload: " + payload if len(payload) <= 1100 else "Payload omitted from injection to preserve context budget."))
 
 
-def handle_event(event, config_path):
+def handle_event(event, config_path, *, native=False):
     name = event.get("hook_event_name") if isinstance(event, dict) else None
     source = event.get("source", "startup") if isinstance(event, dict) else "startup"
     key = None
@@ -111,13 +111,15 @@ def handle_event(event, config_path):
             return {}
         cfg = load_config(config_path)
         if cfg.get("mode") != "adaptive":
-            return _legacy(source) if name == "SessionStart" else {}
+            return _legacy(source) if name == "SessionStart" and not native else {}
         if (not isinstance(event.get("cwd"), str) or not Path(event["cwd"]).is_absolute()
                 or not isinstance(event.get("session_id"), str) or not event["session_id"]):
             raise StoreError("INVALID_HOOK_INPUT")
         root = workspace_root(event["cwd"])
         session = event["session_id"]
         if resolve_mode(cfg, root) != "adaptive":
+            if native:
+                return {}
             if name == "SessionStart":
                 return _legacy(source) | _notification(
                     "Provost adaptive not enabled for this workspace; legacy behavior retained.", True)
@@ -126,13 +128,24 @@ def handle_event(event, config_path):
         state_dir = config_path.parent / "cache" / "notifications"
         key = workspace_key(root) + ":" + session
         if name == "SessionStart":
-            policy = (PLUGIN / "policies/adaptive-orchestration.md").read_text(encoding="utf-8")
+            policy = ("Native handoff runtime active. Follow personal CLAUDE.md for orchestration. "
+                      "This context supplies runtime identity and operations, not a second dispatch policy."
+                      if native else (PLUGIN / "policies/adaptive-orchestration.md").read_text(encoding="utf-8"))
             info = ("\nRuntime: " + str(PLUGIN / "hooks/runtime")
                     + "\nWorkspace: " + str(root) + "\nSession: " + session
                     + "\nWriter limits: normal=" + str(cfg["max_writers"]) + ", burst=" + str(cfg["burst_writers"])
                     + "\nHandoff: " + ("enabled" if enabled else "disabled; do not record or snapshot")
                     + "\nSource guides: " + str(PLUGIN / "docs/compatibility")
                     + "\nUse doctor/list/record/snapshot/resume through the runtime; JSON on stdin for record.")
+            if native and enabled:
+                info += ("\nOperations guide: " + str(PLUGIN / "docs/native-handoff.md")
+                         + "\nUse Bash: bash <quoted-runtime-path> status --workspace <quoted-workspace> --session <quoted-session>."
+                         + "\nStatus is read-only and returns expected revision, checkpoint and a complete template."
+                         + "\nFill the template with actual sources/decisions, then record --workspace <root> --session <id>"
+                         + " --expected <revision-or-null> --request-id <unique-milestone-id>, JSON via an input file on stdin."
+                         + "\nRecord at plan approval, dispatch, result receipt or changed decisions/blockers."
+                         + " Use snapshot for explicit /handoff. Never treat an unfilled template as saved work."
+                         + "\nOn conflict rerun status and reconcile; do not force overwrite. Do not change workspace identity mid-session.")
             warning = ""
             if enabled:
                 try:
@@ -159,8 +172,9 @@ def handle_event(event, config_path):
             text = policy + info
             if len(text) > 8000:
                 # Keep identity and restrictions; never slice a decision halfway.
-                text = ("Provost adaptive mode. Read the policy before dispatch: "
-                        + str(PLUGIN / "policies/adaptive-orchestration.md") + info)
+                text = (("Native handoff runtime. Personal policy remains authoritative." if native else
+                         "Provost adaptive mode. Read the policy before dispatch: "
+                         + str(PLUGIN / "policies/adaptive-orchestration.md")) + info)
             if len(text) > 8000:
                 raise StoreError("CONTEXT_TOO_LARGE")
             return _context(text) | _notification(warning, True)
@@ -181,8 +195,9 @@ def handle_event(event, config_path):
     except (ConfigError, StoreError, OSError) as exc:
         code = str(exc) if isinstance(exc, (ConfigError, StoreError)) else "RUNTIME_IO_FAILED"
         if name == "SessionStart":
-            result = _legacy(source)
-            result.update(_notification("Provost adaptive unavailable: " + code + ". Legacy behavior retained.", True))
+            result = {} if native else _legacy(source)
+            suffix = ". Personal policy unchanged; handoff unavailable." if native else ". Legacy behavior retained."
+            result.update(_notification("Provost adaptive unavailable: " + code + suffix, True))
             return result
         if name in ("PreCompact", "PostCompact"):
             if key is None:

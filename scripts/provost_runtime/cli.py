@@ -16,7 +16,7 @@ class Parser(argparse.ArgumentParser):
 
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
-    if args == ["hook"]:
+    if args in (["hook"], ["native-hook"]):
         try:
             raw = sys.stdin.read(1024 * 1024 + 1)
             if len(raw) > 1024 * 1024:
@@ -24,14 +24,14 @@ def main(argv=None):
             event = json.loads(raw)
             if not isinstance(event, dict):
                 raise ValueError()
-            result = handle_event(event, config_path())
+            result = handle_event(event, config_path(), native=args == ["native-hook"])
         except (ValueError, OSError):
             result = {"systemMessage": "Provost: invalid hook input; no handoff saved."}
         print(json.dumps(result, ensure_ascii=True))
         return 0
     try:
         parser = Parser()
-        parser.add_argument("command", choices=["doctor", "record", "snapshot", "list", "resume"])
+        parser.add_argument("command", choices=["doctor", "record", "snapshot", "list", "resume", "status"])
         parser.add_argument("--workspace", required=True)
         parser.add_argument("--session")
         parser.add_argument("--expected")
@@ -62,7 +62,15 @@ def main(argv=None):
                 source = binding(root, options.session)
                 if not source:
                     raise StoreError("SESSION_NOT_BOUND")
-                if options.command == "record":
+                if options.command == "status":
+                    checkpoint = current(root, options.session)
+                    result = {"workspace": str(root), "session_id": options.session,
+                              "expected": checkpoint["revision"] if checkpoint else None,
+                              "checkpoint": checkpoint,
+                              "template": {"work_id": "", "phase": "", "sources": [],
+                                           "assignments": [], "decisions": [], "blockers": [],
+                                           "evidence": [], "next": "", "suggested_skills": []}}
+                elif options.command == "record":
                     if options.expected is None or not options.request_id:
                         raise StoreError("EXPECTED_REVISION_AND_REQUEST_REQUIRED")
                     raw = sys.stdin.read(32769)
