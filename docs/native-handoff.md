@@ -16,6 +16,13 @@ Output: expected (revision or null), checkpoint (complete current record or null
 and template (all required fields). Read-only. SESSION_NOT_BOUND means fix the
 session startup/workspace configuration; do not fabricate binding files.
 
+Claude Code moves a transcript to a sibling `<project>--claude-worktrees-<name>`
+project dir when a session enters a worktree; the runtime follows it (newest
+same-named file wins) so `transcript_cursor` stays non-null, and it is still null
+when no such file exists. `doctor` reports `last_binding_at` (UTC time of the newest
+`binding.json` in this workspace's store, else null) and sets `host_verified` true
+exactly when one exists, that is, when a SessionStart hook has bound a session here.
+
 Fill work_id, phase and next; use actual sources and observations. sources entries:
 kind=file|url, ref, optional item. assignments entries: task, agent_id, observed_state,
 write_scope (list). evidence entries: claim, ref, state (pass-observed|fail|unverified|stale).

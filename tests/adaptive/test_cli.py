@@ -110,3 +110,24 @@ class CliTests(FixtureCase):
         base = self.doctor(runtime)["runtime_hash"]
         (runtime / "hooks" / "_python.sh").unlink()
         self.assertNotEqual(self.doctor(runtime)["runtime_hash"], base)
+
+    def test_record_after_transcript_moved_carries_a_cursor(self):
+        bound = self.root / "projects" / "D--Repo" / "sess.jsonl"
+        bind(self.root, "s1", {"transcript_path": str(bound)})
+        moved = self.root / "projects" / "D--Repo--claude-worktrees-x" / "sess.jsonl"
+        moved.parent.mkdir(parents=True)
+        moved.write_bytes(b"{}\n")
+        result = self.run_cli("record", "--workspace", str(self.root), "--session", "s1",
+                              "--expected", "null", "--request-id", "r1", data=self.payload())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout)["transcript_cursor"]["bytes"], 3)
+
+    def test_doctor_host_verified_follows_binding_evidence(self):
+        data = json.loads(self.run_cli("doctor", "--workspace", str(self.root)).stdout)
+        self.assertIs(data["host_verified"], False)
+        self.assertIsNone(data["last_binding_at"])
+        self.assertFalse((self.root / ".provost").exists())
+        bind(self.root, "s1", {})
+        data = json.loads(self.run_cli("doctor", "--workspace", str(self.root)).stdout)
+        self.assertIs(data["host_verified"], True)
+        self.assertRegex(data["last_binding_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?\+00:00$")

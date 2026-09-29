@@ -1,4 +1,6 @@
 import json
+import os
+from pathlib import Path
 from unittest import mock
 from _support import FixtureCase
 from provost_runtime.hooks import handle_event
@@ -80,3 +82,54 @@ class HookTests(FixtureCase):
         output = handle_event({"hook_event_name": "PreCompact", "secret": "do-not-echo"}, self.config_path)
         self.assertNotIn("do-not-echo", json.dumps(output))
         self.assertNotEqual(output.get("decision"), "block")
+
+
+class TranscriptFallbackTests(FixtureCase):
+    def transcript(self, project, session="sess.jsonl", age=0):
+        path = self.root / "projects" / project / session
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n", encoding="utf-8")
+        if age:
+            stamp = path.stat().st_mtime - age
+            os.utime(path, (stamp, stamp))
+        return path
+
+    def test_existing_path_is_used_unchanged(self):
+        from provost_runtime.hooks import resolve_transcript
+        bound = self.transcript("D--Repo")
+        self.transcript("D--Repo--claude-worktrees-x")
+        self.assertEqual(resolve_transcript(str(bound)), str(bound))
+
+    def test_moved_transcript_is_found_in_worktree_sibling(self):
+        from provost_runtime.hooks import resolve_transcript
+        bound = self.root / "projects" / "D--Repo" / "sess.jsonl"
+        moved = self.transcript("D--Repo--claude-worktrees-x")
+        self.transcript("D--Repo--claude-worktrees-y", session="other.jsonl")
+        self.transcript("D--Repository", session="sess.jsonl")
+        self.assertEqual(Path(resolve_transcript(str(bound))), moved)
+
+    def test_newest_of_several_siblings_wins(self):
+        from provost_runtime.hooks import resolve_transcript
+        bound = self.root / "projects" / "D--Repo" / "sess.jsonl"
+        self.transcript("D--Repo--claude-worktrees-old", age=500)
+        newest = self.transcript("D--Repo--claude-worktrees-new")
+        self.transcript("D--Repo--claude-worktrees-older", age=900)
+        self.assertEqual(Path(resolve_transcript(str(bound))), newest)
+
+    def test_nothing_matching_returns_original_and_null_cursor(self):
+        from provost_runtime.hooks import cursor, resolve_transcript
+        bound = self.root / "projects" / "D--Repo" / "sess.jsonl"
+        self.transcript("D--Other--claude-worktrees-x")
+        self.assertEqual(resolve_transcript(str(bound)), str(bound))
+        self.assertIsNone(cursor(resolve_transcript(str(bound))))
+        self.assertIsNone(resolve_transcript(None))
+
+    def test_compaction_metadata_uses_the_moved_transcript(self):
+        from provost_runtime.store import session_dir
+        bound = self.root / "projects" / "D--Repo" / "sess.jsonl"
+        self.transcript("D--Repo--claude-worktrees-x")
+        event = {"session_id": "s1", "cwd": str(self.root), "hook_event_name": "PostCompact",
+                 "transcript_path": str(bound)}
+        handle_event(event, self.config_path)
+        data = json.loads((session_dir(self.root, "s1") / "compaction.json").read_text(encoding="utf-8"))
+        self.assertIsNotNone(data["cursor"])

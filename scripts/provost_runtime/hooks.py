@@ -1,11 +1,12 @@
 """Claude event adapter. Saving errors must never become compaction decisions."""
 import json
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import ConfigError, load_config, resolve_mode, workspace_key
 from .notifications import notice
-from .store import (StoreError, atomic_write, current, digest, guard, latest,
+from .store import (StoreError, _base, atomic_write, current, digest, guard, latest,
                     session_dir, snapshot, storage_ready)
 
 PLUGIN = Path(__file__).resolve().parents[2]
@@ -40,6 +41,54 @@ def cursor(path):
         return None
 
 
+def resolve_transcript(path):
+    """Follow a transcript Claude Code moved to a `<project>--<worktree>` sibling dir.
+
+    An existing path is returned unchanged. Otherwise the newest same-named file
+    in a sibling project dir prefixed `<project>--` wins; no match returns the
+    original path so cursor() still yields None. One directory listing, no spawns.
+    """
+    if not isinstance(path, str) or not path:
+        return path
+    try:
+        target = Path(path)
+        if target.exists():
+            return path
+        prefix = target.parent.name + "--"
+        best = None
+        for sibling in target.parent.parent.iterdir():
+            if not sibling.name.startswith(prefix):
+                continue
+            try:
+                mtime = (sibling / target.name).stat().st_mtime_ns
+            except OSError:
+                continue
+            if best is None or mtime > best[0]:
+                best = (mtime, sibling / target.name)
+        return str(best[1]) if best else path
+    except OSError:
+        return path
+
+
+def last_binding_at(root):
+    """ISO-8601 UTC mtime of the newest binding.json in the store, else None. Read-only."""
+    try:
+        sessions = _base(root) / "sessions"
+        guard(root, sessions)
+        newest = None
+        for entry in sessions.iterdir():
+            try:
+                path = entry / "binding.json"
+                guard(root, path)
+                mtime = path.stat().st_mtime
+            except (StoreError, OSError):
+                continue
+            newest = mtime if newest is None or mtime > newest else newest
+        return None if newest is None else datetime.fromtimestamp(newest, timezone.utc).isoformat()
+    except (StoreError, OSError):
+        return None
+
+
 def binding(root, session):
     path = session_dir(root, session) / "binding.json"
     guard(root, path)
@@ -60,7 +109,7 @@ def bind(root, session, event):
     atomic_write(root, session_dir(root, session) / "binding.json",
                  {"workspace_id": workspace_key(root), "session_id": session,
                   "transcript_path": event.get("transcript_path"),
-                  "last_cursor": cursor(event.get("transcript_path"))})
+                  "last_cursor": cursor(resolve_transcript(event.get("transcript_path")))})
 
 
 def _legacy(source):
@@ -182,7 +231,7 @@ def handle_event(event, config_path, *, native=False):
             return {}
         if name == "PreCompact":
             checkpoint = current(root, session)
-            event_key = digest(json.dumps({"trigger": event.get("trigger"), "cursor": cursor(event.get("transcript_path")),
+            event_key = digest(json.dumps({"trigger": event.get("trigger"), "cursor": cursor(resolve_transcript(event.get("transcript_path"))),
                                           "revision": checkpoint["revision"] if checkpoint else None}, sort_keys=True))
             snapshot(root, session, event_key)
             return _notification(notice(key, None, state_dir)["message"])
@@ -190,7 +239,7 @@ def handle_event(event, config_path, *, native=False):
         storage_ready(root)
         atomic_write(root, session_dir(root, session) / "compaction.json",
                      {"observed": True, "workspace_id": workspace_key(root), "session_id": session,
-                      "cursor": cursor(event.get("transcript_path"))})
+                      "cursor": cursor(resolve_transcript(event.get("transcript_path")))})
         return {}
     except (ConfigError, StoreError, OSError) as exc:
         code = str(exc) if isinstance(exc, (ConfigError, StoreError)) else "RUNTIME_IO_FAILED"

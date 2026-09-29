@@ -6,7 +6,8 @@ import sys
 from pathlib import Path
 
 from .config import ConfigError, config_path, load_config, resolve_mode
-from .hooks import binding, cursor, handle_event, recovery_context, workspace_root
+from .hooks import (binding, cursor, handle_event, last_binding_at, recovery_context,
+                    resolve_transcript, workspace_root)
 from .store import StoreError, current, list_snapshots, record, resume, snapshot, storage_ready
 
 
@@ -67,10 +68,11 @@ def main(argv=None):
                 storage_ready(root)
             except StoreError as exc:
                 error = str(exc)
+            bound_at = last_binding_at(root)
             result = {"mode": mode, "python_supported": sys.version_info >= (3, 11),
                       "handoff": mode == "adaptive" and cfg.get("handoff", False),
                       "storage_ready": error is None, "storage_error": error,
-                      "host_verified": False,
+                      "host_verified": bound_at is not None, "last_binding_at": bound_at,
                       "runtime_root": str(RUNTIME_ROOT), "runtime_hash": runtime_hash(RUNTIME_ROOT)}
         else:
             if mode != "adaptive" or not cfg.get("handoff"):
@@ -104,7 +106,7 @@ def main(argv=None):
                     payload = json.loads(raw)
                     result = record(root, options.session, payload,
                                     None if options.expected == "null" else options.expected,
-                                    options.request_id, cursor=cursor(source.get("transcript_path")))
+                                    options.request_id, cursor=cursor(resolve_transcript(source.get("transcript_path"))))
                 elif options.command == "snapshot":
                     if not options.request_id:
                         raise StoreError("REQUEST_ID_REQUIRED")
