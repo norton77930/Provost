@@ -37,11 +37,14 @@ class NativeReminderTests(FixtureCase):
         self.assertEqual(out["hookEventName"], "PostToolUse")
         self.assertIn("dispatched implementer-high", out["additionalContext"])
         self.assertIn("record --input", out["additionalContext"])
+        self.assertIn("again after its result arrives", out["additionalContext"])
 
-    def test_writer_finish_reminds(self):
-        out = self.reminder(subagent_stop("mech-executor"))["hookSpecificOutput"]
-        self.assertEqual(out["hookEventName"], "SubagentStop")
-        self.assertIn("mech-executor finished", out["additionalContext"])
+    def test_subagent_stop_is_always_silent(self):
+        # SubagentStop context lands in the subagent's own conversation and keeps it
+        # running; the reminder must never feed it, even for writer roles.
+        for role in ("implementer", "mech-executor", "custom-writer"):
+            env = {"PROVOST_REMINDER_ROLES": role}
+            self.assertEqual(self.reminder(subagent_stop(role), env=env), {}, role)
 
     def test_read_only_roles_are_silent(self):
         for role in ("Explore", "code-reviewer", "test-analyst"):
@@ -61,7 +64,7 @@ class NativeReminderTests(FixtureCase):
     def test_role_set_is_overridable(self):
         env = {"PROVOST_REMINDER_ROLES": "code-reviewer custom-writer"}
         self.assertIn("hookSpecificOutput", self.reminder(post_tool_use("code-reviewer"), env=env))
-        self.assertIn("hookSpecificOutput", self.reminder(subagent_stop("custom-writer"), env=env))
+        self.assertIn("hookSpecificOutput", self.reminder(post_tool_use("custom-writer"), env=env))
         self.assertEqual(self.reminder(post_tool_use("implementer"), env=env), {})
 
     def test_default_writer_set(self):

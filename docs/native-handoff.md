@@ -87,10 +87,13 @@ and payload input must satisfy project guards; report refusals rather than bypas
 ## Reminder hook
 
 `hooks/native-reminder` is an optional, advisory nudge for the main session, which
-otherwise tends to skip milestone records. It fires on two events:
+otherwise tends to skip milestone records. Register it for `PostToolUse` with
+matcher `Agent` only: when a writer subagent is dispatched it reminds main to
+record the dispatch now and the result once it arrives.
 
-- `PostToolUse` with matcher `Agent`: a writer subagent was just dispatched.
-- `SubagentStop`: a writer subagent finished.
+Do not register it for `SubagentStop`. That event's context is delivered to the
+subagent's own conversation and keeps the subagent running, so it would loop the
+worker instead of reaching main; the hook answers `{}` there.
 
 It only reminds for writer roles (default `implementer`, `implementer-high`,
 `implementer-sonnet`, `mech-executor`, `general-purpose`; override with the
@@ -104,11 +107,6 @@ with no interpreter launch, so it stays cheap where process spawns are slow.
   "hooks": {
     "PostToolUse": [
       {"matcher": "Agent", "hooks": [
-        {"type": "command", "command": "bash \"<runtime>/hooks/native-reminder\"", "timeout": 10}
-      ]}
-    ],
-    "SubagentStop": [
-      {"hooks": [
         {"type": "command", "command": "bash \"<runtime>/hooks/native-reminder\"", "timeout": 10}
       ]}
     ]
