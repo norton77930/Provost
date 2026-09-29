@@ -353,3 +353,84 @@ def resume(root, session, snapshot_id):
     for evidence in payload["evidence"]:
         evidence["state"] = "unverified"
     return record(root, session, payload, None, "adopt:" + snapshot_id, adopted_from=snapshot_id)
+
+
+def _only_binding(root, directory):
+    """(path, lstat) when directory is a real dir holding exactly one regular binding.json."""
+    guard(root, directory / "binding.json")
+    if not directory.is_dir() or [child.name for child in directory.iterdir()] != ["binding.json"]:
+        return None
+    binding = directory / "binding.json"
+    info = binding.lstat()
+    return (binding, info) if stat.S_ISREG(info.st_mode) else None
+
+
+def _stale_binding(root, entry, cutoff):
+    """(binding.json, lstat) when entry is a session dir holding only a binding older than cutoff."""
+    if not ID.fullmatch(entry.name):
+        return None
+    found = _only_binding(root, entry)
+    return found if found and found[1].st_mtime < cutoff else None
+
+
+def _remove_stale(root, entry, staging, info):
+    """Move the dir aside, re-verify it is unchanged, then delete it.
+
+    A concurrent SessionStart that rewrote binding.json before the move is caught
+    by the re-check and the dir is moved back; one after the move recreates the
+    original dir, which prune never touches again. Returns True when removed.
+    """
+    entry.rename(staging)
+    again = _only_binding(root, staging)
+    if again is None or again[1].st_mtime_ns != info.st_mtime_ns:
+        staging.rename(entry)
+        return False
+    try:
+        again[0].unlink()
+    except OSError:
+        staging.rename(entry)
+        raise
+    staging.rmdir()
+    return True
+
+
+def prune(root, *, older_than_days=14, keep_session=None, apply=False, now=None):
+    """List (or with apply, remove) session dirs that hold only an old binding.json.
+
+    Such a dir records only that a session started; it has no records, snapshots
+    or locks. Linked or foreign entries are skipped, never followed or removed.
+    """
+    if not isinstance(older_than_days, int) or isinstance(older_than_days, bool) or older_than_days < 1:
+        raise StoreError("INVALID_ARGUMENTS")
+    sessions = _base(root) / "sessions"
+    guard(root, sessions)
+    result = {"older_than_days": older_than_days, "applied": bool(apply), "candidates": [],
+              "removed": 0, "errors": []}
+    if not sessions.is_dir():
+        return result
+    keep = digest(keep_session) if keep_session else None
+    cutoff = (now if now is not None else datetime.now(timezone.utc).timestamp()) - older_than_days * 86400
+    for entry in sorted(sessions.iterdir()):
+        if entry.name == keep:
+            continue
+        staging = sessions / (".pruning-" + entry.name)
+        try:
+            found = _stale_binding(root, entry, cutoff)
+            if found is None:
+                continue
+            binding, info = found
+            try:
+                session_id = json.loads(binding.read_text(encoding="utf-8")).get("session_id")
+            except (OSError, ValueError, AttributeError):
+                session_id = None
+            result["candidates"].append({
+                "session_dir": entry.name, "session_id": session_id if isinstance(session_id, str) else None,
+                "bound_at": datetime.fromtimestamp(info.st_mtime, timezone.utc).isoformat()})
+            if apply and _remove_stale(root, entry, staging, info):
+                result["removed"] += 1
+        except StoreError:
+            continue
+        except OSError as exc:
+            result["errors"].append({"session_dir": entry.name, "error": type(exc).__name__,
+                                     "left_at": staging.name if staging.exists() else None})
+    return result

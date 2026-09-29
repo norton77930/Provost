@@ -8,7 +8,7 @@ from pathlib import Path
 from .config import ConfigError, config_path, load_config, resolve_mode
 from .hooks import (binding, cursor, handle_event, last_binding_at, recovery_context,
                     resolve_transcript, workspace_root)
-from .store import StoreError, current, list_snapshots, record, resume, snapshot, storage_ready
+from .store import StoreError, current, list_snapshots, prune, record, resume, snapshot, storage_ready
 
 
 RUNTIME_ROOT = Path(__file__).resolve().parents[2]
@@ -51,13 +51,15 @@ def main(argv=None):
         return 0
     try:
         parser = Parser()
-        parser.add_argument("command", choices=["doctor", "record", "snapshot", "list", "resume", "status"])
+        parser.add_argument("command", choices=["doctor", "record", "snapshot", "list", "resume", "status", "prune"])
         parser.add_argument("--workspace", required=True)
         parser.add_argument("--session")
         parser.add_argument("--expected")
         parser.add_argument("--request-id")
         parser.add_argument("--from", dest="source")
         parser.add_argument("--input")
+        parser.add_argument("--older-than-days", type=int, default=14)
+        parser.add_argument("--apply", action="store_true")
         options = parser.parse_args(args)
         root = workspace_root(options.workspace)
         cfg = load_config(config_path())
@@ -69,16 +71,24 @@ def main(argv=None):
             except StoreError as exc:
                 error = str(exc)
             bound_at = last_binding_at(root)
+            try:
+                stale = len(prune(root)["candidates"])
+            except (StoreError, OSError):
+                stale = None
             result = {"mode": mode, "python_supported": sys.version_info >= (3, 11),
                       "handoff": mode == "adaptive" and cfg.get("handoff", False),
                       "storage_ready": error is None, "storage_error": error,
                       "host_verified": bound_at is not None, "last_binding_at": bound_at,
+                      "stale_sessions": stale,
                       "runtime_root": str(RUNTIME_ROOT), "runtime_hash": runtime_hash(RUNTIME_ROOT)}
         else:
             if mode != "adaptive" or not cfg.get("handoff"):
                 raise StoreError("HANDOFF_DISABLED")
             if options.command == "list":
                 result = list_snapshots(root)
+            elif options.command == "prune":
+                result = prune(root, older_than_days=options.older_than_days,
+                               keep_session=options.session, apply=options.apply)
             else:
                 if not options.session:
                     raise StoreError("SESSION_REQUIRED")

@@ -91,6 +91,30 @@ NO_CHECKPOINT, not a successful empty save. Startup/clear/fork do not adopt old 
 Notifications and host/model behavior still need a live pilot. Normal Bash path
 and payload input must satisfy project guards; report refusals rather than bypassing.
 
+## Pruning stale bindings
+
+Every SessionStart binds its session, so the store collects directories for
+sessions that never recorded anything. `doctor` reports them as `stale_sessions`.
+`prune` lists session directories that hold only `binding.json` older than
+`--older-than-days` (default 14); it deletes nothing unless `--apply` is given.
+Pass `--session <current-id>` to keep the running session. Directories with any
+record, snapshot, lock or other file, linked or reparse-point entries, and names
+that are not session digests are never candidates. With `--apply`, each candidate
+is first moved to `.pruning-<digest>` and re-checked; if its `binding.json`
+changed meanwhile (a resume rebinding it) the directory is moved back untouched,
+and a failed delete is reported in `errors`: if `binding.json` itself could not be
+removed it is moved back; if only the final directory removal fails, an empty
+`.pruning-<digest>` is left and named in `left_at`. Age is the
+only liveness signal: a session idle for longer than the threshold that never
+recorded looks the same as a finished one, and a later resume simply rebinds it.
+
+```bash
+bash "<runtime>/hooks/runtime" prune --workspace "<root>" --session "<session>"
+```
+
+Show the listed candidates to the user before running the same command with
+`--apply`.
+
 ## Reminder hook
 
 `hooks/native-reminder` is an optional, advisory nudge for the main session, which
