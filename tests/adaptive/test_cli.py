@@ -74,7 +74,7 @@ class CliTests(FixtureCase):
         (root / "hooks").mkdir()
         shutil.copytree(REPO / "scripts" / "provost_runtime", root / "scripts" / "provost_runtime",
                         ignore=shutil.ignore_patterns("__pycache__"))
-        for script in ("runtime", "native-event"):
+        for script in ("runtime", "native-event", "_python.sh"):
             shutil.copyfile(REPO / "hooks" / script, root / "hooks" / script)
         if newline:
             for path in [*(root / "scripts" / "provost_runtime").glob("*.py"), *(root / "hooks").iterdir()]:
@@ -104,3 +104,9 @@ class CliTests(FixtureCase):
         self.assertNotEqual(self.doctor(crlf)["runtime_hash"], base)
         (lf / "hooks" / "native-event").unlink()
         self.assertNotEqual(self.doctor(lf)["runtime_hash"], base)
+
+    def test_runtime_hash_covers_the_shared_python_resolver(self):
+        runtime = self.copy_runtime("resolver")
+        base = self.doctor(runtime)["runtime_hash"]
+        (runtime / "hooks" / "_python.sh").unlink()
+        self.assertNotEqual(self.doctor(runtime)["runtime_hash"], base)

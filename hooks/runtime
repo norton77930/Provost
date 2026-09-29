@@ -1,23 +1,9 @@
 #!/usr/bin/env bash
 # Optional runtime. Legacy installs do not invoke Python when no config exists.
 set -euo pipefail
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-module_root="$(cd "${script_dir}/../scripts" && pwd)"
-if command -v cygpath >/dev/null 2>&1; then
-    module_root="$(cygpath -w "$module_root")"
-fi
-export PYTHONPATH="$module_root"
-export PYTHONDONTWRITEBYTECODE=1
-export PYTHONUTF8=1
-for candidate in python3 python; do
-    if command -v "$candidate" >/dev/null 2>&1 &&
-        "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
-        exec "$candidate" -m provost_runtime.cli "$@"
-    fi
-done
-if command -v py >/dev/null 2>&1 &&
-    py -3 -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
-    exec py -3 -m provost_runtime.cli "$@"
-fi
-printf '%s\n' 'Provost adaptive runtime requires Python 3.11+; nothing was saved.' >&2
-exit 127
+_src="${BASH_SOURCE[0]//\\//}"
+[[ "$_src" == */* ]] || _src="./${_src}"
+# shellcheck source=_python.sh
+source "${_src%/*}/_python.sh"
+provost_find_python || exit 127
+exec "${PROVOST_PY[@]}" -m provost_runtime.cli "$@"

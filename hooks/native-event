@@ -6,8 +6,11 @@ if [[ ! -e "$config_file" ]]; then
     printf '{}\n'
     exit 0
 fi
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if output="$(bash "${script_dir}/runtime" native-hook)"; then
+_src="${BASH_SOURCE[0]//\\//}"
+[[ "$_src" == */* ]] || _src="./${_src}"
+# shellcheck source=_python.sh
+source "${_src%/*}/_python.sh"
+if provost_find_python && output="$("${PROVOST_PY[@]}" -m provost_runtime.cli native-hook)"; then
     printf '%s\n' "$output"
 else
     printf '%s\n' '{"systemMessage":"Native handoff runtime unavailable; personal policy unchanged.","terminalSequence":"\u001b]9;Native handoff runtime unavailable. Compaction continues.\u0007"}'
