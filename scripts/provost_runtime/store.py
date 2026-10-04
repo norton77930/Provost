@@ -280,46 +280,124 @@ def _seal(data):
     return {**data, "checksum": hashlib.sha256(encoded(data)).hexdigest()}
 
 
-def _head(root, session, kind):
+KEEP_RECORDS = 5
+KEEP_SNAPSHOTS = 3
+CHAINS = {"record": "records", "snapshot": "snapshots"}
+
+
+def _horizon(directory):
+    """Newest trimmed id of each chain from horizon.json; both None without the file."""
+    path = directory / "horizon.json"
+    guard(handoff_home(), path)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return dict.fromkeys(CHAINS.values())
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise StoreError("CORRUPT_RECORD") from exc
+    if (not isinstance(data, dict) or set(data) != set(CHAINS.values())
+            or any(v is not None and not (isinstance(v, str) and ID.fullmatch(v)) for v in data.values())):
+        raise StoreError("CORRUPT_RECORD")
+    return data
+
+
+def _chain(root, session, kind):
+    """(chain newest first, trimmed ids) for one session chain.
+
+    Trimmed ids are the horizon and any of its ancestors still on disk (left by a
+    trim interrupted between the horizon write and the deletes); they take no part
+    in head selection. Only the oldest live object may miss its parent, and only
+    when that parent is the horizon.
+    """
     root = as_workspace(root)
     home = handoff_home()
     directory = session_dir(root, session)
     index = directory / ("current.json" if kind == "record" else "latest.json")
-    collection = directory / ("records" if kind == "record" else "snapshots")
+    collection = directory / CHAINS[kind]
     guard(home, collection)
     guard(home, index)
-    if not collection.exists():
-        return None
+    horizon = _horizon(directory)[CHAINS[kind]]
     id_key = "revision" if kind == "record" else "snapshot_id"
     parent_key = "parent_record" if kind == "record" else "parent_snapshot"
     # Index files are hints, never authority: a completed object can outlive
     # an interrupted index replacement. Reconcile the complete chain on reads.
     # Only complete canonical objects participate; leftover temporary files do not.
     objects = {}
-    for path in collection.glob("*.json"):
-        if not ID.fullmatch(path.stem):
-            continue
-        objects[path.stem] = _read(root, path, session, kind)
+    if collection.exists():
+        for path in collection.glob("*.json"):
+            if not ID.fullmatch(path.stem):
+                continue
+            objects[path.stem] = _read(root, path, session, kind)
+    trimmed = []
+    if horizon is not None:
+        trimmed.append(horizon)
+        node = objects.get(horizon)
+        while node is not None:
+            del objects[node[id_key]]
+            node = objects.get(node.get(parent_key))
+            if node is not None:
+                trimmed.append(node[id_key])
+        # A trim always keeps newer objects, the oldest of which names the horizon.
+        if not any(obj.get(parent_key) == horizon for obj in objects.values()):
+            raise StoreError("CORRUPT_RECORD")
     if not objects:
-        return None
+        return [], trimmed
     parents = {obj.get(parent_key) for obj in objects.values() if obj.get(parent_key)}
-    if parents - objects.keys():
+    if parents - objects.keys() - {horizon}:
         raise StoreError("INCOMPLETE_CHAIN")
     heads = set(objects) - parents
     if len(heads) != 1:
         raise StoreError("AMBIGUOUS_CHAIN")
-    head = objects[heads.pop()]
-    visited = set()
-    node = head
+    chain, visited = [], set()
+    node = objects[heads.pop()]
     while node:
         ident = node[id_key]
         if ident in visited:
             raise StoreError("AMBIGUOUS_CHAIN")
         visited.add(ident)
+        chain.append(node)
         node = objects.get(node.get(parent_key))
     if len(visited) != len(objects):
         raise StoreError("AMBIGUOUS_CHAIN")
-    return head
+    return chain, trimmed
+
+
+def _head(root, session, kind):
+    chain, _ = _chain(root, session, kind)
+    return chain[0] if chain else None
+
+
+def _expired(root, session, kind, ident):
+    """Refuse an id that a trim already removed: rewriting it would resurrect it
+    below the horizon (or close a cycle with the oldest live object)."""
+    if _horizon(session_dir(root, session))[CHAINS[kind]] is not None and ident in _chain(root, session, kind)[1]:
+        raise StoreError("REQUEST_ID_EXPIRED")
+
+
+def _trim(root, session, kind, keep):
+    """Under the session lock: drop live objects beyond `keep` and trimmed leftovers.
+
+    The new horizon is written atomically before any delete, and deletes run
+    oldest first, so an interruption leaves the newest removed object (the
+    horizon) last; reads skip whatever remains and the next trim removes it.
+    Best effort: the new object is already durable, so a failed trim is left for
+    the next write rather than failing this one.
+    """
+    directory = session_dir(root, session)
+    collection = directory / CHAINS[kind]
+    try:
+        chain, trimmed = _chain(root, session, kind)
+        surplus = [obj["revision" if kind == "record" else "snapshot_id"] for obj in chain[keep:]]
+        if surplus:
+            horizon = _horizon(directory)
+            horizon[CHAINS[kind]] = surplus[0]
+            atomic_write(handoff_home(), directory / "horizon.json", horizon)
+        for ident in list(reversed(trimmed)) + list(reversed(surplus)):
+            path = collection / (ident + ".json")
+            guard(handoff_home(), path)
+            path.unlink(missing_ok=True)
+    except (StoreError, OSError):
+        pass
 
 
 def current(root, session):
@@ -340,6 +418,7 @@ def record(root, session, payload, expected, request_id, *, cursor=None, adopted
     revision = digest(session + "\0record\0" + request_id)
     path = directory / "records" / (revision + ".json")
     with _lock(root, directory):
+        _expired(root, session, "record", revision)
         if path.exists():
             prior = _read(root, path, session, "record")
             if prior["payload"] != payload or prior.get("adopted_from") != adopted_from:
@@ -355,6 +434,7 @@ def record(root, session, payload, expected, request_id, *, cursor=None, adopted
                       "transcript_cursor": cursor, "adopted_from": adopted_from, "payload": copy.deepcopy(payload)})
         atomic_write(home, path, data)
         atomic_write(home, directory / "current.json", {"revision": revision})
+        _trim(root, session, "record", KEEP_RECORDS)
         return data
 
 
@@ -367,6 +447,7 @@ def snapshot(root, session, event_key):
     ident = digest(session + "\0snapshot\0" + event_key)
     path = directory / "snapshots" / (ident + ".json")
     with _lock(root, directory):
+        _expired(root, session, "snapshot", ident)
         if path.exists():
             return _read(root, path, session, "snapshot")
         source = current(root, session)
@@ -379,6 +460,7 @@ def snapshot(root, session, event_key):
         data = _seal(data)
         atomic_write(home, path, data)
         atomic_write(home, directory / "latest.json", {"snapshot_id": ident})
+        _trim(root, session, "snapshot", KEEP_SNAPSHOTS)
         return data
 
 
