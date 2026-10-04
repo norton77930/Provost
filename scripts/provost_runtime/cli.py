@@ -59,14 +59,15 @@ def main(argv=None):
         parser.add_argument("--request-id")
         parser.add_argument("--from", dest="source")
         parser.add_argument("--input")
-        # One flag for both prune kinds; omitted: binding-only 14 days, expired sessions 30.
+        # Prune ages: binding-only dirs (default 14 days) and expired sessions (default 30).
         parser.add_argument("--older-than-days", type=int, default=None)
+        parser.add_argument("--expired-older-than-days", type=int, default=None)
         parser.add_argument("--apply", action="store_true")
         parser.add_argument("--legacy", action="store_true")
         options = parser.parse_args(args)
         root = workspace_root(options.workspace)
         cfg = load_config(config_path())
-        mode = resolve_mode(cfg, root.root)
+        mode = resolve_mode(cfg, root.root, root.main)
         if options.command == "doctor":
             error = None
             try:
@@ -93,6 +94,7 @@ def main(argv=None):
                 result = legacy.list_snapshots(root) if options.legacy else list_snapshots(root)
             elif options.command == "prune":
                 result = prune(root, older_than_days=options.older_than_days,
+                               expired_older_than_days=options.expired_older_than_days,
                                keep_session=options.session, apply=options.apply)
             else:
                 if not options.session:

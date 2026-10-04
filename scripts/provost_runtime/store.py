@@ -50,8 +50,13 @@ def locate(cwd):
         result = subprocess.run(["git", "-C", str(root), "rev-parse", "--path-format=absolute",
                                  "--show-toplevel", "--git-common-dir"],
                                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
+        # git < 2.31 lacks --path-format: rev-parse echoes the unknown flag or fails with
+        # usage. Never fall back to non-Git keying for a Git checkout that cannot be keyed.
+        lines = result.stdout.splitlines()
+        if ((lines and lines[0] == "--path-format=absolute") or result.returncode == 129
+                or "unknown option" in result.stderr or "usage:" in result.stderr):
+            raise StoreError("GIT_UNSUPPORTED")
         if result.returncode == 0:
-            lines = result.stdout.splitlines()
             if len(lines) != 2 or not all(lines):
                 raise StoreError("REPO_KEY_UNRESOLVED")
             top, common = Path(lines[0]).resolve(), Path(lines[1]).resolve()
@@ -120,16 +125,17 @@ def _home_outside_repo(home):
     """Error code when handoffs under the store home could be committed, else None.
 
     A home outside every Git work tree, or inside one that ignores it (a dotfiles
-    repo such as ~/.claude), is accepted. One `git check-ignore` of a child path,
-    run from the nearest existing ancestor so nothing is created before the verdict;
-    cached per process.
+    repo such as ~/.claude), is accepted. One `git check-ignore` of the kind of path
+    the store writes, <home>/v2/repos/<repo dir> (a dot-name probe would pass a repo
+    ignoring only `.*`), run from the nearest existing ancestor so nothing is created
+    before the verdict; cached per process.
     """
     key = os.path.normcase(str(home))
     if key not in _HOME_CHECKED:
         cwd = Path(home)
         while not cwd.is_dir() and cwd.parent != cwd:
             cwd = cwd.parent
-        child = (Path(home) / ".provost-probe").relative_to(cwd)
+        child = (Path(home) / "v2" / "repos" / ("0" * REPO_DIR_CHARS)).relative_to(cwd)
         try:
             result = subprocess.run(["git", "-C", str(cwd), "check-ignore", "-q", "--", child.as_posix()],
                                     capture_output=True, text=True, timeout=5)
@@ -581,7 +587,7 @@ def _leftover_state(root, directory, cutoff):
     return "reclaimable" if found and found[1].st_mtime < cutoff else "kept"
 
 
-def _reclaim(root, directory, cutoff, expiry_cutoff=None):
+def _reclaim(root, directory, cutoff, expiry_cutoff=None, repo_key=None):
     """Delete a leftover staging dir, re-verifying at deletion time. True when removed.
 
     A binding that is no longer old (another run moved a just-rebound session
@@ -594,7 +600,7 @@ def _reclaim(root, directory, cutoff, expiry_cutoff=None):
             return False
         found[0].unlink()
     elif expiry_cutoff is not None and any(directory.iterdir()):
-        if not _expired_leftover(root, directory, expiry_cutoff):
+        if not _expired_leftover(root, directory, expiry_cutoff, repo_key):
             return False
         shutil.rmtree(directory)
         return True
@@ -605,29 +611,55 @@ def _reclaim(root, directory, cutoff, expiry_cutoff=None):
 BINDING_ONLY_DAYS = 14
 EXPIRY_DAYS = 30
 SESSION_FILES = {"binding.json", "horizon.json", "current.json", "latest.json", "compaction.json", ".lock"}
+# Rewritten on resume (binding), compaction and every write; their mtime counts as activity.
+ACTIVITY_FILES = SESSION_FILES - {".lock"}
 
 
 @dataclass(frozen=True)
 class Scan:
-    newest: object   # newest record/snapshot stamp (epoch seconds), None without any
+    newest: object   # newest activity (epoch seconds): record/snapshot stamps and
+                     # session-file mtimes; None without any record or snapshot
     records: int
     snapshots: int
     extra: bool      # anything a session dir does not normally hold
+    owners: frozenset = frozenset()  # stored workspace_ids of records, snapshots and binding
+
+    def foreign(self, repo_key):
+        """True when any stored workspace_id names another repo (a REPO_DIR_CHARS prefix collision)."""
+        return bool(self.owners - {repo_key})
 
 
-def _stamp(path, key):
+def _load(path):
+    """Parsed JSON object of a session file, else None."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _owner(data):
+    """Stored workspace_id; None when the file is unreadable or has none."""
+    if data is None or "workspace_id" not in data:
+        return None
+    owner = data["workspace_id"]
+    return owner if isinstance(owner, str) else "<invalid>"
+
+
+def _stamp(path, key, data):
     """Stored timestamp of a record/snapshot file; its mtime when missing or unparseable."""
     try:
-        when = datetime.fromisoformat(json.loads(path.read_text(encoding="utf-8")).get(key))
+        when = datetime.fromisoformat(data.get(key))
         return (when if when.tzinfo else when.replace(tzinfo=timezone.utc)).timestamp()
-    except (OSError, ValueError, TypeError, AttributeError, OverflowError):
+    except (ValueError, TypeError, AttributeError, OverflowError):
         return path.stat().st_mtime
 
 
 def _scan(home, directory):
     """Read-only inventory of a session dir; never follows links (StoreError LINKED_STORAGE)."""
     guard(home, directory)
-    newest, counts, extra = None, {"records": 0, "snapshots": 0}, False
+    newest, counts, extra, touched = None, {"records": 0, "snapshots": 0}, False, None
+    owners = set()
     for child in directory.iterdir():
         guard(home, child)
         if child.name in counts and child.is_dir():
@@ -640,11 +672,20 @@ def _scan(home, directory):
                     extra = True
                     continue
                 counts[child.name] += 1
-                when = _stamp(item, key)
+                data = _load(item)
+                owners.add(_owner(data))
+                when = _stamp(item, key, data)
                 newest = when if newest is None else max(newest, when)
         elif not (child.is_file() and (child.name in SESSION_FILES or child.name.startswith(".pending-"))):
             extra = True
-    return Scan(newest, counts["records"], counts["snapshots"], extra)
+        elif child.name in ACTIVITY_FILES:
+            mtime = child.lstat().st_mtime
+            touched = mtime if touched is None else max(touched, mtime)
+            if child.name == "binding.json":
+                owners.add(_owner(_load(child)))
+    if newest is not None and touched is not None:
+        newest = max(newest, touched)
+    return Scan(newest, counts["records"], counts["snapshots"], extra, frozenset(owners - {None}))
 
 
 def _lock_held(home, directory):
@@ -673,11 +714,11 @@ def _lock_held(home, directory):
     return False
 
 
-def _is_expired(scan, cutoff):
-    return scan.newest is not None and scan.newest < cutoff and not scan.extra
+def _is_expired(scan, cutoff, repo_key):
+    return scan.newest is not None and scan.newest < cutoff and not scan.extra and not scan.foreign(repo_key)
 
 
-def _remove_expired(home, entry, staging, cutoff):
+def _remove_expired(home, entry, staging, cutoff, repo_key):
     """Move an expired session aside, re-verify it is still expired and unlocked, then delete it.
 
     A record or snapshot written, or the lock taken, between the listing and the
@@ -685,7 +726,7 @@ def _remove_expired(home, entry, staging, cutoff):
     """
     entry.rename(staging)
     try:
-        keep = not _is_expired(_scan(home, staging), cutoff) or _lock_held(home, staging)
+        keep = not _is_expired(_scan(home, staging), cutoff, repo_key) or _lock_held(home, staging)
     except (StoreError, OSError):
         staging.rename(entry)
         raise
@@ -696,32 +737,35 @@ def _remove_expired(home, entry, staging, cutoff):
     return True
 
 
-def _expired_leftover(home, directory, cutoff):
-    """True for a staging dir holding an expired, unlocked session (an interrupted delete)."""
-    return _is_expired(_scan(home, directory), cutoff) and not _lock_held(home, directory)
+def _expired_leftover(home, directory, cutoff, repo_key):
+    """True for a staging dir holding an expired, unlocked session of this repo (an interrupted delete)."""
+    return _is_expired(_scan(home, directory), cutoff, repo_key) and not _lock_held(home, directory)
 
 
-def prune(root, *, older_than_days=None, keep_session=None, apply=False, now=None):
+def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_session=None, apply=False, now=None):
     """List (or with apply, remove) abandoned session dirs; dry-run unless apply.
 
-    Two kinds: dirs holding only an old binding.json (`candidates`; such a dir
-    records only that a session started) and expired sessions (`expired`) whose
-    newest record/snapshot is older than the cutoff. `older_than_days` applies to
-    both when given; when omitted binding-only uses 14 and expiry uses 30. An
+    Two kinds, each with its own age: dirs holding only an old binding.json
+    (`candidates`; such a dir records only that a session started) older than
+    `older_than_days` (default 14), and expired sessions (`expired`) whose newest
+    activity is older than `expired_older_than_days` (default 30). An
     expired session is skipped while its lock is held or if it holds anything a
-    session dir does not normally hold. Linked entries are skipped (listed in
+    session dir does not normally hold, and as FOREIGN_REPO when a stored
+    workspace_id names another repo. Linked entries are skipped (listed in
     `skipped`), never followed or removed. Staging dirs left by an interrupted earlier
     run (`.pruning-<digest>`) are listed in `leftovers`; empty ones, ones holding
     only an old binding and expired sessions are reclaimed under apply. They sort
     before session dirs, so a leftover is cleared before its own session is moved
-    aside again. Only the current store is pruned; legacy stores are never touched.
+    aside again. The kept session's own leftover is listed as kept, never reclaimed.
+    Only the current store is pruned; legacy stores are never touched.
     """
-    if older_than_days is not None and (not isinstance(older_than_days, int) or isinstance(older_than_days, bool)
-                                        or older_than_days < 1):
-        raise StoreError("INVALID_ARGUMENTS")
+    for days in (older_than_days, expired_older_than_days):
+        if days is not None and (not isinstance(days, int) or isinstance(days, bool) or days < 1):
+            raise StoreError("INVALID_ARGUMENTS")
     binding_days = older_than_days or BINDING_ONLY_DAYS
-    expiry_days = older_than_days or EXPIRY_DAYS
-    sessions = _base(as_workspace(root)) / "sessions"
+    expiry_days = expired_older_than_days or EXPIRY_DAYS
+    ws = as_workspace(root)
+    sessions = _base(ws) / "sessions"
     home = handoff_home()
     guard(home, sessions)
     result = {"older_than_days": binding_days, "expired_older_than_days": expiry_days,
@@ -734,12 +778,16 @@ def prune(root, *, older_than_days=None, keep_session=None, apply=False, now=Non
     cutoff, expiry_cutoff = clock - binding_days * 86400, clock - expiry_days * 86400
     for entry in sorted(sessions.iterdir()):
         if STAGING.fullmatch(entry.name):
+            if keep and entry.name == ".pruning-" + keep:
+                # The current session's own history may be parked here; listed, never reclaimed.
+                result["leftovers"].append({"staging_dir": entry.name, "state": "kept"})
+                continue
             try:
                 state = _leftover_state(home, entry, cutoff)
-                if state == "kept" and _expired_leftover(home, entry, expiry_cutoff):
+                if state == "kept" and _expired_leftover(home, entry, expiry_cutoff, ws.repo_key):
                     state = "reclaimable"
                 result["leftovers"].append({"staging_dir": entry.name, "state": state})
-                if apply and state == "reclaimable" and _reclaim(home, entry, cutoff, expiry_cutoff):
+                if apply and state == "reclaimable" and _reclaim(home, entry, cutoff, expiry_cutoff, ws.repo_key):
                     result["reclaimed"] += 1
             except StoreError as exc:
                 result["skipped"].append({"entry": entry.name, "reason": str(exc)})
@@ -761,13 +809,16 @@ def prune(root, *, older_than_days=None, keep_session=None, apply=False, now=Non
                 if scan.extra:
                     result["skipped"].append({"entry": entry.name, "reason": "UNEXPECTED_CONTENT"})
                     continue
+                if scan.foreign(ws.repo_key):
+                    result["skipped"].append({"entry": entry.name, "reason": "FOREIGN_REPO"})
+                    continue
                 if _lock_held(home, entry):
                     result["skipped"].append({"entry": entry.name, "reason": "STORE_BUSY"})
                     continue
                 result["expired"].append({
                     "session_dir": entry.name, "records": scan.records, "snapshots": scan.snapshots,
                     "newest": datetime.fromtimestamp(scan.newest, timezone.utc).isoformat()})
-                if apply and _remove_expired(home, entry, staging, expiry_cutoff):
+                if apply and _remove_expired(home, entry, staging, expiry_cutoff, ws.repo_key):
                     result["expired_removed"] += 1
                 continue
             binding, info = found

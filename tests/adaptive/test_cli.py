@@ -47,6 +47,21 @@ class CliTests(FixtureCase):
         status = json.loads(self.run_cli("status", "--workspace", str(worktree), "--session", "s1").stdout)
         self.assertEqual(status["checkpoint"]["payload"]["next"], "main")
 
+    def test_allowlisted_main_checkout_enables_its_worktree_sessions(self):
+        from provost_runtime.hooks import handle_event
+        from provost_runtime.store import record, session_dir
+        main, worktree = self.git_repo_with_worktree()
+        self.cfg["workspace_roots"] = [str(main)]
+        self.config_path.write_text(json.dumps(self.cfg), encoding="utf-8")
+        output = handle_event({"hook_event_name": "SessionStart", "source": "startup", "session_id": "s1",
+                               "cwd": str(worktree)}, self.config_path, native=True)
+        self.assertIn("Native handoff runtime active", output.get("hookSpecificOutput", {}).get("additionalContext", ""))
+        self.assertTrue((session_dir(main, "s1") / "binding.json").is_file())
+        revision = record(main, "s1", self.payload("main"), None, "r1")["revision"]
+        status = self.run_cli("status", "--workspace", str(worktree), "--session", "s1")
+        self.assertEqual(status.returncode, 0, status.stdout)
+        self.assertEqual(json.loads(status.stdout)["expected"], revision)
+
     def test_record_snapshot_list_and_resume_roundtrip(self):
         bind(self.root, "s1", {})
         bind(self.root, "s2", {})

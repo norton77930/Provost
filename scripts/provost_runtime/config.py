@@ -62,10 +62,15 @@ def load_config(path: Path) -> dict:
         raise ConfigError("CONFIG_UNREADABLE") from exc
 
 
-def resolve_mode(config: dict, workspace: Path) -> str:
+def resolve_mode(config: dict, workspace: Path, main: Path = None) -> str:
+    """Adaptive when the workspace, or the main checkout it belongs to, is allowlisted.
+
+    Mode is repo-level like the store: a worktree of an allowlisted main checkout
+    shares its mode. Matching is exact, never by path prefix.
+    """
     if config.get("mode") != "adaptive":
         return "legacy"
     if config.get("all_workspaces") is True:
         return "adaptive"
-    current = normalized(workspace)
-    return "adaptive" if any(normalized(Path(p)) == current for p in config.get("workspace_roots", [])) else "legacy"
+    current = {normalized(workspace)} | ({normalized(main)} if main is not None else set())
+    return "adaptive" if any(normalized(Path(p)) in current for p in config.get("workspace_roots", [])) else "legacy"

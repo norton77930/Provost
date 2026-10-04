@@ -139,6 +139,14 @@ class RepoStoreTests(FixtureCase):
         self.assertFalse(inside.exists())
         self.assertFalse((self.root / ".provost").exists())
 
+    def test_ignoring_only_dot_files_does_not_hide_the_store(self):
+        # The probe must be a path the store writes; a dot-file probe would match ".*".
+        inside = self.home_in_repo("c", ".*\n")
+        with mock.patch.dict(os.environ, PROVOST_HANDOFF_HOME=str(inside)):
+            with self.assertRaisesRegex(StoreError, "^STORE_INSIDE_REPO$"):
+                record(self.root, "s1", self.payload(), None, "r")
+        self.assertFalse(inside.exists())
+
     def test_git_ignored_store_home_inside_a_work_tree_is_accepted(self):
         # "*" mirrors a dotfiles repo such as ~/.claude that ignores everything by default.
         for name, rule in (("a", "*\n"), ("b", "/p/\n")):
@@ -149,6 +157,20 @@ class RepoStoreTests(FixtureCase):
                     self.assertTrue((session_dir(self.root, "s1") / "records" / (data["revision"] + ".json")).is_file())
                 self.assertEqual(self.git("status", "--porcelain", cwd=inside.parents[1]),
                                  "" if rule == "*\n" else "?? .gitignore")
+
+    def test_git_without_path_format_is_an_explicit_error(self):
+        # git < 2.31 lacks --path-format: a usage error, or rev-parse echoing the unknown flag.
+        import subprocess
+        from provost_runtime import store
+        sub = self.root / "sub"
+        sub.mkdir()
+        for code, out, err in ((129, "", "error: unknown option `path-format=absolute'\nusage: git rev-parse"),
+                               (0, "--path-format=absolute\n" + str(self.root) + "\n.git\n", "")):
+            with self.subTest(code=code), mock.patch.object(
+                    store.subprocess, "run", return_value=subprocess.CompletedProcess([], code, out, err)) as run:
+                with self.assertRaisesRegex(StoreError, "^GIT_UNSUPPORTED$"):
+                    store.locate(sub)
+                self.assertEqual(run.call_count, 1)
 
     def test_bare_repository_has_no_resolvable_repo_key(self):
         self.isolate_user_git_config()

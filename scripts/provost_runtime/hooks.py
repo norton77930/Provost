@@ -192,7 +192,7 @@ def handle_event(event, config_path, *, native=False):
             raise StoreError("INVALID_HOOK_INPUT")
         root = workspace_root(event["cwd"])
         session = event["session_id"]
-        if resolve_mode(cfg, root.root) != "adaptive":
+        if resolve_mode(cfg, root.root, root.main) != "adaptive":
             if native:
                 return {}
             if name == "SessionStart":

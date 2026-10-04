@@ -33,8 +33,19 @@ def age(path, days):
     os.utime(path, (stamp, stamp))
 
 
+ACTIVITY_FILES = ("binding.json", "compaction.json", "current.json", "latest.json", "horizon.json")
+
+
+def age_activity(directory, days):
+    """Age the session-level files whose mtime counts as activity."""
+    for name in ACTIVITY_FILES:
+        if (directory / name).exists():
+            age(directory / name, days)
+
+
 def backdate(directory, days):
-    """Move every record/snapshot stamp (stored and file mtime) of a session dir days into the past."""
+    """Move every activity stamp of a session dir days into the past: stored and file
+    mtimes of records/snapshots, and the session-level files' mtimes."""
     when = datetime.now(timezone.utc) - timedelta(days=days)
     for kind, key in (("records", "recorded_at"), ("snapshots", "captured_at")):
         for path in (directory / kind).glob("*.json"):
@@ -42,6 +53,7 @@ def backdate(directory, days):
             data[key] = when.isoformat()
             path.write_text(json.dumps(data), encoding="utf-8")
             age(path, days)
+    age_activity(directory, days)
 
 
 class PruneTests(FixtureCase):
@@ -307,16 +319,67 @@ class ExpiredPruneTests(FixtureCase):
         self.assertTrue(fresh.is_dir())
         self.assertEqual(list(old.parent.glob(".pruning-*")), [])
 
-    def test_expiry_default_is_30_days_and_an_explicit_age_applies_to_it(self):
+    def test_expiry_default_is_30_days_and_only_its_own_age_changes_it(self):
         mid = self.session("mid", 20)
         self.assertEqual(prune(self.root)["expired"], [])
-        self.assertEqual(self.expired(prune(self.root, older_than_days=10)), [mid.name])
+        self.assertEqual(prune(self.root, older_than_days=10)["expired"], [])
+        self.assertEqual(self.expired(prune(self.root, expired_older_than_days=10)), [mid.name])
+        from provost_runtime.store import StoreError
+        for bad in (0, -1, True):
+            with self.assertRaises(StoreError):
+                prune(self.root, expired_older_than_days=bad)
+
+    def test_recent_session_file_activity_keeps_old_records_from_expiring(self):
+        for name in ACTIVITY_FILES:
+            with self.subTest(name=name):
+                resumed = self.session("r-" + name, 40, snapshot=True)
+                age(resumed / name, 0) if (resumed / name).exists() else (resumed / name).write_text("{}")
+                result = prune(self.root, apply=True)
+                self.assertNotIn(resumed.name, self.expired(result))
+                self.assertTrue((resumed / "records").is_dir())
 
     def test_current_session_is_never_removed_even_when_expired(self):
         mine = self.session("mine", 90)
         result = prune(self.root, keep_session="mine", apply=True)
         self.assertEqual((result["expired"], result["expired_removed"]), ([], 0))
         self.assertTrue(mine.is_dir())
+
+    def test_current_sessions_leftover_staging_dir_is_never_reclaimed(self):
+        mine = self.session("mine", 90)
+        leftover = mine.parent / (".pruning-" + mine.name)
+        mine.rename(leftover)
+        result = prune(self.root, keep_session="mine", apply=True)
+        self.assertEqual((result["leftovers"], result["reclaimed"]),
+                         ([{"staging_dir": leftover.name, "state": "kept"}], 0))
+        self.assertTrue((leftover / "records").is_dir())
+
+    def forge_foreign(self, directory, name):
+        """Rewrite one stored file of a session with another repo's workspace_id, keeping its age."""
+        path = directory / name
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["workspace_id"] = "f" * 64
+        info = path.stat()
+        path.write_text(json.dumps(data), encoding="utf-8")
+        os.utime(path, (info.st_atime, info.st_mtime))
+
+    def test_a_session_of_another_repo_is_skipped_never_deleted(self):
+        rec = self.session("x-rec", 90, snapshot=True)
+        self.forge_foreign(rec, next((rec / "records").glob("*.json")).relative_to(rec))
+        snap = self.session("x-snap", 90, snapshot=True)
+        self.forge_foreign(snap, next((snap / "snapshots").glob("*.json")).relative_to(snap))
+        bound = self.session("x-bind", 90)
+        self.forge_foreign(bound, "binding.json")
+        parked = self.session("x-park", 90)
+        self.forge_foreign(parked, "binding.json")
+        leftover = parked.parent / (".pruning-" + parked.name)
+        parked.rename(leftover)
+        result = prune(self.root, apply=True)
+        self.assertEqual((result["expired"], result["expired_removed"], result["reclaimed"]), ([], 0, 0))
+        for foreign in (rec, snap, bound):
+            self.assertIn({"entry": foreign.name, "reason": "FOREIGN_REPO"}, result["skipped"])
+            self.assertTrue((foreign / "records").is_dir())
+        self.assertEqual(result["leftovers"], [{"staging_dir": leftover.name, "state": "kept"}])
+        self.assertTrue((leftover / "records").is_dir())
 
     def test_a_locked_session_is_skipped_with_a_reason(self):
         from provost_runtime.store import _lock
@@ -374,6 +437,7 @@ class ExpiredPruneTests(FixtureCase):
         for path in (old / "records").glob("*.json"):
             path.write_text("not json", encoding="utf-8")
             age(path, 60)
+        age_activity(old, 60)
         young = self.session("young", 0)
         for path in (young / "records").glob("*.json"):
             path.write_text("{}", encoding="utf-8")
@@ -515,6 +579,19 @@ class PruneCliTests(FixtureCase):
         code, data = self.run_cli("prune", "--workspace", str(self.root), "--apply")
         self.assertEqual((code, data["expired_removed"]), (0, 1))
         self.assertFalse(session_dir(self.root, "old").exists())
+
+    def test_cli_older_than_days_is_binding_only_and_expiry_has_its_own_flag(self):
+        self.expired_session("ten", 10)
+        code, data = self.run_cli("prune", "--workspace", str(self.root), "--older-than-days", "3", "--apply")
+        self.assertEqual((code, data["expired"], data["older_than_days"], data["expired_older_than_days"]),
+                         (0, [], 3, 30))
+        self.assertTrue(session_dir(self.root, "ten").exists())
+        code, data = self.run_cli("prune", "--workspace", str(self.root), "--expired-older-than-days", "3", "--apply")
+        self.assertEqual((code, data["expired_removed"], data["older_than_days"], data["expired_older_than_days"]),
+                         (0, 1, 14, 3))
+        self.assertFalse(session_dir(self.root, "ten").exists())
+        code, data = self.run_cli("prune", "--workspace", str(self.root), "--expired-older-than-days", "0")
+        self.assertEqual((code, data), (1, {"error": "INVALID_ARGUMENTS"}))
 
     def test_cli_binding_only_default_stays_14_days_beside_the_30_day_expiry(self):
         self.aged("bound", 20)
