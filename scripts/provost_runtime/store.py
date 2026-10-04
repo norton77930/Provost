@@ -116,26 +116,34 @@ _HOME_CHECKED = {}
 
 
 def _home_outside_repo(home):
-    """Error code when the store home lies inside a Git work tree (handoffs could be
-    committed), else None. One Git spawn from the nearest existing ancestor, cached per process."""
+    """Error code when handoffs under the store home could be committed, else None.
+
+    A home outside every Git work tree, or inside one that ignores it (a dotfiles
+    repo such as ~/.claude), is accepted. One `git check-ignore` of a child path,
+    run from the nearest existing ancestor so nothing is created before the verdict;
+    cached per process.
+    """
     key = os.path.normcase(str(home))
     if key not in _HOME_CHECKED:
-        probe = Path(home)
-        while not probe.is_dir() and probe.parent != probe:
-            probe = probe.parent
+        cwd = Path(home)
+        while not cwd.is_dir() and cwd.parent != cwd:
+            cwd = cwd.parent
+        child = (Path(home) / ".provost-probe").relative_to(cwd)
         try:
-            result = subprocess.run(["git", "-C", str(probe), "rev-parse", "--is-inside-work-tree"],
+            result = subprocess.run(["git", "-C", str(cwd), "check-ignore", "-q", "--", child.as_posix()],
                                     capture_output=True, text=True, timeout=5)
         except FileNotFoundError:
-            result = None
+            result = None  # no Git, nothing can commit the store
         except (OSError, subprocess.TimeoutExpired):
             return "GIT_UNREADABLE"
-        if result is not None and result.returncode == 0 and result.stdout.strip() == "true":
-            _HOME_CHECKED[key] = "STORE_INSIDE_REPO"
-        elif result is not None and result.returncode and "dubious ownership" in result.stderr:
-            _HOME_CHECKED[key] = "GIT_UNREADABLE"
-        else:
+        if result is None or result.returncode == 0:
             _HOME_CHECKED[key] = None
+        elif result.returncode == 1:
+            _HOME_CHECKED[key] = "STORE_INSIDE_REPO"
+        elif "not a git repository" in result.stderr:
+            _HOME_CHECKED[key] = None
+        else:
+            _HOME_CHECKED[key] = "GIT_UNREADABLE"
     return _HOME_CHECKED[key]
 
 

@@ -122,17 +122,33 @@ class RepoStoreTests(FixtureCase):
         for workspace in (main, worktree):
             self.assertFalse((workspace / ".provost").exists())
 
-    def test_store_inside_a_git_work_tree_is_refused(self):
+    def home_in_repo(self, name, ignore=None):
         self.isolate_user_git_config()
-        repo = self.root / "repo"
+        repo = self.root / name
         repo.mkdir()
         self.git("init", "-q", cwd=repo)
-        inside = repo / "handoffs"
+        if ignore is not None:
+            (repo / ".gitignore").write_text(ignore, encoding="utf-8")
+        return repo / "p" / "h"  # short: record paths must stay under Windows MAX_PATH
+
+    def test_store_inside_a_git_work_tree_is_refused(self):
+        inside = self.home_in_repo("r")
         with mock.patch.dict(os.environ, PROVOST_HANDOFF_HOME=str(inside)):
             with self.assertRaisesRegex(StoreError, "^STORE_INSIDE_REPO$"):
                 record(self.root, "s1", self.payload(), None, "r")
         self.assertFalse(inside.exists())
         self.assertFalse((self.root / ".provost").exists())
+
+    def test_git_ignored_store_home_inside_a_work_tree_is_accepted(self):
+        # "*" mirrors a dotfiles repo such as ~/.claude that ignores everything by default.
+        for name, rule in (("a", "*\n"), ("b", "/p/\n")):
+            with self.subTest(rule=rule):
+                inside = self.home_in_repo(name, rule)
+                with mock.patch.dict(os.environ, PROVOST_HANDOFF_HOME=str(inside)):
+                    data = record(self.root, "s1", self.payload(), None, "r")
+                    self.assertTrue((session_dir(self.root, "s1") / "records" / (data["revision"] + ".json")).is_file())
+                self.assertEqual(self.git("status", "--porcelain", cwd=inside.parents[1]),
+                                 "" if rule == "*\n" else "?? .gitignore")
 
     def test_bare_repository_has_no_resolvable_repo_key(self):
         self.isolate_user_git_config()
