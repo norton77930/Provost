@@ -139,8 +139,8 @@ workspace allowlist. It keeps legacy behavior as the default. Python 3.11+ is
 required only for the optional runtime. The new adaptive-implementer defaults to
 Opus/high; bounded known work may use a Sonnet override with high effort.
 Scheduling and writer limits are instructions, not engine enforcement. Project
-restrictions still win. Local immutable handoff history is Git-ignored; compact
-saving failures are nonblocking. Live host/model validation remains pending.
+restrictions still win. Local handoff history lives outside the repository and is
+shared by a checkout and its worktrees; compact saving failures are nonblocking. Live host/model validation remains pending.
 
 See the [setup and pilot guide](docs/examples/adaptive-handoff-pilot.md) for config,
 source workflows, /provost:handoff, failure limits and rollback.

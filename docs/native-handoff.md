@@ -1,8 +1,31 @@
 # Native handoff operations
 
 Use the runtime path, workspace and session supplied by SessionStart. Do not
-invent an ID, switch workspace identity mid-session, or enable settings yourself.
+invent an ID or enable settings yourself.
 The personal CLAUDE.md controls delegation; this runtime does not select agents.
+
+## Where records live
+
+Records are stored outside the repository, under
+`<home>/v2/repos/<repo_key[:16]>/sessions/<sha256(session)>/`. The home is
+`PROVOST_HANDOFF_HOME`, else `$PROVOST_HOME/handoffs`, else
+`~/.claude/provost/handoffs`. `repo_key` is derived from the main checkout, so a
+main checkout and all of its worktrees share one store: entering a worktree
+mid-session keeps the same records, and deleting a worktree deletes none of them.
+A home inside a Git work tree is refused (`STORE_INSIDE_REPO`) unless Git ignores
+it. `doctor` reports `store_home` and `repo_key`.
+
+Each session keeps its newest 5 records and 3 snapshots; older ones are removed
+when a new one is written, and `horizon.json` records where the chain was cut so
+reads still verify it. Retrying a request ID whose record was already removed
+returns `REQUEST_ID_EXPIRED`.
+
+Older stores under `<checkout>/.provost/handoffs/v1` are read-only: when the new
+store has nothing for a session, `status` and compact/resume recovery fall back to
+them (marked `legacy`; `expected` stays null so the first record starts a fresh
+chain), `list --legacy` lists their snapshots, and `resume` can adopt one. Nothing
+is ever written to or deleted from them; remove them yourself when no longer needed.
+This bridge is temporary.
 
 ## Read status before writing
 
@@ -91,12 +114,22 @@ NO_CHECKPOINT, not a successful empty save. Startup/clear/fork do not adopt old 
 Notifications and host/model behavior still need a live pilot. Normal Bash path
 and payload input must satisfy project guards; report refusals rather than bypassing.
 
-## Pruning stale bindings
+## Pruning stale bindings and expired sessions
 
 Every SessionStart binds its session, so the store collects directories for
 sessions that never recorded anything. `doctor` reports them as `stale_sessions`.
 `prune` lists session directories that hold only `binding.json` older than
 `--older-than-days` (default 14); it deletes nothing unless `--apply` is given.
+
+`prune` also lists, under `expired`, sessions whose newest record or snapshot is
+older than 30 days (its stored timestamp, else file mtime); `doctor` reports their
+count as `expired_sessions`. Omitting `--older-than-days` applies 14 days to
+binding-only dirs and 30 to expired sessions; a given value applies to both.
+`--apply` removes them (counted in `expired_removed`) with the same move, re-check
+and delete steps as below; a session that became fresh or locked in between is
+moved back. The `--session` dir, a dir whose lock is held (`STORE_BUSY`), and a dir
+with unexpected content (`UNEXPECTED_CONTENT`) are skipped. Nothing is deleted
+automatically, and legacy `.provost` stores are never pruned.
 Pass `--session <current-id>` to keep the running session. Directories with any
 record, snapshot, lock or other file, linked or reparse-point entries, and names
 that are not session digests are never candidates. With `--apply`, each candidate

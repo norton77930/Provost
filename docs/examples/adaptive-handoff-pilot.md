@@ -14,10 +14,11 @@ absolute path. Copy [the example](provost-user-config.json), replacing its place
 with the exact checkout root. Keep all_workspaces false for a pilot. Root allowlisting
 limits personal rollout; it is not shared project or company configuration.
 
-Before handoff writes in Git, verify .provost/handoffs is not tracked. Add
-/.provost/handoffs/ to the checkout's local Git info/exclude with approval (or use
-an existing ignore rule). Provost does not alter excludes or untrack files.
-Non-Git workspaces require an explicitly selected directory.
+Handoff records live outside the checkout, under ~/.claude/provost/handoffs (or
+PROVOST_HANDOFF_HOME / $PROVOST_HOME/handoffs), keyed by the main checkout so its
+worktrees share them. No Git exclude is needed. A store home inside a Git work tree
+must be ignored by that repository, otherwise writes are refused. Non-Git
+workspaces require an explicitly selected directory.
 
 ## Runtime commands
 
@@ -78,12 +79,15 @@ and worker state before continuing; do not duplicate potentially live work.
 
 ## History and failures
 
-Data lives in .provost/handoffs/v1/sessions/<hashed-session>/{records,snapshots}.
-Complete objects are immutable by the application; current/latest indexes are
-replaceable hints. Reads reconcile complete chains, including completed objects
-left by interrupted index updates. Corrupt/branching chains are rejected.
-History is local, Git-ignored, not Git version control or source-code backup.
-No automatic deletion or remote issue mutation occurs.
+Data lives in <home>/v2/repos/<repo-key>/sessions/<hashed-session>/{records,snapshots}
+(see [native-handoff.md](../native-handoff.md)). Complete objects are immutable by
+the application; current/latest indexes are replaceable hints. Reads reconcile
+complete chains, including completed objects left by interrupted index updates.
+Corrupt/branching chains are rejected. Each session keeps its newest 5 records and
+3 snapshots; horizon.json marks the cut so the remaining chain still verifies.
+History is local and outside the repository, not Git version control or source-code
+backup. Expired sessions are removed only by an explicit `prune --apply`; no remote
+issue mutation occurs. Older .provost/handoffs/v1 stores are read-only fallbacks.
 
 PreCompact snapshots the last full milestone without model summarization. Missing
 records report NO_CHECKPOINT, not an empty successful save. PostCompact stores metadata.
