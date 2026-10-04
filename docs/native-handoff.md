@@ -23,8 +23,11 @@ returns `REQUEST_ID_EXPIRED` (see Known limits below).
 Older stores under `<checkout>/.provost/handoffs/v1` are read-only: when the new
 store has nothing for a session, `status` and compact/resume recovery fall back to
 them (marked `legacy`; `expected` stays null so the first record starts a fresh
-chain), `list --legacy` lists their snapshots, and `resume` can adopt one. Nothing
-is ever written to or deleted from them; remove them yourself when no longer needed.
+chain), `list --legacy` lists their snapshots, and `resume` can adopt one. A
+session whose SessionStart bound it only in a legacy store (it started before the
+switch) still works: `status` reports `legacy_binding`, and the first `record` or
+`snapshot` copies the validated binding into the new store. Nothing is ever written
+to or deleted from legacy stores; remove them yourself when no longer needed.
 This bridge is temporary.
 
 ## Read status before writing
