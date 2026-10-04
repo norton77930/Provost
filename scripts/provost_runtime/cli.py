@@ -59,7 +59,8 @@ def main(argv=None):
         parser.add_argument("--request-id")
         parser.add_argument("--from", dest="source")
         parser.add_argument("--input")
-        parser.add_argument("--older-than-days", type=int, default=14)
+        # One flag for both prune kinds; omitted: binding-only 14 days, expired sessions 30.
+        parser.add_argument("--older-than-days", type=int, default=None)
         parser.add_argument("--apply", action="store_true")
         parser.add_argument("--legacy", action="store_true")
         options = parser.parse_args(args)
@@ -74,14 +75,15 @@ def main(argv=None):
                 error = str(exc)
             bound_at = last_binding_at(root)
             try:
-                stale = len(prune(root)["candidates"])
+                listing = prune(root)  # dry run: doctor never deletes
+                stale, expired = len(listing["candidates"]), len(listing["expired"])
             except (StoreError, OSError):
-                stale = None
+                stale = expired = None
             result = {"mode": mode, "python_supported": sys.version_info >= (3, 11),
                       "handoff": mode == "adaptive" and cfg.get("handoff", False),
                       "storage_ready": error is None, "storage_error": error,
                       "host_verified": bound_at is not None, "last_binding_at": bound_at,
-                      "stale_sessions": stale, "legacy_store_present": legacy.present(root),
+                      "stale_sessions": stale, "expired_sessions": expired, "legacy_store_present": legacy.present(root),
                       "store_home": str(handoff_home()), "repo_key": root.repo_key,
                       "runtime_root": str(RUNTIME_ROOT), "runtime_hash": runtime_hash(RUNTIME_ROOT)}
         else:

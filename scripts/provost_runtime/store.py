@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -580,48 +581,165 @@ def _leftover_state(root, directory, cutoff):
     return "reclaimable" if found and found[1].st_mtime < cutoff else "kept"
 
 
-def _reclaim(root, directory, cutoff):
+def _reclaim(root, directory, cutoff, expiry_cutoff=None):
     """Delete a leftover staging dir, re-verifying at deletion time. True when removed.
 
     A binding that is no longer old (another run moved a just-rebound session
-    onto this name) is kept; rmdir fails if anything else appeared.
+    onto this name) is kept; rmdir fails if anything else appeared. A leftover
+    holding an expired session is deleted only if it is still expired and unlocked.
     """
     found = _only_binding(root, directory)
     if found is not None:
         if found[1].st_mtime >= cutoff:
             return False
         found[0].unlink()
+    elif expiry_cutoff is not None and any(directory.iterdir()):
+        if not _expired_leftover(root, directory, expiry_cutoff):
+            return False
+        shutil.rmtree(directory)
+        return True
     directory.rmdir()
     return True
 
 
-def prune(root, *, older_than_days=14, keep_session=None, apply=False, now=None):
-    """List (or with apply, remove) session dirs that hold only an old binding.json.
+BINDING_ONLY_DAYS = 14
+EXPIRY_DAYS = 30
+SESSION_FILES = {"binding.json", "horizon.json", "current.json", "latest.json", "compaction.json", ".lock"}
 
-    Such a dir records only that a session started; it has no records, snapshots
-    or locks. Linked entries are skipped (listed in `skipped`), never followed or
-    removed. Staging dirs left by an interrupted earlier run (`.pruning-<digest>`)
-    are listed in `leftovers`; empty ones, or ones holding only an old binding,
-    are reclaimed under apply. They sort before session dirs, so a leftover is
-    cleared before its own session is moved aside again.
+
+@dataclass(frozen=True)
+class Scan:
+    newest: object   # newest record/snapshot stamp (epoch seconds), None without any
+    records: int
+    snapshots: int
+    extra: bool      # anything a session dir does not normally hold
+
+
+def _stamp(path, key):
+    """Stored timestamp of a record/snapshot file; its mtime when missing or unparseable."""
+    try:
+        when = datetime.fromisoformat(json.loads(path.read_text(encoding="utf-8")).get(key))
+        return (when if when.tzinfo else when.replace(tzinfo=timezone.utc)).timestamp()
+    except (OSError, ValueError, TypeError, AttributeError, OverflowError):
+        return path.stat().st_mtime
+
+
+def _scan(home, directory):
+    """Read-only inventory of a session dir; never follows links (StoreError LINKED_STORAGE)."""
+    guard(home, directory)
+    newest, counts, extra = None, {"records": 0, "snapshots": 0}, False
+    for child in directory.iterdir():
+        guard(home, child)
+        if child.name in counts and child.is_dir():
+            key = "recorded_at" if child.name == "records" else "captured_at"
+            for item in child.iterdir():
+                guard(home, item)
+                if item.name.startswith(".pending-") and item.is_file():
+                    continue
+                if not item.is_file() or item.suffix != ".json" or not ID.fullmatch(item.stem):
+                    extra = True
+                    continue
+                counts[child.name] += 1
+                when = _stamp(item, key)
+                newest = when if newest is None else max(newest, when)
+        elif not (child.is_file() and (child.name in SESSION_FILES or child.name.startswith(".pending-"))):
+            extra = True
+    return Scan(newest, counts["records"], counts["snapshots"], extra)
+
+
+def _lock_held(home, directory):
+    """True when the session lock is held (or cannot be probed). Never creates the lock file."""
+    path = directory / ".lock"
+    guard(home, path)
+    try:
+        stream = path.open("r+b")
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    with stream:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            return True
+    return False
+
+
+def _is_expired(scan, cutoff):
+    return scan.newest is not None and scan.newest < cutoff and not scan.extra
+
+
+def _remove_expired(home, entry, staging, cutoff):
+    """Move an expired session aside, re-verify it is still expired and unlocked, then delete it.
+
+    A record or snapshot written, or the lock taken, between the listing and the
+    move is caught by the re-check and the dir is moved back. Returns True when removed.
     """
-    if not isinstance(older_than_days, int) or isinstance(older_than_days, bool) or older_than_days < 1:
+    entry.rename(staging)
+    try:
+        keep = not _is_expired(_scan(home, staging), cutoff) or _lock_held(home, staging)
+    except (StoreError, OSError):
+        staging.rename(entry)
+        raise
+    if keep:
+        staging.rename(entry)
+        return False
+    shutil.rmtree(staging)
+    return True
+
+
+def _expired_leftover(home, directory, cutoff):
+    """True for a staging dir holding an expired, unlocked session (an interrupted delete)."""
+    return _is_expired(_scan(home, directory), cutoff) and not _lock_held(home, directory)
+
+
+def prune(root, *, older_than_days=None, keep_session=None, apply=False, now=None):
+    """List (or with apply, remove) abandoned session dirs; dry-run unless apply.
+
+    Two kinds: dirs holding only an old binding.json (`candidates`; such a dir
+    records only that a session started) and expired sessions (`expired`) whose
+    newest record/snapshot is older than the cutoff. `older_than_days` applies to
+    both when given; when omitted binding-only uses 14 and expiry uses 30. An
+    expired session is skipped while its lock is held or if it holds anything a
+    session dir does not normally hold. Linked entries are skipped (listed in
+    `skipped`), never followed or removed. Staging dirs left by an interrupted earlier
+    run (`.pruning-<digest>`) are listed in `leftovers`; empty ones, ones holding
+    only an old binding and expired sessions are reclaimed under apply. They sort
+    before session dirs, so a leftover is cleared before its own session is moved
+    aside again. Only the current store is pruned; legacy stores are never touched.
+    """
+    if older_than_days is not None and (not isinstance(older_than_days, int) or isinstance(older_than_days, bool)
+                                        or older_than_days < 1):
         raise StoreError("INVALID_ARGUMENTS")
+    binding_days = older_than_days or BINDING_ONLY_DAYS
+    expiry_days = older_than_days or EXPIRY_DAYS
     sessions = _base(as_workspace(root)) / "sessions"
     home = handoff_home()
     guard(home, sessions)
-    result = {"older_than_days": older_than_days, "applied": bool(apply), "candidates": [],
-              "removed": 0, "leftovers": [], "reclaimed": 0, "skipped": [], "errors": []}
+    result = {"older_than_days": binding_days, "expired_older_than_days": expiry_days,
+              "applied": bool(apply), "candidates": [], "removed": 0, "expired": [], "expired_removed": 0,
+              "leftovers": [], "reclaimed": 0, "skipped": [], "errors": []}
     if not sessions.is_dir():
         return result
     keep = digest(keep_session) if keep_session else None
-    cutoff = (now if now is not None else datetime.now(timezone.utc).timestamp()) - older_than_days * 86400
+    clock = now if now is not None else datetime.now(timezone.utc).timestamp()
+    cutoff, expiry_cutoff = clock - binding_days * 86400, clock - expiry_days * 86400
     for entry in sorted(sessions.iterdir()):
         if STAGING.fullmatch(entry.name):
             try:
                 state = _leftover_state(home, entry, cutoff)
+                if state == "kept" and _expired_leftover(home, entry, expiry_cutoff):
+                    state = "reclaimable"
                 result["leftovers"].append({"staging_dir": entry.name, "state": state})
-                if apply and state == "reclaimable" and _reclaim(home, entry, cutoff):
+                if apply and state == "reclaimable" and _reclaim(home, entry, cutoff, expiry_cutoff):
                     result["reclaimed"] += 1
             except StoreError as exc:
                 result["skipped"].append({"entry": entry.name, "reason": str(exc)})
@@ -635,6 +753,22 @@ def prune(root, *, older_than_days=14, keep_session=None, apply=False, now=None)
         try:
             found = _stale_binding(home, entry, cutoff)
             if found is None:
+                if not ID.fullmatch(entry.name) or not entry.is_dir():
+                    continue
+                scan = _scan(home, entry)
+                if scan.newest is None or scan.newest >= expiry_cutoff:
+                    continue
+                if scan.extra:
+                    result["skipped"].append({"entry": entry.name, "reason": "UNEXPECTED_CONTENT"})
+                    continue
+                if _lock_held(home, entry):
+                    result["skipped"].append({"entry": entry.name, "reason": "STORE_BUSY"})
+                    continue
+                result["expired"].append({
+                    "session_dir": entry.name, "records": scan.records, "snapshots": scan.snapshots,
+                    "newest": datetime.fromtimestamp(scan.newest, timezone.utc).isoformat()})
+                if apply and _remove_expired(home, entry, staging, expiry_cutoff):
+                    result["expired_removed"] += 1
                 continue
             binding, info = found
             try:
