@@ -19,6 +19,7 @@ class ReviewFixTests(FixtureCase):
                                   *extra, data=self.payload())
             self.assertEqual(result.returncode, 1)
             self.assertEqual(json.loads(result.stdout)["error"], "SESSION_NOT_BOUND")
+        self.assertFalse(session_dir(other, "s1").exists())
         self.assertFalse((other / ".provost").exists())
 
 class RecoveryReviewFixTests(FixtureCase):
@@ -40,4 +41,4 @@ class RecoveryReviewFixTests(FixtureCase):
         output = handle_event({"hook_event_name": "SessionStart", "source": "startup",
                                "session_id": "s", "cwd": str(self.root)}, self.config_path)
         self.assertIn("not enabled", output.get("systemMessage", ""))
-        self.assertFalse((self.root / ".provost").exists())
+        self.assertNoStore()

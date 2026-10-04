@@ -21,7 +21,31 @@ class CliTests(FixtureCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         data = json.loads(result.stdout)
         self.assertEqual(data["mode"], "adaptive")
-        self.assertFalse((self.root / ".provost").exists())
+        self.assertNoStore()
+
+    def test_doctor_reports_store_home_and_repo_key(self):
+        from provost_runtime.config import workspace_key
+        data = json.loads(self.run_cli("doctor", "--workspace", str(self.root)).stdout)
+        self.assertEqual(data.get("store_home"), str(self.store_home))
+        self.assertEqual(data.get("repo_key"), workspace_key(self.root))
+        self.assertNoStore()
+
+    def test_worktree_and_main_checkout_read_each_other_through_status(self):
+        main, worktree = self.git_repo_with_worktree()
+        self.cfg["workspace_roots"] = [str(main), str(worktree)]
+        self.config_path.write_text(json.dumps(self.cfg), encoding="utf-8")
+        bind(worktree, "s1", {})
+        written = self.run_cli("record", "--workspace", str(worktree), "--session", "s1",
+                               "--expected", "null", "--request-id", "r1", data=self.payload("wt"))
+        self.assertEqual(written.returncode, 0, written.stdout + written.stderr)
+        revision = json.loads(written.stdout)["revision"]
+        status = json.loads(self.run_cli("status", "--workspace", str(main), "--session", "s1").stdout)
+        self.assertEqual((status.get("expected"), status["checkpoint"]["payload"]["next"]), (revision, "wt"))
+        written = self.run_cli("record", "--workspace", str(main), "--session", "s1",
+                               "--expected", revision, "--request-id", "r2", data=self.payload("main"))
+        self.assertEqual(written.returncode, 0, written.stdout + written.stderr)
+        status = json.loads(self.run_cli("status", "--workspace", str(worktree), "--session", "s1").stdout)
+        self.assertEqual(status["checkpoint"]["payload"]["next"], "main")
 
     def test_record_snapshot_list_and_resume_roundtrip(self):
         bind(self.root, "s1", {})
@@ -41,7 +65,7 @@ class CliTests(FixtureCase):
         result = self.run_cli("record", "--workspace", str(self.root), "--session", "s1",
                               "--expected", "null", "--request-id", "r1", data=self.payload())
         self.assertEqual(result.returncode, 1)
-        self.assertFalse((self.root / ".provost").exists())
+        self.assertNoStore()
 
     def test_malformed_hook_is_nonblocking_and_does_not_echo_input(self):
         result = self.run_cli("hook", data=["sensitive-marker"])
@@ -126,7 +150,7 @@ class CliTests(FixtureCase):
         data = json.loads(self.run_cli("doctor", "--workspace", str(self.root)).stdout)
         self.assertIs(data["host_verified"], False)
         self.assertIsNone(data["last_binding_at"])
-        self.assertFalse((self.root / ".provost").exists())
+        self.assertNoStore()
         bind(self.root, "s1", {})
         data = json.loads(self.run_cli("doctor", "--workspace", str(self.root)).stdout)
         self.assertIs(data["host_verified"], True)

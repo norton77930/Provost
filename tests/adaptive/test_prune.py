@@ -256,7 +256,7 @@ class PruneTests(FixtureCase):
     def test_missing_store_is_empty_and_creates_nothing(self):
         result = prune(self.root, older_than_days=14, apply=True)
         self.assertEqual(result["candidates"], [])
-        self.assertFalse((self.root / ".provost").exists())
+        self.assertNoStore()
 
     def test_age_must_be_positive(self):
         from provost_runtime.store import StoreError
@@ -302,7 +302,7 @@ class PruneCliTests(FixtureCase):
     def test_doctor_reports_null_stale_count_for_a_linked_store(self):
         outside = self.root / "outside-sessions"
         outside.mkdir()
-        parent = self.root / ".provost" / "handoffs" / "v1"
+        parent = session_dir(self.root, "any").parent.parent
         parent.mkdir(parents=True)
         if not make_link(outside, parent / "sessions"):
             self.skipTest("OS permits neither symlinks nor junctions")

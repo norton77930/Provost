@@ -26,7 +26,7 @@ class NativeTests(FixtureCase):
             r=self.cli("native-hook",data=self.event())
             self.assertEqual(r.returncode,0,r.stdout+r.stderr)
             self.assertEqual(json.loads(r.stdout),{})
-        self.assertFalse((self.root/".provost").exists())
+        self.assertNoStore()
 
     def test_native_invalid_config_warns_without_legacy_policy(self):
         self.config_path.write_text("{bad")
@@ -44,6 +44,8 @@ class NativeTests(FixtureCase):
         self.assertIn("status",text)
         self.assertIn("--expected",text)
         self.assertIn("native-handoff.md",text)
+        self.assertIn("A worktree and its main checkout share one handoff store.",text)
+        self.assertNotIn("identity mid-session",text)
         self.assertNotIn("provost:adaptive-implementer",text)
         self.assertNotIn("## Dispatch",text)
         self.assertLess(len(text),4000)
@@ -52,15 +54,16 @@ class NativeTests(FixtureCase):
         args=("status","--workspace",str(self.root),"--session","s1")
         r=self.cli(*args)
         self.assertEqual(json.loads(r.stdout)["error"],"SESSION_NOT_BOUND")
-        self.assertFalse((self.root/".provost").exists())
+        self.assertNoStore()
         self.cli("native-hook",data=self.event())
-        before={str(p):p.read_bytes() for p in (self.root/".provost").rglob("*") if p.is_file()}
+        before={str(p):p.read_bytes() for p in self.store_home.rglob("*") if p.is_file()}
+        self.assertTrue(before)
         r=self.cli(*args);d=json.loads(r.stdout)
         self.assertEqual(r.returncode,0,r.stdout)
         self.assertIsNone(d["expected"])
         self.assertIsNone(d["checkpoint"])
         self.assertIn("suggested_skills",d["template"])
-        after={str(p):p.read_bytes() for p in (self.root/".provost").rglob("*") if p.is_file()}
+        after={str(p):p.read_bytes() for p in self.store_home.rglob("*") if p.is_file()}
         self.assertEqual(before,after)
 
     def test_relocated_roundtrip_and_explicit_adoption(self):

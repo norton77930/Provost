@@ -8,10 +8,11 @@ import stat
 import subprocess
 import tempfile
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import workspace_key
+from .config import handoff_home, workspace_key
 
 MAX_PAYLOAD = 32768
 ID = re.compile(r"^[a-f0-9]{64}$")
@@ -19,6 +20,15 @@ ID = re.compile(r"^[a-f0-9]{64}$")
 
 class StoreError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class Workspace:
+    """A resolved workspace: its own top-level dir, the main checkout it belongs to
+    (itself when not a linked worktree or not Git) and the repo-level store identity."""
+    root: Path
+    main: Path
+    repo_key: str
 
 
 def digest(value):
@@ -29,14 +39,58 @@ def encoded(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def _base(root):
-    return Path(root).absolute() / ".provost" / "handoffs" / "v1"
+def locate(cwd):
+    """Resolve cwd with one Git spawn. A main checkout and its worktrees share a repo_key:
+    the hash of the main checkout (parent of the common dir). A non-Git dir keys on itself."""
+    root = Path(cwd).resolve()
+    if not root.is_dir():
+        raise StoreError("WORKSPACE_MISSING")
+    try:
+        result = subprocess.run(["git", "-C", str(root), "rev-parse", "--path-format=absolute",
+                                 "--show-toplevel", "--git-common-dir"],
+                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
+        if result.returncode == 0:
+            lines = result.stdout.splitlines()
+            if len(lines) != 2 or not all(lines):
+                raise StoreError("REPO_KEY_UNRESOLVED")
+            top, common = Path(lines[0]).resolve(), Path(lines[1]).resolve()
+            # Bare-backed worktrees, submodules and separate git dirs have no main checkout to key on.
+            if common.name != ".git" or not common.parent.is_dir():
+                raise StoreError("REPO_KEY_UNRESOLVED")
+            return Workspace(top, common.parent, workspace_key(common.parent))
+        if "must be run in a work tree" in result.stderr:
+            raise StoreError("REPO_KEY_UNRESOLVED")
+        # An existing .git with an unreadable repository must not become non-Git.
+        if (root / ".git").exists() or "dubious ownership" in result.stderr:
+            raise StoreError("GIT_UNREADABLE")
+    except FileNotFoundError as exc:
+        if (root / ".git").exists():
+            raise StoreError("GIT_UNAVAILABLE") from exc
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise StoreError("GIT_UNREADABLE") from exc
+    return Workspace(root, root, workspace_key(root))
+
+
+def as_workspace(root):
+    """A Workspace as given, or one resolved from a path (one Git spawn)."""
+    return root if isinstance(root, Workspace) else locate(root)
+
+
+# Windows MAX_PATH (260) cannot hold a 64-char repo dir next to the 64-char session
+# and object names under ~/.claude/provost/handoffs. The dir uses a key prefix; the
+# full repo_key is stored in every file and compared on read, so a prefix collision
+# fails as an identity mismatch instead of mixing repositories.
+REPO_DIR_CHARS = 16
+
+
+def _base(ws):
+    return handoff_home() / "v2" / "repos" / ws.repo_key[:REPO_DIR_CHARS]
 
 
 def session_dir(root, session):
     if not isinstance(session, str) or not session or len(session) > 256:
         raise StoreError("INVALID_SESSION")
-    return _base(root) / "sessions" / digest(session)
+    return _base(as_workspace(root)) / "sessions" / digest(session)
 
 
 def guard(root, path):
@@ -58,33 +112,40 @@ def guard(root, path):
             raise StoreError("LINKED_STORAGE")
 
 
+_HOME_CHECKED = {}
+
+
+def _home_outside_repo(home):
+    """Error code when the store home lies inside a Git work tree (handoffs could be
+    committed), else None. One Git spawn from the nearest existing ancestor, cached per process."""
+    key = os.path.normcase(str(home))
+    if key not in _HOME_CHECKED:
+        probe = Path(home)
+        while not probe.is_dir() and probe.parent != probe:
+            probe = probe.parent
+        try:
+            result = subprocess.run(["git", "-C", str(probe), "rev-parse", "--is-inside-work-tree"],
+                                    capture_output=True, text=True, timeout=5)
+        except FileNotFoundError:
+            result = None
+        except (OSError, subprocess.TimeoutExpired):
+            return "GIT_UNREADABLE"
+        if result is not None and result.returncode == 0 and result.stdout.strip() == "true":
+            _HOME_CHECKED[key] = "STORE_INSIDE_REPO"
+        elif result is not None and result.returncode and "dubious ownership" in result.stderr:
+            _HOME_CHECKED[key] = "GIT_UNREADABLE"
+        else:
+            _HOME_CHECKED[key] = None
+    return _HOME_CHECKED[key]
+
+
 def storage_ready(root):
-    guard(root, _base(root) / "sessions")
-    try:
-        probe = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
-                               capture_output=True, text=True, timeout=5)
-        if probe.returncode:
-            # An existing .git with an unreadable repository must not become non-Git.
-            if (Path(root) / ".git").exists() or "dubious ownership" in probe.stderr:
-                raise StoreError("GIT_UNREADABLE")
-            return
-        if workspace_key(Path(probe.stdout.strip())) != workspace_key(Path(root)):
-            raise StoreError("NOT_WORKSPACE_ROOT")
-        tracked = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", ".provost/handoffs"],
-                                 capture_output=True, timeout=5)
-        if tracked.returncode:
-            raise StoreError("GIT_UNREADABLE")
-        if tracked.stdout:
-            raise StoreError("TRACKED_HANDOFF")
-        ignored = subprocess.run(["git", "-C", str(root), "check-ignore", "-q", "--", ".provost/handoffs/probe"],
-                                 capture_output=True, timeout=5)
-        if ignored.returncode:
-            raise StoreError("HANDOFF_NOT_IGNORED")
-    except FileNotFoundError as exc:
-        if (Path(root) / ".git").exists():
-            raise StoreError("GIT_UNAVAILABLE") from exc
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise StoreError("GIT_UNREADABLE") from exc
+    """Writable-store check: no links under the store home, and the home outside every repo."""
+    home = handoff_home()
+    guard(home, _base(as_workspace(root)) / "sessions")
+    error = _home_outside_repo(home)
+    if error:
+        raise StoreError(error)
 
 
 def validate_payload(payload):
@@ -128,10 +189,11 @@ def validate_payload(payload):
         raise StoreError("INVALID_PAYLOAD") from exc
 
 
-def atomic_write(root, path, data):
-    guard(root, path)
+def atomic_write(base, path, data):
+    """Replace path atomically; base is the guard root (the store home for handoff files)."""
+    guard(base, path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    guard(root, path)
+    guard(base, path)
     temp = None
     try:
         fd, name = tempfile.mkstemp(prefix=".pending-", dir=path.parent)
@@ -151,7 +213,7 @@ def atomic_write(root, path, data):
 @contextmanager
 def _lock(root, directory):
     storage_ready(root)
-    guard(root, directory / ".lock")
+    guard(handoff_home(), directory / ".lock")
     directory.mkdir(parents=True, exist_ok=True)
     try:
         with (directory / ".lock").open("a+b") as stream:
@@ -185,13 +247,14 @@ def _lock(root, directory):
 
 
 def _read(root, path, session, kind):
-    guard(root, path)
+    ws = as_workspace(root)
+    guard(handoff_home(), path)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise StoreError("CORRUPT_RECORD") from exc
     if (not isinstance(data, dict) or data.get("schema_version") != 1
-            or data.get("workspace_id") != workspace_key(root)
+            or data.get("workspace_id") != ws.repo_key
             or data.get("session_id") != session or data.get("kind") != kind):
         raise StoreError("RECORD_IDENTITY_MISMATCH")
     ident = "revision" if kind == "record" else "snapshot_id"
@@ -210,11 +273,13 @@ def _seal(data):
 
 
 def _head(root, session, kind):
+    root = as_workspace(root)
+    home = handoff_home()
     directory = session_dir(root, session)
     index = directory / ("current.json" if kind == "record" else "latest.json")
     collection = directory / ("records" if kind == "record" else "snapshots")
-    guard(root, collection)
-    guard(root, index)
+    guard(home, collection)
+    guard(home, index)
     if not collection.exists():
         return None
     id_key = "revision" if kind == "record" else "snapshot_id"
@@ -261,6 +326,8 @@ def record(root, session, payload, expected, request_id, *, cursor=None, adopted
     validate_payload(payload)
     if not isinstance(request_id, str) or not request_id or len(request_id) > 512:
         raise StoreError("INVALID_REQUEST_ID")
+    root = as_workspace(root)
+    home = handoff_home()
     directory = session_dir(root, session)
     revision = digest(session + "\0record\0" + request_id)
     path = directory / "records" / (revision + ".json")
@@ -273,18 +340,21 @@ def record(root, session, payload, expected, request_id, *, cursor=None, adopted
         previous = current(root, session)
         if expected != (previous["revision"] if previous else None):
             raise StoreError("REVISION_CONFLICT")
-        data = _seal({"schema_version": 1, "kind": "record", "workspace_id": workspace_key(root),
+        data = _seal({"schema_version": 1, "kind": "record", "workspace_id": root.repo_key,
+                      "worktree_path": str(root.root),
                       "session_id": session, "revision": revision, "parent_record": expected,
                       "recorded_at": datetime.now(timezone.utc).isoformat(),
                       "transcript_cursor": cursor, "adopted_from": adopted_from, "payload": copy.deepcopy(payload)})
-        atomic_write(root, path, data)
-        atomic_write(root, directory / "current.json", {"revision": revision})
+        atomic_write(home, path, data)
+        atomic_write(home, directory / "current.json", {"revision": revision})
         return data
 
 
 def snapshot(root, session, event_key):
     if not isinstance(event_key, str) or not event_key or len(event_key) > 1024:
         raise StoreError("INVALID_EVENT_KEY")
+    root = as_workspace(root)
+    home = handoff_home()
     directory = session_dir(root, session)
     ident = digest(session + "\0snapshot\0" + event_key)
     path = directory / "snapshots" / (ident + ".json")
@@ -299,25 +369,27 @@ def snapshot(root, session, event_key):
         data.update(kind="snapshot", snapshot_id=ident, captured_at=datetime.now(timezone.utc).isoformat(),
                     parent_snapshot=previous["snapshot_id"] if previous else None)
         data = _seal(data)
-        atomic_write(root, path, data)
-        atomic_write(root, directory / "latest.json", {"snapshot_id": ident})
+        atomic_write(home, path, data)
+        atomic_write(home, directory / "latest.json", {"snapshot_id": ident})
         return data
 
 
 def list_snapshots(root, snapshot_id=None):
+    root = as_workspace(root)
+    home = handoff_home()
     base = _base(root) / "sessions"
-    guard(root, base)
+    guard(home, base)
     if not base.exists():
         return []
     result = []
     for folder in sorted(base.iterdir()):
-        guard(root, folder)
+        guard(home, folder)
         if not folder.is_dir() or not ID.fullmatch(folder.name):
             continue
         collection = folder / "snapshots"
-        guard(root, collection)
+        guard(home, collection)
         for path in collection.glob(snapshot_id + ".json" if snapshot_id else "*.json"):
-            guard(root, path)
+            guard(home, path)
             if not ID.fullmatch(path.stem):
                 continue
             try:
@@ -338,7 +410,8 @@ def list_snapshots(root, snapshot_id=None):
 def resume(root, session, snapshot_id):
     if not isinstance(snapshot_id, str) or not ID.fullmatch(snapshot_id):
         raise StoreError("INVALID_SNAPSHOT_ID")
-    matches = [item for item in list_snapshots(root, snapshot_id) if item["snapshot_id"] == snapshot_id]
+    root = as_workspace(root)
+    matches =[item for item in list_snapshots(root, snapshot_id) if item["snapshot_id"] == snapshot_id]
     if len(matches) != 1:
         raise StoreError("SNAPSHOT_NOT_FOUND")
     if "error" in matches[0]:
@@ -439,8 +512,9 @@ def prune(root, *, older_than_days=14, keep_session=None, apply=False, now=None)
     """
     if not isinstance(older_than_days, int) or isinstance(older_than_days, bool) or older_than_days < 1:
         raise StoreError("INVALID_ARGUMENTS")
-    sessions = _base(root) / "sessions"
-    guard(root, sessions)
+    sessions = _base(as_workspace(root)) / "sessions"
+    home = handoff_home()
+    guard(home, sessions)
     result = {"older_than_days": older_than_days, "applied": bool(apply), "candidates": [],
               "removed": 0, "leftovers": [], "reclaimed": 0, "skipped": [], "errors": []}
     if not sessions.is_dir():
@@ -450,9 +524,9 @@ def prune(root, *, older_than_days=14, keep_session=None, apply=False, now=None)
     for entry in sorted(sessions.iterdir()):
         if STAGING.fullmatch(entry.name):
             try:
-                state = _leftover_state(root, entry, cutoff)
+                state = _leftover_state(home, entry, cutoff)
                 result["leftovers"].append({"staging_dir": entry.name, "state": state})
-                if apply and state == "reclaimable" and _reclaim(root, entry, cutoff):
+                if apply and state == "reclaimable" and _reclaim(home, entry, cutoff):
                     result["reclaimed"] += 1
             except StoreError as exc:
                 result["skipped"].append({"entry": entry.name, "reason": str(exc)})
@@ -464,7 +538,7 @@ def prune(root, *, older_than_days=14, keep_session=None, apply=False, now=None)
             continue
         staging = sessions / (".pruning-" + entry.name)
         try:
-            found = _stale_binding(root, entry, cutoff)
+            found = _stale_binding(home, entry, cutoff)
             if found is None:
                 continue
             binding, info = found
@@ -475,7 +549,7 @@ def prune(root, *, older_than_days=14, keep_session=None, apply=False, now=None)
             result["candidates"].append({
                 "session_dir": entry.name, "session_id": session_id if isinstance(session_id, str) else None,
                 "bound_at": datetime.fromtimestamp(info.st_mtime, timezone.utc).isoformat()})
-            if apply and _remove_stale(root, entry, staging, info):
+            if apply and _remove_stale(home, entry, staging, info):
                 result["removed"] += 1
         except StoreError as exc:
             result["skipped"].append({"entry": entry.name, "reason": str(exc)})

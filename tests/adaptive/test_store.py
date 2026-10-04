@@ -1,11 +1,11 @@
 import json
 import os
-import subprocess
-import tempfile
 from pathlib import Path
 from unittest import mock
 from _support import FixtureCase
-from provost_runtime.store import StoreError, record, snapshot, latest, current, list_snapshots, resume, session_dir
+from provost_runtime.config import workspace_key
+from provost_runtime.store import (StoreError, current, digest, latest, list_snapshots, record, resume,
+                                    session_dir, snapshot)
 
 
 class StoreTests(FixtureCase):
@@ -75,35 +75,69 @@ class StoreTests(FixtureCase):
         outside = self.root / "outside"
         outside.mkdir()
         try:
-            os.symlink(outside, self.root / ".provost", target_is_directory=True)
+            os.symlink(outside, self.store_home / "v2", target_is_directory=True)
         except OSError:
             self.skipTest("OS does not permit symlink creation")
         with self.assertRaises(StoreError):
             record(self.root, "s1", self.payload(), None, "r")
         self.assertEqual(list(outside.iterdir()), [])
 
-    def isolate_user_git_config(self):
-        tmp = tempfile.TemporaryDirectory(prefix="provost-gitcfg-")
-        self.addCleanup(tmp.cleanup)
-        empty_config = Path(tmp.name) / "empty-gitconfig"
-        empty_config.write_text("", encoding="utf-8")
-        xdg = Path(tmp.name) / "xdg"
-        xdg.mkdir()
-        patcher = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(empty_config), "XDG_CONFIG_HOME": str(xdg)})
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-    def test_git_storage_requires_exclusion_and_must_not_be_tracked(self):
+    def test_git_checkout_needs_no_exclusion_and_stays_clean(self):
         self.isolate_user_git_config()
-        subprocess.run(["git", "init", "-q", str(self.root)], check=True, capture_output=True)
-        with self.assertRaises(StoreError):
-            record(self.root, "s1", self.payload(), None, "r")
-        (self.root / ".git/info/exclude").write_text("/.provost/handoffs/\n")
+        self.git("init", "-q")
         record(self.root, "s1", self.payload(), None, "r")
-        subprocess.run(["git", "-C", str(self.root), "add", "-f", ".provost/handoffs"], check=True, capture_output=True)
-        with self.assertRaises(StoreError):
-            snapshot(self.root, "s1", "e")
+        snapshot(self.root, "s1", "e")
+        # Only the fixture's own config file; no handoff state in the work tree.
+        self.assertEqual(self.git("status", "--porcelain", "--ignored", "--untracked-files=all"),
+                         "?? user-config.json")
 
     def test_list_is_read_only(self):
         self.assertEqual(list_snapshots(self.root), [])
+        self.assertNoStore()
+
+
+class RepoStoreTests(FixtureCase):
+    def repo_dir(self, workspace):
+        # A key prefix keeps record paths under Windows MAX_PATH; files hold the full key.
+        return self.store_home / "v2" / "repos" / workspace_key(workspace)[:16]
+
+    def test_store_files_land_in_the_store_home_keyed_by_directory(self):
+        data = record(self.root, "s1", self.payload(), None, "r1")
+        path = self.repo_dir(self.root) / "sessions" / digest("s1") / "records" / (data["revision"] + ".json")
+        self.assertTrue(path.is_file())
+        self.assertEqual(data["workspace_id"], workspace_key(self.root))
         self.assertFalse((self.root / ".provost").exists())
+
+    def test_worktree_and_main_checkout_share_one_store(self):
+        main, worktree = self.git_repo_with_worktree()
+        expected = self.repo_dir(main) / "sessions" / digest("s1")
+        self.assertEqual(session_dir(main, "s1"), expected)
+        self.assertEqual(session_dir(worktree, "s1"), expected)
+        first = record(worktree, "s1", self.payload("from worktree"), None, "r1")
+        self.assertEqual(first["workspace_id"], workspace_key(main))
+        self.assertEqual(Path(first["worktree_path"]), worktree)
+        self.assertEqual(current(main, "s1")["payload"]["next"], "from worktree")
+        record(main, "s1", self.payload("from main"), first["revision"], "r2")
+        self.assertEqual(current(worktree, "s1")["payload"]["next"], "from main")
+        for workspace in (main, worktree):
+            self.assertFalse((workspace / ".provost").exists())
+
+    def test_store_inside_a_git_work_tree_is_refused(self):
+        self.isolate_user_git_config()
+        repo = self.root / "repo"
+        repo.mkdir()
+        self.git("init", "-q", cwd=repo)
+        inside = repo / "handoffs"
+        with mock.patch.dict(os.environ, PROVOST_HANDOFF_HOME=str(inside)):
+            with self.assertRaisesRegex(StoreError, "^STORE_INSIDE_REPO$"):
+                record(self.root, "s1", self.payload(), None, "r")
+        self.assertFalse(inside.exists())
+        self.assertFalse((self.root / ".provost").exists())
+
+    def test_bare_repository_has_no_resolvable_repo_key(self):
+        self.isolate_user_git_config()
+        bare = self.root / "bare.git"
+        self.git("init", "-q", "--bare", str(bare))
+        with self.assertRaisesRegex(StoreError, "^REPO_KEY_UNRESOLVED$"):
+            record(bare, "s1", self.payload(), None, "r")
+        self.assertNoStore(bare)

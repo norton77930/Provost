@@ -1,13 +1,12 @@
 """Claude event adapter. Saving errors must never become compaction decisions."""
 import json
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import ConfigError, load_config, resolve_mode, workspace_key
+from .config import ConfigError, handoff_home, load_config, resolve_mode, workspace_key
 from .notifications import notice
-from .store import (StoreError, _base, atomic_write, current, digest, guard, latest,
-                    session_dir, snapshot, storage_ready)
+from .store import (StoreError, _base, as_workspace, atomic_write, current, digest, guard, latest,
+                    locate, session_dir, snapshot, storage_ready)
 
 PLUGIN = Path(__file__).resolve().parents[2]
 RECOVERY_PAYLOAD_LIMIT = 4500     # inline the payload in full up to this size; digest is capped to it too
@@ -15,22 +14,8 @@ RECOVERY_ASSIGNMENT_LIMIT = 300   # per-assignment JSON cap inside the digest
 
 
 def workspace_root(cwd):
-    root = Path(cwd).resolve()
-    if not root.is_dir():
-        raise StoreError("WORKSPACE_MISSING")
-    try:
-        result = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
-                                capture_output=True, text=True, timeout=5)
-        if result.returncode == 0:
-            return Path(result.stdout.strip()).resolve()
-        if (root / ".git").exists() or "dubious ownership" in result.stderr:
-            raise StoreError("GIT_UNREADABLE")
-    except FileNotFoundError:
-        if (root / ".git").exists():
-            raise StoreError("GIT_UNAVAILABLE")
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise StoreError("GIT_UNREADABLE") from exc
-    return root
+    """The Workspace for cwd: its top-level dir and repo-level store identity (one spawn)."""
+    return locate(cwd)
 
 
 def cursor(path):
@@ -75,13 +60,14 @@ def resolve_transcript(path):
 def last_binding_at(root):
     """ISO-8601 UTC mtime of the newest binding.json in the store, else None. Read-only."""
     try:
-        sessions = _base(root) / "sessions"
-        guard(root, sessions)
+        home = handoff_home()
+        sessions = _base(as_workspace(root)) / "sessions"
+        guard(home, sessions)
         newest = None
         for entry in sessions.iterdir():
             try:
                 path = entry / "binding.json"
-                guard(root, path)
+                guard(home, path)
                 mtime = path.stat().st_mtime
             except (StoreError, OSError):
                 continue
@@ -92,13 +78,14 @@ def last_binding_at(root):
 
 
 def binding(root, session):
+    root = as_workspace(root)
     path = session_dir(root, session) / "binding.json"
-    guard(root, path)
+    guard(handoff_home(), path)
     if not path.exists():
         return {}
     try:
         result = json.loads(path.read_text(encoding="utf-8"))
-        if (not isinstance(result, dict) or result.get("workspace_id") != workspace_key(root)
+        if (not isinstance(result, dict) or result.get("workspace_id") != root.repo_key
                 or result.get("session_id") != session):
             raise StoreError("BINDING_MISMATCH")
         return result
@@ -107,9 +94,10 @@ def binding(root, session):
 
 
 def bind(root, session, event):
+    root = as_workspace(root)
     storage_ready(root)
-    atomic_write(root, session_dir(root, session) / "binding.json",
-                 {"workspace_id": workspace_key(root), "session_id": session,
+    atomic_write(handoff_home(), session_dir(root, session) / "binding.json",
+                 {"workspace_id": root.repo_key, "worktree_path": str(root.root), "session_id": session,
                   "transcript_path": event.get("transcript_path"),
                   "last_cursor": cursor(resolve_transcript(event.get("transcript_path")))})
 
@@ -161,6 +149,7 @@ def _payload_text(payload):
 
 def recovery_context(root, session):
     # The latest milestone may be newer than the last compaction snapshot.
+    root = as_workspace(root)
     data = current(root, session)
     if data is None:
         data = latest(root, session)
@@ -195,7 +184,7 @@ def handle_event(event, config_path, *, native=False):
             raise StoreError("INVALID_HOOK_INPUT")
         root = workspace_root(event["cwd"])
         session = event["session_id"]
-        if resolve_mode(cfg, root) != "adaptive":
+        if resolve_mode(cfg, root.root) != "adaptive":
             if native:
                 return {}
             if name == "SessionStart":
@@ -204,13 +193,13 @@ def handle_event(event, config_path, *, native=False):
             return {}
         enabled = cfg["handoff"]
         state_dir = config_path.parent / "cache" / "notifications"
-        key = workspace_key(root) + ":" + session
+        key = root.repo_key + ":" + session
         if name == "SessionStart":
             policy = ("Native handoff runtime active. Follow personal CLAUDE.md for orchestration. "
                       "This context supplies runtime identity and operations, not a second dispatch policy."
                       if native else (PLUGIN / "policies/adaptive-orchestration.md").read_text(encoding="utf-8"))
             info = ("\nRuntime: " + str(PLUGIN / "hooks/runtime")
-                    + "\nWorkspace: " + str(root) + "\nSession: " + session
+                    + "\nWorkspace: " + str(root.root) + "\nSession: " + session
                     + "\nWriter limits: normal=" + str(cfg["max_writers"]) + ", burst=" + str(cfg["burst_writers"])
                     + "\nHandoff: " + ("enabled" if enabled else "disabled; do not record or snapshot")
                     + "\nSource guides: " + str(PLUGIN / "docs/compatibility")
@@ -223,7 +212,7 @@ def handle_event(event, config_path, *, native=False):
                          + " --expected <revision-or-null> --request-id <unique-milestone-id> --input <payload-file>."
                          + "\nRecord at plan approval, dispatch, result receipt or changed decisions/blockers."
                          + " Use snapshot for explicit /handoff. Never treat an unfilled template as saved work."
-                         + "\nOn conflict rerun status and reconcile; do not force overwrite. Do not change workspace identity mid-session.")
+                         + "\nOn conflict rerun status and reconcile; do not force overwrite. A worktree and its main checkout share one handoff store.")
             warning = ""
             if enabled:
                 try:
@@ -266,8 +255,8 @@ def handle_event(event, config_path, *, native=False):
             return _notification(notice(key, None, state_dir)["message"])
         # Metadata only: the compaction summary may contain sensitive context.
         storage_ready(root)
-        atomic_write(root, session_dir(root, session) / "compaction.json",
-                     {"observed": True, "workspace_id": workspace_key(root), "session_id": session,
+        atomic_write(handoff_home(), session_dir(root, session) / "compaction.json",
+                     {"observed": True, "workspace_id": root.repo_key, "session_id": session,
                       "cursor": cursor(resolve_transcript(event.get("transcript_path")))})
         return {}
     except (ConfigError, StoreError, OSError) as exc:

@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from .config import ConfigError, config_path, load_config, resolve_mode
+from .config import ConfigError, config_path, handoff_home, load_config, resolve_mode
 from .hooks import (binding, cursor, handle_event, last_binding_at, recovery_context,
                     resolve_transcript, workspace_root)
 from .store import StoreError, current, list_snapshots, prune, record, resume, snapshot, storage_ready
@@ -63,7 +63,7 @@ def main(argv=None):
         options = parser.parse_args(args)
         root = workspace_root(options.workspace)
         cfg = load_config(config_path())
-        mode = resolve_mode(cfg, root)
+        mode = resolve_mode(cfg, root.root)
         if options.command == "doctor":
             error = None
             try:
@@ -80,6 +80,7 @@ def main(argv=None):
                       "storage_ready": error is None, "storage_error": error,
                       "host_verified": bound_at is not None, "last_binding_at": bound_at,
                       "stale_sessions": stale,
+                      "store_home": str(handoff_home()), "repo_key": root.repo_key,
                       "runtime_root": str(RUNTIME_ROOT), "runtime_hash": runtime_hash(RUNTIME_ROOT)}
         else:
             if mode != "adaptive" or not cfg.get("handoff"):
@@ -97,7 +98,7 @@ def main(argv=None):
                     raise StoreError("SESSION_NOT_BOUND")
                 if options.command == "status":
                     checkpoint = current(root, options.session)
-                    result = {"workspace": str(root), "session_id": options.session,
+                    result = {"workspace": str(root.root), "session_id": options.session,
                               "expected": checkpoint["revision"] if checkpoint else None,
                               "checkpoint": checkpoint,
                               "template": {"work_id": "", "phase": "", "sources": [],

@@ -6,7 +6,7 @@ from provost_runtime.config import ConfigError, load_config, resolve_mode, works
 class ConfigTests(FixtureCase):
     def test_absent_config_is_legacy_and_read_only(self):
         self.assertEqual(resolve_mode(load_config(self.root / "missing.json"), self.root), "legacy")
-        self.assertFalse((self.root / ".provost").exists())
+        self.assertNoStore()
 
     def test_exact_workspace_not_prefix_or_worktree(self):
         self.assertEqual(resolve_mode(self.cfg, self.root), "adaptive")

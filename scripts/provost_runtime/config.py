@@ -14,6 +14,15 @@ def config_path() -> Path:
     return Path(os.environ.get("PROVOST_CONFIG", str(Path.home() / ".claude/provost/config.json")))
 
 
+def handoff_home() -> Path:
+    """Handoff store home, outside every repository; never derived from the workspace."""
+    explicit = os.environ.get("PROVOST_HANDOFF_HOME")
+    if explicit:
+        return Path(explicit).absolute()
+    home = os.environ.get("PROVOST_HOME")
+    return (Path(home) / "handoffs" if home else Path.home() / ".claude/provost/handoffs").absolute()
+
+
 def normalized(root: Path) -> str:
     return os.path.normcase(str(root.resolve()))
 

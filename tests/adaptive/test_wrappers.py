@@ -26,14 +26,14 @@ class WrapperTests(FixtureCase):
     def test_legacy_startup_preserves_context(self):
         result = self.run_script("session-start", self.event(), config=False)
         self.assertIn("collaborator tier", result["hookSpecificOutput"]["additionalContext"])
-        self.assertFalse((self.root / ".provost").exists())
+        self.assertNoStore()
 
     def test_legacy_resume_does_not_add_policy(self):
         self.assertEqual(self.run_script("session-start", self.event(source="resume"), config=False), {})
 
     def test_disabled_compaction_hook_is_noop(self):
         self.assertEqual(self.run_script("handoff-event", self.event("PreCompact"), config=False), {})
-        self.assertFalse((self.root / ".provost").exists())
+        self.assertNoStore()
 
     def test_enabled_compaction_missing_record_does_not_block(self):
         result = self.run_script("handoff-event", self.event("PreCompact"))

@@ -27,9 +27,46 @@ class FixtureCase(unittest.TestCase):
         # let a test touch the real ~/.claude/provost.
         self.provost_home = self.root / "provost-home"
         self.cache_file = self.provost_home / "cache" / "python"
-        patcher = mock.patch.dict(os.environ, PROVOST_HOME=str(self.provost_home), HOME=str(self.provost_home))
+        # The handoff store lives in its own temp dir: tests turn self.root into
+        # a Git repo, and a store inside a work tree is refused. Never rely on
+        # HOME for it (Path.home() reads USERPROFILE on Windows).
+        store = tempfile.TemporaryDirectory(prefix="provost-store-")
+        self.addCleanup(store.cleanup)
+        self.store_home = Path(store.name)
+        patcher = mock.patch.dict(os.environ, PROVOST_HOME=str(self.provost_home), HOME=str(self.provost_home),
+                                  PROVOST_HANDOFF_HOME=str(self.store_home))
         patcher.start()
         self.addCleanup(patcher.stop)
+
+    def assertNoStore(self, *workspaces):
+        """Nothing was written to the handoff store or under any workspace."""
+        self.assertEqual(list(self.store_home.iterdir()), [])
+        for workspace in (self.root, *workspaces):
+            self.assertFalse((Path(workspace) / ".provost").exists())
+
+    def isolate_user_git_config(self):
+        tmp = tempfile.TemporaryDirectory(prefix="provost-gitcfg-")
+        self.addCleanup(tmp.cleanup)
+        empty_config = Path(tmp.name) / "empty-gitconfig"
+        empty_config.write_text("", encoding="utf-8")
+        xdg = Path(tmp.name) / "xdg"
+        xdg.mkdir()
+        patcher = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(empty_config), "XDG_CONFIG_HOME": str(xdg)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def git(self, *args, cwd=None):
+        return subprocess.run(["git", *args], cwd=cwd or self.root, check=True, capture_output=True,
+                              text=True, encoding="utf-8").stdout.strip()
+
+    def git_repo_with_worktree(self):
+        """self.root as a main checkout plus a real linked worktree under .claude/worktrees."""
+        self.isolate_user_git_config()
+        self.git("init", "-q")
+        self.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "init")
+        worktree = self.root / ".claude" / "worktrees" / "wt"
+        self.git("worktree", "add", "-q", "--detach", str(worktree))
+        return self.root.resolve(), worktree.resolve()
 
     def fake_interpreter(self, directory, name, log, *, fail_module=False):
         """A stand-in interpreter that logs each call: passes the version probe,

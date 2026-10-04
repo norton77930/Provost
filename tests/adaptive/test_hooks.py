@@ -63,7 +63,7 @@ class HookTests(FixtureCase):
         output = handle_event(self.event("SessionStart", "startup"), self.config_path)
         self.assertIn("systemMessage", output)
         self.assertIn("collaborator tier", self.context(output))
-        self.assertFalse((self.root / ".provost").exists())
+        self.assertNoStore()
 
     def test_context_size_is_bounded_and_payload_is_not_silently_lost(self):
         record(self.root, "s1", self.payload("details " * 2000), None, "r")
@@ -77,6 +77,17 @@ class HookTests(FixtureCase):
         self.config_path.write_text(json.dumps(self.cfg))
         self.assertEqual(handle_event(self.event("PreCompact"), self.config_path), {})
         self.assertIn("disabled", self.context(handle_event(self.event("SessionStart", "startup"), self.config_path)))
+
+    def test_hook_path_spawns_once_for_identity_plus_one_cached_home_probe(self):
+        from provost_runtime import store
+        store._HOME_CHECKED.clear()
+        record(self.root, "s1", self.payload(), None, "r")
+        store._HOME_CHECKED.clear()
+        with mock.patch.object(store.subprocess, "run", wraps=store.subprocess.run) as run:
+            handle_event(self.event("SessionStart", "compact"), self.config_path, native=True)
+            self.assertEqual(run.call_count, 2)
+            handle_event(self.event("PreCompact"), self.config_path, native=True)
+            self.assertEqual(run.call_count, 3)
 
     def test_bad_event_does_not_raise_or_echo_payload(self):
         output = handle_event({"hook_event_name": "PreCompact", "secret": "do-not-echo"}, self.config_path)
