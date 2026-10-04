@@ -58,6 +58,15 @@ class LegacyCase(FixtureCase):
         self.put(directory / "latest.json", {"snapshot_id": ident})
         return data
 
+    def legacy_binding(self, workspace, session, workspace_id=None, transcript="t.jsonl"):
+        path = self.legacy_dir(workspace, session) / "binding.json"
+        self.put(path, {"workspace_id": workspace_id or workspace_key(Path(workspace)), "session_id": session,
+                        "worktree_path": str(workspace), "transcript_path": transcript, "last_cursor": None})
+        return path
+
+    def new_sessions(self):
+        return sorted(p.relative_to(self.store_home).as_posix() for p in self.store_home.rglob("*"))
+
     def tree(self, workspace):
         base = Path(workspace) / ".provost"
         found = []
@@ -145,6 +154,91 @@ class LegacyFallback(LegacyCase):
         self.assertIs(status["legacy"], True)
         self.assertEqual(status["checkpoint"]["payload"]["next"], "legacy step")
         self.assertIn(MARK, recovery_context(store.locate(worktree), "s1"))
+
+
+class LegacyBinding(LegacyCase):
+    """A session bound before the store switch keeps working without a new SessionStart."""
+
+    def test_status_accepts_a_legacy_only_binding_without_writing(self):
+        written = self.legacy_record(self.root, "s1")
+        self.legacy_binding(self.root, "s1")
+        before = self.tree(self.root)
+        status = self.cli_json("status", "--workspace", str(self.root), "--session", "s1")
+        self.assertIs(status["legacy_binding"], True)
+        self.assertIs(status["legacy"], True)
+        self.assertEqual(status["checkpoint"]["revision"], written["revision"])
+        self.assertEqual(self.tree(self.root), before)
+        self.assertEqual(self.new_sessions(), [])
+
+    def test_record_creates_the_new_binding_and_later_status_is_plain(self):
+        self.legacy_binding(self.root, "s1", transcript="legacy-transcript.jsonl")
+        before = self.tree(self.root)
+        written = self.cli_json("record", "--workspace", str(self.root), "--session", "s1",
+                                "--expected", "null", "--request-id", "n1", data=self.payload("new step"))
+        self.assertIn("revision", written)
+        self.assertEqual(self.tree(self.root), before)
+        bound = bind_read(self.root, "s1")
+        self.assertEqual(bound["transcript_path"], "legacy-transcript.jsonl")
+        status = self.cli_json("status", "--workspace", str(self.root), "--session", "s1")
+        self.assertNotIn("legacy_binding", status)
+        self.assertEqual(status["expected"], written["revision"])
+
+    def test_snapshot_creates_the_new_binding_from_a_legacy_one(self):
+        self.legacy_binding(self.root, "s1")
+        self.cli_json("record", "--workspace", str(self.root), "--session", "s1",
+                      "--expected", "null", "--request-id", "n1", data=self.payload("new step"))
+        (store.session_dir(store.locate(self.root), "s1") / "binding.json").unlink()
+        snap = self.cli_json("snapshot", "--workspace", str(self.root), "--session", "s1", "--request-id", "e1")
+        self.assertIn("snapshot_id", snap)
+        self.assertEqual(bind_read(self.root, "s1")["session_id"], "s1")
+
+    def test_legacy_binding_of_another_workspace_is_a_mismatch_and_writes_nothing(self):
+        self.legacy_binding(self.root, "s1", workspace_id=workspace_key(self.root / "elsewhere"))
+        before = self.tree(self.root)
+        for args in (("status",), ("record", "--expected", "null", "--request-id", "n1"),
+                     ("snapshot", "--request-id", "e1")):
+            result = self.run_cli(args[0], "--workspace", str(self.root), "--session", "s1", *args[1:],
+                                  data=self.payload())
+            self.assertEqual(json.loads(result.stdout), {"error": "BINDING_MISMATCH"}, args)
+        self.assertEqual(self.tree(self.root), before)
+        self.assertEqual(self.new_sessions(), [])
+
+    def test_unreadable_legacy_binding_is_reported(self):
+        path = self.legacy_binding(self.root, "s1")
+        path.write_bytes(b"{not json")
+        result = self.run_cli("status", "--workspace", str(self.root), "--session", "s1")
+        self.assertEqual(json.loads(result.stdout), {"error": "BINDING_UNREADABLE"})
+
+    def test_no_binding_anywhere_is_not_bound(self):
+        self.legacy_record(self.root, "s1")
+        for args in (("status",), ("record", "--expected", "null", "--request-id", "n1"),
+                     ("snapshot", "--request-id", "e1")):
+            result = self.run_cli(args[0], "--workspace", str(self.root), "--session", "s1", *args[1:],
+                                  data=self.payload())
+            self.assertEqual(json.loads(result.stdout), {"error": "SESSION_NOT_BOUND"}, args)
+        self.assertEqual(self.new_sessions(), [])
+
+    def test_resume_still_requires_a_new_store_binding(self):
+        self.legacy_binding(self.root, "new")
+        result = self.run_cli("resume", "--workspace", str(self.root), "--session", "new", "--from", "a" * 64)
+        self.assertEqual(json.loads(result.stdout), {"error": "SESSION_NOT_BOUND"})
+
+    def test_worktree_finds_the_main_checkouts_legacy_binding(self):
+        main, worktree = self.git_repo_with_worktree()
+        self.cfg["workspace_roots"] = [str(main), str(worktree)]
+        self.config_path.write_text(json.dumps(self.cfg), encoding="utf-8")
+        self.legacy_binding(main, "s1")
+        status = self.cli_json("status", "--workspace", str(worktree), "--session", "s1")
+        self.assertIs(status["legacy_binding"], True)
+        written = self.cli_json("record", "--workspace", str(worktree), "--session", "s1",
+                                "--expected", "null", "--request-id", "n1", data=self.payload("wt step"))
+        self.assertIn("revision", written)
+        self.assertEqual(bind_read(worktree, "s1")["worktree_path"], str(store.locate(worktree).root))
+
+
+def bind_read(workspace, session):
+    from provost_runtime.hooks import binding
+    return binding(store.locate(workspace), session)
 
 
 class LegacyValidation(LegacyCase):

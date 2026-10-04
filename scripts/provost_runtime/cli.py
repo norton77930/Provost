@@ -7,7 +7,7 @@ from pathlib import Path
 
 from . import legacy
 from .config import ConfigError, config_path, handoff_home, load_config, resolve_mode
-from .hooks import (binding, cursor, handle_event, last_binding_at, recovery_context,
+from .hooks import (bind, binding, cursor, handle_event, last_binding_at, recovery_context,
                     resolve_transcript, workspace_root)
 from .store import StoreError, current, latest, list_snapshots, prune, record, snapshot, storage_ready
 
@@ -100,8 +100,17 @@ def main(argv=None):
                 if not options.session:
                     raise StoreError("SESSION_REQUIRED")
                 source = binding(root, options.session)
+                old_binding = None
                 if not source:
-                    raise StoreError("SESSION_NOT_BOUND")
+                    # resume keeps requiring a new-store binding.
+                    old_binding = None if options.command == "resume" else legacy.binding(root, options.session)
+                    if not old_binding:
+                        raise StoreError("SESSION_NOT_BOUND")
+                    source = old_binding[0]
+                    if options.command in ("record", "snapshot"):
+                        # Carry the legacy binding over so later calls find it in the new store.
+                        bind(root, options.session, {"transcript_path": source.get("transcript_path")})
+                        old_binding = None
                 if options.command == "status":
                     checkpoint = current(root, options.session)
                     old = None
@@ -111,6 +120,7 @@ def main(argv=None):
                               "expected": checkpoint["revision"] if checkpoint else None,
                               "checkpoint": old[0] if old else checkpoint,
                               **({"legacy": True, "legacy_path": str(old[1])} if old else {}),
+                              **({"legacy_binding": True} if old_binding else {}),
                               "template": {"work_id": "", "phase": "", "sources": [],
                                            "assignments": [], "decisions": [], "blockers": [],
                                            "evidence": [], "next": "", "suggested_skills": []}}

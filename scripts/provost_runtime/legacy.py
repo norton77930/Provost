@@ -7,8 +7,8 @@ session that began before the move can still be recovered. It never writes: no
 directories, locks, index files or temporary files are created under a legacy path.
 
 REMOVAL: delete this module after the observation window (about 2 weeks after
-release), plus its call sites: `status` / `list --legacy` / `resume` / `doctor` in
-cli.py and `recovery_context` in hooks.py. Nothing else depends on it.
+release), plus its call sites: `status` / `record` / `snapshot` (legacy binding) /
+`list --legacy` / `resume` / `doctor` in cli.py and `recovery_context` in hooks.py. Nothing else depends on it.
 """
 import hashlib
 import json
@@ -50,6 +50,29 @@ def _session_dir(loc, session):
     if not isinstance(session, str) or not session or len(session) > 256:
         raise StoreError("INVALID_SESSION")
     return loc.base / "sessions" / digest(session)
+
+
+def binding(root, session):
+    """(binding, path) of the session's legacy binding.json, else None. Read-only.
+
+    Same checks as the old hooks.binding: a dict whose session_id and path-based
+    workspace_id match. The worktree's own store is consulted before the main
+    checkout's; a present but invalid file raises instead of falling through.
+    """
+    for loc in locations(root):
+        path = _session_dir(loc, session) / "binding.json"
+        guard(loc.workspace, path)
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise StoreError("BINDING_UNREADABLE") from exc
+        if (not isinstance(data, dict) or data.get("workspace_id") != loc.key
+                or data.get("session_id") != session):
+            raise StoreError("BINDING_MISMATCH")
+        return data, path
+    return None
 
 
 def _read(loc, path, session, kind):
