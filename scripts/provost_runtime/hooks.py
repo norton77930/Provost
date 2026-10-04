@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import legacy
 from .config import ConfigError, handoff_home, load_config, resolve_mode, workspace_key
 from .notifications import notice
 from .store import (StoreError, _base, as_workspace, atomic_write, current, digest, guard, latest,
@@ -153,13 +154,20 @@ def recovery_context(root, session):
     data = current(root, session)
     if data is None:
         data = latest(root, session)
+    source = ""
     if data is None:
-        return "No checkpoint for this session. Verify current sources before continuing."
-    kind = "records" if data["kind"] == "record" else "snapshots"
-    ident = data["revision"] if kind == "records" else data["snapshot_id"]
-    path = session_dir(root, session) / kind / (ident + ".json")
+        # Only a session with nothing in the new store may read the old per-repo store.
+        found = legacy.checkpoint(root, session)
+        if found is None:
+            return "No checkpoint for this session. Verify current sources before continuing."
+        data, path = found
+        source = "Checkpoint source: legacy store (read-only); the first record starts a fresh chain in the new store.\n"
+    else:
+        kind = "records" if data["kind"] == "record" else "snapshots"
+        ident = data["revision"] if kind == "records" else data["snapshot_id"]
+        path = session_dir(root, session) / kind / (ident + ".json")
     payload = _payload_text(data["payload"])
-    return ("Saved observations, not current facts. Verify sources, code, evidence and worker state before acting. "
+    return (source + "Saved observations, not current facts. Verify sources, code, evidence and worker state before acting. "
             "Do not duplicate a possibly running worker. Checkpoints can lag later decisions.\n"
             + "Checkpoint: " + str(path) + "\nRevision: " + data["revision"]
             + "\nTranscript cursor: " + ("available (not a freshness guarantee)" if data.get("transcript_cursor") else "unavailable; gaps must be checked")

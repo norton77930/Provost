@@ -5,10 +5,11 @@ import json
 import sys
 from pathlib import Path
 
+from . import legacy
 from .config import ConfigError, config_path, handoff_home, load_config, resolve_mode
 from .hooks import (binding, cursor, handle_event, last_binding_at, recovery_context,
                     resolve_transcript, workspace_root)
-from .store import StoreError, current, list_snapshots, prune, record, resume, snapshot, storage_ready
+from .store import StoreError, current, latest, list_snapshots, prune, record, snapshot, storage_ready
 
 
 RUNTIME_ROOT = Path(__file__).resolve().parents[2]
@@ -60,6 +61,7 @@ def main(argv=None):
         parser.add_argument("--input")
         parser.add_argument("--older-than-days", type=int, default=14)
         parser.add_argument("--apply", action="store_true")
+        parser.add_argument("--legacy", action="store_true")
         options = parser.parse_args(args)
         root = workspace_root(options.workspace)
         cfg = load_config(config_path())
@@ -79,14 +81,14 @@ def main(argv=None):
                       "handoff": mode == "adaptive" and cfg.get("handoff", False),
                       "storage_ready": error is None, "storage_error": error,
                       "host_verified": bound_at is not None, "last_binding_at": bound_at,
-                      "stale_sessions": stale,
+                      "stale_sessions": stale, "legacy_store_present": legacy.present(root),
                       "store_home": str(handoff_home()), "repo_key": root.repo_key,
                       "runtime_root": str(RUNTIME_ROOT), "runtime_hash": runtime_hash(RUNTIME_ROOT)}
         else:
             if mode != "adaptive" or not cfg.get("handoff"):
                 raise StoreError("HANDOFF_DISABLED")
             if options.command == "list":
-                result = list_snapshots(root)
+                result = legacy.list_snapshots(root) if options.legacy else list_snapshots(root)
             elif options.command == "prune":
                 result = prune(root, older_than_days=options.older_than_days,
                                keep_session=options.session, apply=options.apply)
@@ -98,9 +100,13 @@ def main(argv=None):
                     raise StoreError("SESSION_NOT_BOUND")
                 if options.command == "status":
                     checkpoint = current(root, options.session)
+                    old = None
+                    if checkpoint is None and latest(root, options.session) is None:
+                        old = legacy.checkpoint(root, options.session)
                     result = {"workspace": str(root.root), "session_id": options.session,
                               "expected": checkpoint["revision"] if checkpoint else None,
-                              "checkpoint": checkpoint,
+                              "checkpoint": old[0] if old else checkpoint,
+                              **({"legacy": True, "legacy_path": str(old[1])} if old else {}),
                               "template": {"work_id": "", "phase": "", "sources": [],
                                            "assignments": [], "decisions": [], "blockers": [],
                                            "evidence": [], "next": "", "suggested_skills": []}}
@@ -125,7 +131,7 @@ def main(argv=None):
                 else:
                     if not options.source:
                         raise StoreError("SNAPSHOT_ID_REQUIRED")
-                    result = resume(root, options.session, options.source)
+                    result = legacy.resume(root, options.session, options.source)
                     result = {**result, "reconciliation": recovery_context(root, options.session)}
         print(json.dumps(result, ensure_ascii=True))
         return 0

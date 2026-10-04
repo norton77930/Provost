@@ -428,6 +428,11 @@ def resume(root, session, snapshot_id):
     if original == session:
         raise StoreError("SAME_SESSION_ADOPTION")
     source = _read(root, session_dir(root, original) / "snapshots" / (snapshot_id + ".json"), original, "snapshot")
+    return adopt(root, session, source, snapshot_id)
+
+
+def adopt(root, session, source, snapshot_id):
+    """Start `session`'s chain from a validated snapshot, with its observed state marked unverified."""
     payload = copy.deepcopy(source["payload"])
     for assignment in payload["assignments"]:
         assignment["observed_state"] = "needs-verification"
