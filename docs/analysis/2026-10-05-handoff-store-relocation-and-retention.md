@@ -1,7 +1,13 @@
 # Handoff 紀錄搬移與保留規則：設計規格
 
 日期：2026-10-05
-狀態：2026-10-05 使用者核准，§10 四項皆採建議（A、5/3/30 天、只在手動 `prune --apply` 時刪、唯讀後備觀察 2 週後另案移除）。實作中。
+狀態：2026-10-05 使用者核准，§10 四項皆採建議（A、5/3/30 天、只在手動 `prune --apply` 時刪、唯讀後備觀察 2 週後另案移除）。2026-10-05 實作完成並安裝（9aa2882，runtime_hash 7d31da04；回滾複本 `native-pilot-v1.bak-20261005`）。
+
+## 0. 實作結果與後續
+
+- 驗證：完整測試 188 OK / 2 skipped；安裝版與 repo 版 hash 一致；實機：worktree 讀到主 checkout 舊位置的 checkpoint（legacy_binding）、從 worktree 寫入新位置、主 checkout 讀到同一筆、SessionStart compact 由 worktree 注入新位置 checkpoint。
+- 審查：code-reviewer 與 architecture-reviewer 各 2 個 major，已於 c9e6b9d 修正；安裝後實機發現「安裝前啟動的 session 只有舊位置綁定」缺口，於 53abbca 修正；追加 code review（e0a9400..53abbca）無 blocker/major。
+- 後續（未做）：record/snapshot 在驗證參數前就把舊綁定複製到新位置；binding-only 清理路徑未比對 workspace_id；compaction-only session 不會過期；horizon.json 無 checksum；POSIX rename-back 分裂；F1/B1 的少數測試缺口；約 2026-10-19 移除 `legacy.py`；個人 CLAUDE.md §10 的 worktree mismatch 句子待使用者確認後修改。
 分類：困難 / R2（儲存位置與資料搬移）/ 證據：測試 + 審查 + 架構
 基底：`wip/adaptive-handoff` @ 14091b8（runtime_hash a122fe09，已安裝）
 
