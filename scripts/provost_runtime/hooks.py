@@ -10,6 +10,8 @@ from .store import (StoreError, _base, atomic_write, current, digest, guard, lat
                     session_dir, snapshot, storage_ready)
 
 PLUGIN = Path(__file__).resolve().parents[2]
+RECOVERY_PAYLOAD_LIMIT = 4500     # inline the payload in full up to this size; digest is capped to it too
+RECOVERY_ASSIGNMENT_LIMIT = 300   # per-assignment JSON cap inside the digest
 
 
 def workspace_root(cwd):
@@ -132,6 +134,31 @@ def _notification(message, session_start=False):
     return {"terminalSequence": "\u001b]9;" + safe + "\u0007"}
 
 
+def _clip(text, limit):
+    """Deterministic cut to at most `limit` chars, ending in an ellipsis marker."""
+    if len(text) <= limit:
+        return text
+    head = text[:limit - 1]
+    if head and "\ud800" <= head[-1] <= "\udbff":  # never leave half a surrogate pair
+        head = head[:-1]
+    return head + "…"
+
+
+def _payload_text(payload):
+    full = json.dumps(payload, ensure_ascii=False)
+    if len(full) <= RECOVERY_PAYLOAD_LIMIT:
+        return "Observed payload: " + full
+    digest = {"work_id": payload["work_id"], "phase": payload["phase"], "next": payload["next"],
+              "blockers": payload["blockers"],
+              # Stored keys are sorted; lead with task/agent_id so a cut keeps the identifying fields.
+              "assignments": [_clip(json.dumps({k: item[k] for k in ("task", "agent_id", "observed_state", "write_scope")},
+                                               ensure_ascii=False), RECOVERY_ASSIGNMENT_LIMIT)
+                              for item in payload["assignments"]],
+              "decisions": payload["decisions"][-3:]}
+    return ("Observed payload digest (full JSON in the checkpoint file): "
+            + _clip(json.dumps(digest, ensure_ascii=False), RECOVERY_PAYLOAD_LIMIT))
+
+
 def recovery_context(root, session):
     # The latest milestone may be newer than the last compaction snapshot.
     data = current(root, session)
@@ -142,13 +169,15 @@ def recovery_context(root, session):
     kind = "records" if data["kind"] == "record" else "snapshots"
     ident = data["revision"] if kind == "records" else data["snapshot_id"]
     path = session_dir(root, session) / kind / (ident + ".json")
-    payload = json.dumps(data["payload"], ensure_ascii=False)
+    payload = _payload_text(data["payload"])
     return ("Saved observations, not current facts. Verify sources, code, evidence and worker state before acting. "
             "Do not duplicate a possibly running worker. Checkpoints can lag later decisions.\n"
             + "Checkpoint: " + str(path) + "\nRevision: " + data["revision"]
             + "\nTranscript cursor: " + ("available (not a freshness guarantee)" if data.get("transcript_cursor") else "unavailable; gaps must be checked")
             + "\nRead this JSON file for the complete checkpoint.\n"
-            + ("Observed payload: " + payload if len(payload) <= 1100 else "Payload omitted from injection to preserve context budget."))
+            + "If any assignment is not marked completed, verify that worker's actual state before dispatching; "
+            + "read the checkpoint file for full details.\n"
+            + payload)
 
 
 def handle_event(event, config_path, *, native=False):
