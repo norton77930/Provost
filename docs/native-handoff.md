@@ -17,8 +17,8 @@ it. `doctor` reports `store_home` and `repo_key`.
 
 Each session keeps its newest 5 records and 3 snapshots; older ones are removed
 when a new one is written, and `horizon.json` records where the chain was cut so
-reads still verify it. Retrying a request ID whose record was already removed
-returns `REQUEST_ID_EXPIRED`.
+reads still verify it. Retrying the request ID of the most recently removed record
+returns `REQUEST_ID_EXPIRED` (see Known limits below).
 
 Older stores under `<checkout>/.provost/handoffs/v1` are read-only: when the new
 store has nothing for a session, `status` and compact/resume recovery fall back to
@@ -121,15 +121,30 @@ sessions that never recorded anything. `doctor` reports them as `stale_sessions`
 `prune` lists session directories that hold only `binding.json` older than
 `--older-than-days` (default 14); it deletes nothing unless `--apply` is given.
 
-`prune` also lists, under `expired`, sessions whose newest record or snapshot is
-older than 30 days (its stored timestamp, else file mtime); `doctor` reports their
-count as `expired_sessions`. Omitting `--older-than-days` applies 14 days to
-binding-only dirs and 30 to expired sessions; a given value applies to both.
-`--apply` removes them (counted in `expired_removed`) with the same move, re-check
-and delete steps as below; a session that became fresh or locked in between is
-moved back. The `--session` dir, a dir whose lock is held (`STORE_BUSY`), and a dir
-with unexpected content (`UNEXPECTED_CONTENT`) are skipped. Nothing is deleted
-automatically, and legacy `.provost` stores are never pruned.
+`prune` also lists, under `expired`, sessions that hold records or snapshots and
+whose newest activity is older than `--expired-older-than-days` (default 30).
+Activity is the newest record/snapshot timestamp (else file mtime) or the mtime of
+`binding.json`, `compaction.json`, `current.json`, `latest.json` or `horizon.json`,
+so a session resumed today is not expired. `--older-than-days` (default 14) applies
+to binding-only dirs only. `doctor` reports `expired_sessions` at the default age.
+`--apply` removes expired sessions (counted in `expired_removed`) with the same
+move, re-check and delete steps as below; a session that became fresh or locked in
+between is moved back. Skipped: the `--session` dir and its `.pruning-` leftover, a
+dir whose lock is held (`STORE_BUSY`), a dir with unexpected content
+(`UNEXPECTED_CONTENT`), and a dir whose stored `workspace_id` belongs to another
+repo (`FOREIGN_REPO`). Nothing is deleted automatically, and legacy `.provost`
+stores are never pruned.
+
+Known limits: `horizon.json` carries no checksum, so tampering with it can hide or
+remove records; a reader that overlaps a trim can see a transient
+`CORRUPT_RECORD`/`INCOMPLETE_CHAIN` that a retry clears; `REQUEST_ID_EXPIRED`
+covers the newest trimmed id and on-disk leftovers, while an older trimmed id
+reused against the current head records a new entry (the chain stays valid); a
+session that compacted but never recorded never expires; a corrupt legacy store
+surfaces as "Checkpoint unavailable" during recovery; submodules, bare-backed and
+separate-git-dir checkouts are refused (`REPO_KEY_UNRESOLVED`); Git older than
+2.31 is refused (`GIT_UNSUPPORTED`); on Windows without long-path support a long
+user or `PROVOST_HOME` path can exceed 260 characters.
 Pass `--session <current-id>` to keep the running session. Directories with any
 record, snapshot, lock or other file, linked or reparse-point entries, and names
 that are not session digests are never candidates. With `--apply`, each candidate

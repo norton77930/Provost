@@ -77,7 +77,7 @@
 
 - 現行 `storage_ready` 檢查 `.provost/handoffs` 不被 git 追蹤、且被 ignore。新位置在 repo 外，這兩項不再適用，移除。
 - 保留並改以 `<store home>` 為根的 `guard`：拒絕 symlink 與 reparse point，路徑必須在 `<store home>` 之內。
-- 新增：`<store home>` 本身若位於任何 Git work tree 之內，回報 `STORE_INSIDE_REPO` 並拒絕寫入，避免筆記被意外 commit。
+- 新增：`<store home>` 位於 Git work tree 之內、而且**沒有被該 repo ignore** 時，回報 `STORE_INSIDE_REPO` 並拒絕寫入，避免筆記被意外 commit。（實作時修訂：原文為「位於任何 work tree 之內即拒絕」，但使用者的 `~/.claude` 本身是 git repo，`.gitignore` 以 `*` 忽略 `provost/`；以 `git check-ignore` 探測實際寫入的 `v2/repos/<16 字元>` 路徑，被忽略即可接受。）
 
 ## 5. 舊 store 的過渡
 
@@ -112,15 +112,15 @@
 
 ### 6.3 久未使用的 session
 
-- 延伸現有 `prune`：除了「只有 binding.json」的目錄，也列出「最新一筆 record / snapshot 早於 `--older-than-days`（預設 30）」的 session 目錄。
-- 預設只列出（dry-run），加 `--apply` 才刪；`--session <目前 id>` 永遠不刪。
+- 延伸現有 `prune`：除了「只有 binding.json」的目錄，也列出「最近活動早於 `--expired-older-than-days`（預設 30）」的 session 目錄。最近活動取 record / snapshot 時間戳與 binding、compaction、current、latest、horizon 檔 mtime 的最大值。`--older-than-days`（預設 14）維持只管 binding-only 目錄。（實作時修訂：原本兩者共用一個參數，審查指出舊習慣的小數值會誤刪有紀錄的 session。）
+- 預設只列出（dry-run），加 `--apply` 才刪；`--session <目前 id>` 與其 `.pruning-` 殘留永遠不刪；`workspace_id` 屬於其他 repo 的目錄列為 `FOREIGN_REPO` 跳過。
 - 目錄的鎖正被持有時跳過，列入 `skipped`。
 - 沿用現有 prune 的兩階段刪除（先改名成 `.pruning-<digest>` 再複查、再刪）。
 - `doctor` 新增 `expired_sessions` 計數；不自動刪除。
 
 ### 6.4 數值放哪裡
 
-- `KEEP_RECORDS = 5`、`KEEP_SNAPSHOTS = 3`、預設 `--older-than-days 30`，放程式常數與 CLI 參數。
+- `KEEP_RECORDS = 5`、`KEEP_SNAPSHOTS = 3`、預設 `--expired-older-than-days 30`、`--older-than-days 14`，放程式常數與 CLI 參數。
 - 不加進 `config.json`：該檔的 key 是白名單，加 key 等於改 config schema，另案再議。
 
 ## 7. 對外介面的變動
@@ -128,9 +128,10 @@
 | 介面 | 變動 |
 |---|---|
 | `doctor` | 新增 `store_home`、`repo_key`、`expired_sessions`、`legacy_store_present` |
-| `status` / `record` / `snapshot` | 位置改變；錯誤碼新增 `STORE_INSIDE_REPO`、`REPO_KEY_UNRESOLVED` |
+| `status` / `record` / `snapshot` | 位置改變；錯誤碼新增 `STORE_INSIDE_REPO`、`REPO_KEY_UNRESOLVED`、`GIT_UNSUPPORTED`（git < 2.31）、`REQUEST_ID_EXPIRED`；移除 `NOT_WORKSPACE_ROOT`、`TRACKED_HANDOFF`、`HANDOFF_NOT_IGNORED`；`status` 退回舊位置時加 `legacy`、`legacy_path`；binding / record 另存 `worktree_path`（schema_version 不變） |
 | `list` | 新增 `--legacy` |
-| `prune` | 涵蓋過期 session；輸出新增 `expired` 區段 |
+| `prune` | 涵蓋過期 session；新增 `--expired-older-than-days`；輸出新增 `expired`、`expired_removed`、`expired_older_than_days`；`skipped` 新增 `STORE_BUSY`、`UNEXPECTED_CONTENT`、`FOREIGN_REPO` |
+| 模式判斷 | `workspace_roots` 列入主 checkout 時，其 worktree 也視為 adaptive（實作時依審查補上） |
 | SessionStart 注入文字 | 「Do not change workspace identity mid-session」改為「worktree 與主 checkout 共用同一份紀錄」 |
 | `docs/native-handoff.md`、`skills/handoff/SKILL.md` | 對應改寫 |
 | 個人 `~/.claude/CLAUDE.md` §10 | 「Work in a different worktree than the supplied identity is a mismatch」需改寫；屬 repo 外檔案，實作完成後另請使用者確認 |
