@@ -1,5 +1,7 @@
 # Claude Code 委派與 Handoff 設計草稿
 
+> **已被取代（2026-10-05）。** 本文是 2026-09-21 的設計草稿，保留作為來源紀錄；「尚未實作」與「store 放在專案內」均已不成立。handoff 已實作，紀錄改存 `~/.claude/provost/handoffs/v2/repos/<repo key>/`，主 checkout 與其 worktree 共用，不需 Git exclude；舊的 `.provost/handoffs/v1` 只經 `legacy.py` 唯讀讀取。現行設計見 `docs/analysis/2026-10-05-handoff-store-relocation-and-retention.md`，操作程序見 `docs/native-handoff.md`。
+
 日期：2026-09-21
 狀態：主要設計方向已獲使用者確認；新增相容性分析供審閱。尚未實作，尚未核准實作計畫。
 

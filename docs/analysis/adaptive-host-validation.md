@@ -1,5 +1,7 @@
 # Adaptive host validation status
 
+> **Status as of 2026-09-22.** Later live results (worktree read/write against the relocated store, SessionStart compact injection from a worktree) are recorded in §0 of `docs/analysis/2026-10-05-handoff-store-relocation-and-retention.md`. Recovery after a real auto-compact on the relocated store is still under observation.
+
 Local baseline: Windows, Python 3.12.9, Claude Code 2.1.278.
 No real personal settings or selected-project pilot modified during implementation.
 

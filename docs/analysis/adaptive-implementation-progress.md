@@ -1,5 +1,7 @@
 # Implementation ledger
 
+> **Superseded (2026-10-05).** First-implementation ledger from 2026-09-22, kept for provenance. Test counts and error codes below are from that date (`HANDOFF_NOT_IGNORED` was removed when the store moved out of the checkout). Current store, retention and verification: `docs/analysis/2026-10-05-handoff-store-relocation-and-retention.md`.
+
 Plan: docs/superpowers/plans/2026-09-21-adaptive-orchestration-handoff.md.
 User authorized implementation. Existing design/plan files preserved.
 

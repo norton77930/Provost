@@ -12,6 +12,9 @@ Thumbs.db
 .claude/todos/
 .claude/shell-snapshots/
 
+# Legacy in-repo handoff store (read-only bridge); holds session IDs and local paths
+.provost/
+
 # Backups, logs, scratch, browser-automation dumps
 *.bak
 *.log

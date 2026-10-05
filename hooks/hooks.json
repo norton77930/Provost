@@ -22,7 +22,7 @@
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/handoff-event\"",
             "shell": "bash",
             "async": false,
-            "timeout": 10
+            "timeout": 30
           }
         ]
       }
@@ -36,7 +36,7 @@
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/handoff-event\"",
             "shell": "bash",
             "async": false,
-            "timeout": 10
+            "timeout": 30
           }
         ]
       }

@@ -18,4 +18,4 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(set(hooks), {"SessionStart", "PreCompact", "PostCompact"})
         for name in ("PreCompact", "PostCompact"):
             self.assertFalse(hooks[name][0]["hooks"][0]["async"])
-            self.assertEqual(hooks[name][0]["hooks"][0]["timeout"], 10)
+            self.assertEqual(hooks[name][0]["hooks"][0]["timeout"], 30)

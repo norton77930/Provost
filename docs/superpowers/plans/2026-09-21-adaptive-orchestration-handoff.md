@@ -1,3 +1,5 @@
+> **Superseded (2026-10-05).** Historical plan, kept for provenance. The handoff store no longer lives in the checkout: it is `~/.claude/provost/handoffs/v2/repos/<repo key>/`, shared by a checkout and its worktrees, and needs no Git exclude. `.provost/handoffs/v1` is read only through the `legacy.py` bridge. Current design: `docs/analysis/2026-10-05-handoff-store-relocation-and-retention.md`; current procedure: `docs/native-handoff.md`.
+>
 > Implementation evidence and pending live acceptance: `docs/analysis/adaptive-implementation-progress.md`.
 > Original planning checklist below is retained; use the ledger for current status.
 
