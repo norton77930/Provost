@@ -57,7 +57,7 @@ This run printed:
 
 ```text
 PROVOST=D:\OSS\Provost
-WORKSPACE=C:\Users\NORTON.DENG\AppData\Local\Temp\provost-governed-walkthrough-text
+WORKSPACE=C:\Users\<user>\AppData\Local\Temp\provost-governed-walkthrough-text
 HEAD=5829136
 ```
 
@@ -142,7 +142,7 @@ Set-Location $provost
 The launcher printed this, then started `claude`:
 
 ```text
-Governed workspace: C:\Users\NORTON.DENG\AppData\Local\Temp\provost-governed-walkthrough-text
+Governed workspace: C:\Users\<user>\AppData\Local\Temp\provost-governed-walkthrough-text
 Tier 2 hooks registered for this session only. Initialize refuses a run whose session shows no marker from the SessionStart hook.
 ```
 
@@ -166,9 +166,9 @@ every helper call. File writes must go through the `Write` / `Edit` /
 
 ```text
 status    : INITIALIZED
-manifest  : C:\Users\NORTON.DENG\AppData\Local\Temp\provost-governed-walkthrough-text\.claude\provost\foreman\manifests
+manifest  : C:\Users\<user>\AppData\Local\Temp\provost-governed-walkthrough-text\.claude\provost\foreman\manifests
             \none\hello-change\r001.json
-ledger    : C:\Users\NORTON.DENG\AppData\Local\Temp\provost-governed-walkthrough-text\.claude\provost\foreman\runs\none
+ledger    : C:\Users\<user>\AppData\Local\Temp\provost-governed-walkthrough-text\.claude\provost\foreman\runs\none
             \hello-change\r001\run-20260902-125210-064e2aa8.jsonl
 assurance : FULL
 run_id    : run-20260902-125210-064e2aa8
@@ -204,7 +204,7 @@ Use the Write tool on `src/hello.txt`, which is in T01's `write_set`. The tool
 result was:
 
 ```text
-The file C:\Users\NORTON.DENG\AppData\Local\Temp\provost-governed-walkthrough-text\src\hello.txt has been updated successfully. (file state is current in your context — no need to Read it back)
+The file C:\Users\<user>\AppData\Local\Temp\provost-governed-walkthrough-text\src\hello.txt has been updated successfully. (file state is current in your context — no need to Read it back)
 ```
 
 ```powershell
