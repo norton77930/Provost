@@ -5,7 +5,7 @@ from pathlib import Path
 
 from . import facts, legacy
 from .config import ConfigError, handoff_home, load_config, resolve_mode, workspace_key
-from .notifications import notice
+from .notifications import PARTIAL, notice
 from .store import (StoreError, _base, as_workspace, atomic_write, current, digest, guard, latest,
                     locate, session_dir, snapshot, storage_ready)
 
@@ -178,14 +178,31 @@ def recovery_context(root, session):
 
 
 def fold_facts(config_path, root, session):
-    """Fold the facts spool before the snapshot. Never raises: a failure becomes its code."""
+    """Fold the facts spool before the snapshot. Never raises: returns (facts, None) or (None, code)."""
     try:
-        facts.fold(config_path, root, session)
-        return None
+        return facts.fold(config_path, root, session), None
     except StoreError as exc:
-        return str(exc)
+        return None, str(exc)
     except Exception:  # facts must never decide or block compaction
-        return "FACTS_FAILED"
+        return None, "FACTS_FAILED"
+
+
+def _utc(text):
+    when = datetime.fromisoformat(text)
+    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+
+
+def save_level(checkpoint, saved):
+    """partial-missing / partial-stale code for a facts-only save, None when the record is current."""
+    if checkpoint is None:
+        return "partial-missing"
+    changed = saved.get("last_change_at") if isinstance(saved, dict) else None
+    if not changed:
+        return None
+    try:
+        return "partial-stale" if _utc(checkpoint["recorded_at"]) < _utc(changed) else None
+    except (KeyError, TypeError, ValueError):  # freshness unprovable: not complete
+        return "partial-stale"
 
 
 def handle_event(event, config_path, *, native=False):
@@ -237,7 +254,11 @@ def handle_event(event, config_path, *, native=False):
                 try:
                     bind(root, session, event)
                     if source in ("compact", "resume"):
-                        info += "\n" + recovery_context(root, session)
+                        recovery = recovery_context(root, session)
+                        facts_path = session_dir(root, session) / "facts.json"
+                        if recovery.startswith("No checkpoint for this session") and facts_path.exists():
+                            recovery += " Session facts (files, commits, agents) saved at: " + str(facts_path)
+                        info += "\n" + recovery
                     elif source in ("startup", "clear", "fork"):
                         info += "\nNew work context: do not load or start old work unless explicitly requested."
                     else:
@@ -247,7 +268,10 @@ def handle_event(event, config_path, *, native=False):
                     if cache.exists():
                         try:
                             saved = json.loads(cache.read_text(encoding="utf-8"))
-                            if isinstance(saved, dict) and saved.get("error"):
+                            if isinstance(saved, dict) and saved.get("error") in PARTIAL:
+                                warning = ("Provost: last compaction saved facts only; write a decision record from the "
+                                           "compaction summary before continuing (run status, then record).")
+                            elif isinstance(saved, dict) and saved.get("error"):
                                 warning = "Provost: previous handoff save failed; verify any older checkpoint before continuing."
                         except (OSError, UnicodeError, json.JSONDecodeError):
                             warning = "Provost: save health is unknown; verify checkpoint freshness."
@@ -267,12 +291,18 @@ def handle_event(event, config_path, *, native=False):
         if not enabled:
             return {}
         if name == "PreCompact":
-            facts_error = fold_facts(config_path, root, session)  # noqa: F841 -- save level (S3) reads it
+            saved, facts_error = fold_facts(config_path, root, session)
             checkpoint = current(root, session)
+            if checkpoint is None:
+                # partial-missing: facts alone are the save; no empty snapshot. failed: neither saved.
+                code = facts_error or ("partial-missing" if saved is not None else "NO_CHECKPOINT")
+                return _notification(notice(key, code, state_dir)["message"])
             event_key = digest(json.dumps({"trigger": event.get("trigger"), "cursor": cursor(resolve_transcript(event.get("transcript_path"))),
-                                          "revision": checkpoint["revision"] if checkpoint else None}, sort_keys=True))
+                                          "revision": checkpoint["revision"]}, sort_keys=True))
             snapshot(root, session, event_key)
-            return _notification(notice(key, None, state_dir)["message"])
+            if facts_error:
+                return _notification(notice(key, facts_error, state_dir, record_saved=True)["message"])
+            return _notification(notice(key, save_level(checkpoint, saved), state_dir)["message"])
         # Metadata only: the compaction summary may contain sensitive context.
         storage_ready(root)
         atomic_write(handoff_home(), session_dir(root, session) / "compaction.json",

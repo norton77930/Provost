@@ -285,20 +285,69 @@ class PreCompactTests(FactsCase):
     def event(self):
         return {"session_id": SESSION, "cwd": str(self.root), "hook_event_name": "PreCompact"}
 
-    def test_precompact_folds_facts_and_keeps_missing_checkpoint_behaviour(self):
+    def precompact(self):
         from provost_runtime.hooks import handle_event
+        return json.dumps(handle_event(self.event(), self.config_path))
+
+    def snapshots(self):
+        from provost_runtime.store import latest
+        return latest(self.root, SESSION)
+
+    def test_partial_missing_saves_facts_without_a_snapshot(self):
         self.write(self.agent("implementer", self.now - 9, self.root))
-        output = handle_event(self.event(), self.config_path)
-        self.assertIn("NO_CHECKPOINT", json.dumps(output))
+        output = self.precompact()
+        self.assertIn("facts saved, decision record missing.", output)
+        self.assertNotIn("NO_CHECKPOINT", output)
         self.assertEqual([a["role"] for a in self.stored(self.root)["agents"]], ["implementer"])
         self.assertFalse(self.spool().exists())
+        self.assertIsNone(self.snapshots())
+        self.assertFalse((session_dir(self.root, SESSION) / "snapshots").exists())
+
+    def test_partial_repeats_then_complete_save_recovers(self):
+        from provost_runtime.store import record
+        first = self.precompact()
+        self.assertEqual(first, self.precompact())
+        record(self.root, SESSION, self.payload(), None, "r1")
+        self.assertIn("handoff saving recovered", self.precompact())
+        self.assertEqual(self.precompact(), "{}")
+
+    def test_complete_when_facts_have_no_change_time(self):
+        from provost_runtime.store import record
+        record(self.root, SESSION, self.payload(), None, "r1")
+        self.write(self.agent("implementer", self.now - 9, self.root))
+        self.assertEqual(self.precompact(), "{}")
+        self.assertIsNone(self.stored(self.root)["last_change_at"])
+        self.assertIsNotNone(self.snapshots())
+
+    def test_complete_when_record_is_newer_than_last_change(self):
+        from provost_runtime.store import record
+        repo = self.repo("app")
+        self.write(self.edit(repo / "a.txt", self.now - 100, repo))
+        self.fold(self.root)
+        record(self.root, SESSION, self.payload(), None, "r1")
+        self.assertEqual(self.precompact(), "{}")
+        self.assertIsNotNone(self.snapshots())
+
+    def test_partial_stale_when_change_is_newer_than_record(self):
+        from provost_runtime.store import record
+        record(self.root, SESSION, self.payload(), None, "r1")
+        repo = self.repo("app")
+        self.write(self.edit(repo / "a.txt", self.now + 120, repo))
+        output = self.precompact()
+        self.assertIn("facts saved, decision record is older than the latest change.", output)
+        self.assertIsNotNone(self.snapshots())
+
+    def test_fold_failure_without_record_is_a_failed_save(self):
+        with mock.patch.object(facts, "fold", side_effect=RuntimeError("boom")):
+            output = self.precompact()
+        self.assertIn("handoff not saved, compaction continues. FACTS_FAILED", output)
+        self.assertIsNone(self.snapshots())
 
     def test_precompact_snapshots_even_when_fold_raises(self):
-        from provost_runtime.hooks import handle_event
-        from provost_runtime.store import latest, record
+        from provost_runtime.store import record
         record(self.root, SESSION, self.payload(), None, "r1")
         with mock.patch.object(facts, "fold", side_effect=RuntimeError("boom")) as fold:
-            output = handle_event(self.event(), self.config_path)
+            output = self.precompact()
         fold.assert_called_once()
-        self.assertEqual(output, {})
-        self.assertIsNotNone(latest(self.root, SESSION))
+        self.assertIn("decision record saved, facts not saved. FACTS_FAILED", output)
+        self.assertIsNotNone(self.snapshots())

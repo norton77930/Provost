@@ -44,8 +44,27 @@ class HookTests(FixtureCase):
         self.assertIn("terminalSequence", output)
 
     def test_missing_checkpoint_not_reported_as_saved(self):
-        output = handle_event(self.event("PreCompact"), self.config_path)
-        self.assertIn("NO_CHECKPOINT", json.dumps(output))
+        output = json.dumps(handle_event(self.event("PreCompact"), self.config_path))
+        self.assertIn("decision record missing", output)
+        self.assertNotIn("handoff saving recovered", output)
+
+    def test_compact_after_partial_save_asks_for_a_record_and_points_to_facts(self):
+        from provost_runtime.store import session_dir
+        handle_event(self.event("PreCompact"), self.config_path)
+        output = handle_event(self.event("SessionStart", "compact"), self.config_path)
+        self.assertEqual(output["systemMessage"],
+                         "Provost: last compaction saved facts only; write a decision record from the compaction "
+                         "summary before continuing (run status, then record).")
+        self.assertIn(str(session_dir(self.root, "s1") / "facts.json"), self.context(output))
+
+    def test_compact_after_failed_save_keeps_failure_warning(self):
+        from provost_runtime import facts
+        with mock.patch.object(facts, "fold", side_effect=StoreError("WRITE_FAILED")):
+            handle_event(self.event("PreCompact"), self.config_path)
+        output = handle_event(self.event("SessionStart", "compact"), self.config_path)
+        self.assertEqual(output["systemMessage"],
+                         "Provost: previous handoff save failed; verify any older checkpoint before continuing.")
+        self.assertNotIn("facts.json", self.context(output))
 
     def test_disabled_events_have_no_workspace_writes(self):
         self.config_path.unlink()
