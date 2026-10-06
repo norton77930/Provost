@@ -39,8 +39,32 @@ bash "<runtime>/hooks/runtime" status --workspace "<root>" --session "<session>"
 ```
 
 Output: expected (revision or null), checkpoint (complete current record or null),
+facts (summary of the session's `facts.json`, or null before the first PreCompact)
 and template (all required fields). Read-only. SESSION_NOT_BOUND means fix the
 session startup/workspace configuration; do not fabricate binding files.
+
+`facts` holds `path` (the facts.json file), `updated_at`, `last_change_at`, `repos`
+(at most 5: `root`, `branch`, `dirty` listed/`dirty_total` uncommitted entries,
+`commits` made during the session, `error`), `repos_omitted`, `agents` (dispatch
+count by role), `agents_omitted`, `files`/`files_omitted` (edited repo files kept
+or dropped by the size cap) and `outside_repo_count`. When facts exist,
+`template.sources` is prefilled with up to 10 most recently edited repo files as
+`{"kind": "file", "ref": <path>}`; delete or edit them like any other field.
+
+## Query what the session changed
+
+```bash
+bash "<runtime>/hooks/runtime" changes --workspace "<root>" --session "<session>"
+```
+
+Read-only: `facts.json` merged with the spool lines the next PreCompact would fold
+(the live spool and any `.folding-*` leftover past its recorded offset), plus a
+fresh `git` query of branch, uncommitted entries and session commits per repo.
+Nothing is written: not `facts.json`, not the spool. Output: `workspace`,
+`session_id`, `facts_path`, `folded_at` (when facts.json was last written, or null),
+`pending_events`, `pending_invalid` and `facts` (the merged body in the facts.json
+format, without checksum). Git decides the current state; the hook log only shows
+what the session touched.
 
 Claude Code moves a transcript to a sibling `<project>--claude-worktrees-<name>`
 project dir when a session enters a worktree; the runtime follows it (newest
@@ -112,8 +136,23 @@ Verify current sources, affected evidence and worker ownership before dispatch.
 A closed ticket and recorded running worker are observations, not proof of
 completion or current ownership. Do not duplicate uncertain live work.
 
-PreCompact snapshots existing records without a model call. No checkpoint means
-NO_CHECKPOINT, not a successful empty save. Startup/clear/fork do not adopt old tasks.
+SessionStart context stays within 8,000 characters (Claude Code replaces a larger
+one with a 2 KB preview) and never fails for its size. Startup, clear and fork
+carry identity, operations and the new-work notice only. Compact and resume add,
+in priority order: the save status with the required action (after a facts-only
+save: write a record from the compaction summary; status prefills facts and
+`template.sources`), the facts summary (one line per repo, at most 5: branch,
+uncommitted count, session commit count; a subagent count by role; edits outside
+repos; omitted without `facts.json`), the checkpoint (payload, or its digest when
+over 4,500 characters) and the edited repo files, most recent first. Over budget,
+whole items are replaced, never cut: the file list first (by the facts.json path),
+then the checkpoint payload (its digest, then only the checkpoint path), then the
+facts summary (by its path), and last the identity (paths and `status` usage only).
+
+PreCompact folds the facts spool into facts.json and snapshots an existing record,
+without a model call. Without a record the save is partial ("decision record
+missing"), never an empty snapshot; a record older than the latest change is
+partial-stale. Startup/clear/fork do not adopt old tasks.
 Notifications and host/model behavior still need a live pilot. Normal Bash path
 and payload input must satisfy project guards; report refusals rather than bypassing.
 
@@ -127,8 +166,13 @@ sessions that never recorded anything. `doctor` reports them as `stale_sessions`
 `prune` also lists, under `expired`, sessions that hold records or snapshots and
 whose newest activity is older than `--expired-older-than-days` (default 30).
 Activity is the newest record/snapshot timestamp (else file mtime) or the mtime of
-`binding.json`, `compaction.json`, `current.json`, `latest.json` or `horizon.json`,
-so a session resumed today is not expired. `--older-than-days` (default 14) applies
+`binding.json`, `compaction.json`, `current.json`, `latest.json`, `horizon.json` or
+`facts.json`, so a session resumed today is not expired. Each listed session (and
+reclaimable leftover) whose session id is known from `binding.json` or `facts.json`
+also names, under `facts_cache`, its existing files in `<provost dir>/cache/facts`:
+the spool `<session_id>.jsonl`, `.folding-*` spool leftovers and the three reminder
+flags. `--apply` deletes them after the session dir itself is removed; a failed
+delete is reported in `errors` with the file name in `left_at`. `--older-than-days` (default 14) applies
 to binding-only dirs only. `doctor` reports `expired_sessions` at the default age.
 `--apply` removes expired sessions (counted in `expired_removed`) with the same
 move, re-check and delete steps as below; a session that became fresh or locked in
@@ -193,7 +237,7 @@ hook, and for `UserPromptSubmit` as a sync hook.
 
 Nothing is written when the config lacks `"handoff": true`, the session id is not
 `[A-Za-z0-9-]+`, or the facts directory does not exist (the hook never creates
-it). The hook never blocks and always exits 0. It is pure bash with no
+it; SessionStart creates it, best effort, whenever handoff is enabled). The hook never blocks and always exits 0. It is pure bash with no
 interpreter, subprocess or pipe, because each process costs about 0.5 s on Windows.
 
 ```json

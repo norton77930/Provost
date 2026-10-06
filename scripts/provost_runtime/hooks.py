@@ -12,6 +12,9 @@ from .store import (StoreError, _base, as_workspace, atomic_write, current, dige
 PLUGIN = Path(__file__).resolve().parents[2]
 RECOVERY_PAYLOAD_LIMIT = 4500     # inline the payload in full up to this size; digest is capped to it too
 RECOVERY_ASSIGNMENT_LIMIT = 300   # per-assignment JSON cap inside the digest
+SESSION_START_BUDGET = 8000       # Claude Code swaps a larger additionalContext for a 2 KB preview
+PARTIAL_STATUS = ("Save status: the last compaction saved facts only. Before continuing, write a decision record "
+                  "from the compaction summary: run status (it prefills facts and template.sources), then record.")
 
 
 def workspace_root(cwd):
@@ -133,10 +136,7 @@ def _clip(text, limit):
     return head + "…"
 
 
-def _payload_text(payload):
-    full = json.dumps(payload, ensure_ascii=False)
-    if len(full) <= RECOVERY_PAYLOAD_LIMIT:
-        return "Observed payload: " + full
+def _digest_text(payload):
     digest = {"work_id": payload["work_id"], "phase": payload["phase"], "next": payload["next"],
               "blockers": payload["blockers"],
               # Stored keys are sorted; lead with task/agent_id so a cut keeps the identifying fields.
@@ -148,7 +148,15 @@ def _payload_text(payload):
             + _clip(json.dumps(digest, ensure_ascii=False), RECOVERY_PAYLOAD_LIMIT))
 
 
-def recovery_context(root, session):
+def _payload_text(payload):
+    full = json.dumps(payload, ensure_ascii=False)
+    if len(full) <= RECOVERY_PAYLOAD_LIMIT:
+        return "Observed payload: " + full
+    return _digest_text(payload)
+
+
+def _recovery(root, session):
+    """(header, payload, checkpoint path) of the newest checkpoint, or (message, None, None) without one."""
     # The latest milestone may be newer than the last compaction snapshot.
     root = as_workspace(root)
     data = current(root, session)
@@ -159,22 +167,98 @@ def recovery_context(root, session):
         # Only a session with nothing in the new store may read the old per-repo store.
         found = legacy.checkpoint(root, session)
         if found is None:
-            return "No checkpoint for this session. Verify current sources before continuing."
+            return "No checkpoint for this session. Verify current sources before continuing.", None, None
         data, path = found
         source = "Checkpoint source: legacy store (read-only); the first record starts a fresh chain in the new store.\n"
     else:
         kind = "records" if data["kind"] == "record" else "snapshots"
         ident = data["revision"] if kind == "records" else data["snapshot_id"]
         path = session_dir(root, session) / kind / (ident + ".json")
-    payload = _payload_text(data["payload"])
     return (source + "Saved observations, not current facts. Verify sources, code, evidence and worker state before acting. "
             "Do not duplicate a possibly running worker. Checkpoints can lag later decisions.\n"
             + "Checkpoint: " + str(path) + "\nRevision: " + data["revision"]
             + "\nTranscript cursor: " + ("available (not a freshness guarantee)" if data.get("transcript_cursor") else "unavailable; gaps must be checked")
             + "\nRead this JSON file for the complete checkpoint.\n"
             + "If any assignment is not marked completed, verify that worker's actual state before dispatching; "
-            + "read the checkpoint file for full details.\n"
-            + payload)
+            + "read the checkpoint file for full details.\n"), data["payload"], path
+
+
+def recovery_context(root, session):
+    header, payload, _ = _recovery(root, session)
+    return header if payload is None else header + _payload_text(payload)
+
+
+def _recovery_variants(root, session):
+    """Checkpoint section, richest first: payload (its digest when large), digest, path only."""
+    header, payload, path = _recovery(root, session)
+    if payload is None:
+        return [header]
+    return [header + _payload_text(payload), header + _digest_text(payload),
+            header + "Payload omitted for size; full checkpoint: " + str(path)]
+
+
+def _facts_variants(root, session):
+    """(facts summary variants, edited file list variants); both empty without a verified facts.json."""
+    try:
+        data, path = facts.stored(root, session)
+        if data is None:
+            return [], []
+        info = facts.summary(data, path)
+        files = facts.recent_files(data)
+    except (StoreError, OSError, KeyError, TypeError, AttributeError, ValueError):
+        return [], []
+    lines = ["Session facts (hook observations; git decides current state): " + info["path"]]
+    for repo in info["repos"]:
+        lines.append("- %s [%s] dirty %d/%d, session commits %d%s" % (
+            repo["root"], repo["branch"] or "unknown", repo["dirty"], repo["dirty_total"], repo["commits"],
+            "; error " + repo["error"] if repo["error"] else ""))
+    if info["repos_omitted"]:
+        lines.append("- %d more repos not listed" % info["repos_omitted"])
+    agents = ", ".join("%s x%d" % item for item in info["agents"].items()) or "none"
+    if info["agents_omitted"]:
+        agents += " (+%d older not listed)" % info["agents_omitted"]
+    lines += ["Subagents dispatched: " + agents, "Edits outside repos: %d" % info["outside_repo_count"]]
+    summary = ["\n".join(lines), "Session facts omitted for size: " + info["path"]]
+    if not files:
+        return summary, []
+    return summary, ["\n".join(["Edited repo files, most recent first:"] + ["- " + f for f in files]),
+                     "Edited repo files omitted for size; full list: " + info["path"]]
+
+
+def _fit(sections, steps, budget=SESSION_START_BUDGET):
+    """Join sections (each a list of variants, richest first) in display order within budget.
+
+    Each entry of steps moves that section to its next smaller variant while the text
+    is over budget, so a section is replaced whole and never cut. Only when every step
+    still overflows is the text clipped: SessionStart never fails for its size.
+    """
+    chosen = [0] * len(sections)
+
+    def text():
+        return "\n".join(s[i] for s, i in zip(sections, chosen) if s and s[i])
+
+    for index in steps:
+        if len(text()) > budget and chosen[index] + 1 < len(sections[index]):
+            chosen[index] += 1
+    result = text()
+    return result if len(result) <= budget else _clip(result, budget)
+
+
+def _policy(native):
+    if native:
+        return ("Native handoff runtime active. Follow personal CLAUDE.md for orchestration. "
+                "This context supplies runtime identity and operations, not a second dispatch policy.")
+    return (PLUGIN / "policies/adaptive-orchestration.md").read_text(encoding="utf-8")
+
+
+def _ensure_facts_dir(config_path):
+    """Best effort: the capture hook appends to cache/facts but cannot create it."""
+    cache = Path(config_path).parent / "cache"
+    try:
+        guard(cache, cache / "facts")
+        (cache / "facts").mkdir(parents=True, exist_ok=True)
+    except (StoreError, OSError):
+        pass
 
 
 def fold_facts(config_path, root, session):
@@ -231,10 +315,9 @@ def handle_event(event, config_path, *, native=False):
         state_dir = config_path.parent / "cache" / "notifications"
         key = root.repo_key + ":" + session
         if name == "SessionStart":
-            policy = ("Native handoff runtime active. Follow personal CLAUDE.md for orchestration. "
-                      "This context supplies runtime identity and operations, not a second dispatch policy."
-                      if native else (PLUGIN / "policies/adaptive-orchestration.md").read_text(encoding="utf-8"))
-            info = ("\nRuntime: " + str(PLUGIN / "hooks/runtime")
+            policy = _policy(native)
+            runtime = str(PLUGIN / "hooks/runtime")
+            info = ("\nRuntime: " + runtime
                     + "\nWorkspace: " + str(root.root) + "\nSession: " + session
                     + "\nWriter limits: normal=" + str(cfg["max_writers"]) + ", burst=" + str(cfg["burst_writers"])
                     + "\nHandoff: " + ("enabled" if enabled else "disabled; do not record or snapshot")
@@ -249,45 +332,51 @@ def handle_event(event, config_path, *, native=False):
                          + "\nRecord at plan approval, dispatch, result receipt or changed decisions/blockers."
                          + " Use snapshot for explicit /handoff. Never treat an unfilled template as saved work."
                          + "\nOn conflict rerun status and reconcile; do not force overwrite. A worktree and its main checkout share one handoff store.")
-            warning = ""
+            # Keep identity and restrictions; never slice a decision halfway.
+            short = ("Native handoff runtime. Personal policy remains authoritative." if native else
+                     "Provost adaptive mode. Read the policy before dispatch: "
+                     + str(PLUGIN / "policies/adaptive-orchestration.md"))
+            shortest = (short + "\nRuntime: " + runtime + "\nWorkspace: " + str(root.root) + "\nSession: " + session + "\n"
+                        + ("Use Bash: bash <quoted-runtime-path> status --workspace <quoted-workspace> --session <quoted-session>."
+                           if enabled else "Handoff: disabled; do not record or snapshot."))
+            # Display order: identity, save status, facts, checkpoint, edited files.
+            sections = [[policy + info, short + info, shortest], [], [], [], []]
+            status, warning, partial = [], "", False
             if enabled:
+                _ensure_facts_dir(config_path)
                 try:
                     bind(root, session, event)
-                    if source in ("compact", "resume"):
-                        recovery = recovery_context(root, session)
-                        facts_path = session_dir(root, session) / "facts.json"
-                        if recovery.startswith("No checkpoint for this session") and facts_path.exists():
-                            recovery += " Session facts (files, commits, agents) saved at: " + str(facts_path)
-                        info += "\n" + recovery
+                    recovering = source in ("compact", "resume")
+                    if recovering:
+                        sections[3] = _recovery_variants(root, session)
+                        sections[2], sections[4] = _facts_variants(root, session)
                     elif source in ("startup", "clear", "fork"):
-                        info += "\nNew work context: do not load or start old work unless explicitly requested."
+                        status.append("New work context: do not load or start old work unless explicitly requested.")
                     else:
-                        info += "\nUnrecognized session source: no automatic continuation."
+                        status.append("Unrecognized session source: no automatic continuation.")
                     cache = state_dir / (digest(key) + ".json")
                     guard(state_dir.parent, cache)
                     if cache.exists():
                         try:
                             saved = json.loads(cache.read_text(encoding="utf-8"))
                             if isinstance(saved, dict) and saved.get("error") in PARTIAL:
+                                partial = True
                                 warning = ("Provost: last compaction saved facts only; write a decision record from the "
                                            "compaction summary before continuing (run status, then record).")
                             elif isinstance(saved, dict) and saved.get("error"):
                                 warning = "Provost: previous handoff save failed; verify any older checkpoint before continuing."
                         except (OSError, UnicodeError, json.JSONDecodeError):
                             warning = "Provost: save health is unknown; verify checkpoint freshness."
+                    if recovering and warning:
+                        status.append(PARTIAL_STATUS if partial else "Save status: " + warning[len("Provost: "):])
                 except (StoreError, OSError) as exc:
                     code = str(exc) if isinstance(exc, StoreError) else "READ_FAILED"
                     warning = notice(key, code, state_dir)["message"]
-                    info += "\nCheckpoint unavailable; verify current sources. Error: " + code
-            text = policy + info
-            if len(text) > 8000:
-                # Keep identity and restrictions; never slice a decision halfway.
-                text = (("Native handoff runtime. Personal policy remains authoritative." if native else
-                         "Provost adaptive mode. Read the policy before dispatch: "
-                         + str(PLUGIN / "policies/adaptive-orchestration.md")) + info)
-            if len(text) > 8000:
-                raise StoreError("CONTEXT_TOO_LARGE")
-            return _context(text) | _notification(warning, True)
+                    status.append("Checkpoint unavailable; verify current sources. Error: " + code)
+            sections[1] = ["\n".join(status)] if status else []
+            # Edited files go first, then the checkpoint shrinks; a plugin policy yields before the checkpoint.
+            steps = (4, 3, 3, 2, 0, 0) if native else (4, 0, 3, 3, 2, 0)
+            return _context(_fit(sections, steps)) | _notification(warning, True)
         if not enabled:
             return {}
         if name == "PreCompact":

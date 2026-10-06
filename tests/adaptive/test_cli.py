@@ -216,3 +216,39 @@ class CliTests(FixtureCase):
         data = json.loads(self.run_cli("doctor", "--workspace", str(self.root)).stdout)
         self.assertIs(data["host_verified"], True)
         self.assertRegex(data["last_binding_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?\+00:00$")
+
+    def test_status_reports_facts_and_prefills_recent_sources(self):
+        from provost_runtime.store import validate_payload
+        bind(self.root, "s1", {})
+        args = ("status", "--workspace", str(self.root), "--session", "s1")
+        status = json.loads(self.run_cli(*args).stdout)
+        self.assertIsNone(status["facts"])
+        self.assertEqual(status["template"]["sources"], [])
+        path = self.seed_facts(files=12)
+        status = json.loads(self.run_cli(*args).stdout)
+        facts = status["facts"]
+        self.assertEqual(facts["path"], str(path))
+        self.assertEqual([(r["dirty"], r["dirty_total"], r["commits"], r["branch"]) for r in facts["repos"]],
+                         [(2, 7, 1, "main")])
+        self.assertEqual((facts["agents"], facts["outside_repo_count"], facts["files"]),
+                         ({"code-reviewer": 1, "implementer": 1}, 4, 12))
+        template = status["template"]
+        self.assertEqual(set(template), {"work_id", "phase", "sources", "assignments", "decisions", "blockers",
+                                         "evidence", "next", "suggested_skills"})
+        self.assertEqual([s["ref"][:13] for s in template["sources"]], ["C:/repo/f%04d" % i for i in range(11, 1, -1)])
+        self.assertTrue(all(s["kind"] == "file" and set(s) == {"kind", "ref"} for s in template["sources"]))
+        validate_payload(dict(template, work_id="w", phase="p", next="n"))
+        self.assertIsNone(status["expected"])
+
+    def test_changes_is_registered_and_read_only(self):
+        from provost_runtime.store import session_dir
+        args = ("changes", "--workspace", str(self.root), "--session", "s1")
+        self.assertEqual(json.loads(self.run_cli(*args).stdout), {"error": "SESSION_NOT_BOUND"})
+        bind(self.root, "s1", {})
+        result = self.run_cli(*args)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual((data["session_id"], data["pending_events"], data["folded_at"]), ("s1", 0, None))
+        self.assertEqual(data["facts"]["files"], [])
+        self.assertFalse((session_dir(self.root, "s1") / "facts.json").exists())
+        self.assertFalse((self.config_path.parent / "cache").exists())

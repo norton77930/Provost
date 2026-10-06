@@ -5,16 +5,18 @@ import json
 import sys
 from pathlib import Path
 
-from . import legacy
+from . import facts, legacy
 from .config import ConfigError, config_path, handoff_home, load_config, resolve_mode
 from .hooks import (bind, binding, cursor, handle_event, last_binding_at, recovery_context,
                     resolve_transcript, workspace_root)
 from .facts import SPOOL_SESSION
-from .store import StoreError, current, guard, latest, list_snapshots, prune, record, snapshot, storage_ready
+from .store import (FACTS_FLAGS, StoreError, current, guard, latest, list_snapshots, prune, record, snapshot,
+                    storage_ready)
 
 
 RUNTIME_ROOT = Path(__file__).resolve().parents[2]
-REMINDER_FLAGS = ("pending-edit", "pending-dispatch", "reminded")  # touched by hooks/native-facts
+REMINDER_FLAGS = FACTS_FLAGS  # touched by hooks/native-facts
+STATUS_SOURCES = 10  # recent repo files prefilled into template.sources
 
 
 def clear_reminder_flags(cfg_path, session):
@@ -69,7 +71,7 @@ def main(argv=None):
         return 0
     try:
         parser = Parser()
-        parser.add_argument("command", choices=["doctor", "record", "snapshot", "list", "resume", "status", "prune"])
+        parser.add_argument("command", choices=["doctor", "record", "snapshot", "list", "resume", "status", "changes", "prune"])
         parser.add_argument("--workspace", required=True)
         parser.add_argument("--session")
         parser.add_argument("--expected")
@@ -112,7 +114,8 @@ def main(argv=None):
             elif options.command == "prune":
                 result = prune(root, older_than_days=options.older_than_days,
                                expired_older_than_days=options.expired_older_than_days,
-                               keep_session=options.session, apply=options.apply)
+                               keep_session=options.session, apply=options.apply,
+                               facts_cache=config_path().parent / "cache" / "facts")
             else:
                 if not options.session:
                     raise StoreError("SESSION_REQUIRED")
@@ -138,9 +141,20 @@ def main(argv=None):
                               "checkpoint": old[0] if old else checkpoint,
                               **({"legacy": True, "legacy_path": str(old[1])} if old else {}),
                               **({"legacy_binding": True} if old_binding else {}),
+                              "facts": None,
                               "template": {"work_id": "", "phase": "", "sources": [],
                                            "assignments": [], "decisions": [], "blockers": [],
                                            "evidence": [], "next": "", "suggested_skills": []}}
+                    try:
+                        stored, stored_path = facts.stored(root, options.session)
+                    except (StoreError, OSError):
+                        stored = None  # facts are a convenience; status stays readable without them
+                    if stored:
+                        result["facts"] = facts.summary(stored, stored_path)
+                        result["template"]["sources"] = [{"kind": "file", "ref": path}
+                                                         for path in facts.recent_files(stored, STATUS_SOURCES)]
+                elif options.command == "changes":
+                    result = facts.changes(config_path(), root, options.session)
                 elif options.command == "record":
                     if options.expected is None or not options.request_id:
                         raise StoreError("EXPECTED_REVISION_AND_REQUEST_REQUIRED")

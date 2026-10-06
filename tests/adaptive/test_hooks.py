@@ -114,6 +114,121 @@ class HookTests(FixtureCase):
         self.assertNotEqual(output.get("decision"), "block")
 
 
+class SessionStartBudgetTests(FixtureCase):
+    """SessionStart context: priority order, whole-item degradation, never over 8000, never an error."""
+
+    def event(self, source, session="s1"):
+        return {"session_id": session, "cwd": str(self.root), "hook_event_name": "SessionStart", "source": source}
+
+    def start(self, source="compact", native=True):
+        output = handle_event(self.event(source), self.config_path, native=native)
+        text = output.get("hookSpecificOutput", {}).get("additionalContext", "")
+        self.assertNotIn("unavailable", output.get("systemMessage", ""))
+        self.assertLessEqual(len(text), 8000)
+        return text
+
+    def test_startup_clear_fork_carry_no_facts(self):
+        record(self.root, "s1", self.payload(), None, "r")
+        self.seed_facts()
+        for source in ("startup", "clear", "fork"):
+            text = self.start(source)
+            self.assertNotIn("Session facts", text)
+            self.assertNotIn("f0002", text)
+            self.assertIn("New work context", text)
+
+    def test_compact_lists_facts_record_and_files_in_priority_order(self):
+        record(self.root, "s1", self.payload("small next"), None, "r")
+        path = self.seed_facts()
+        text = self.start()
+        order = [text.index(marker) for marker in
+                 ("Native handoff runtime active", "Session facts", "small next", "f0002", "f0000")]
+        self.assertEqual(order, sorted(order))
+        self.assertIn(str(path), text)
+        self.assertIn("dirty 2/7, session commits 1", text)
+        self.assertIn("code-reviewer x1, implementer x1", text)
+        self.assertIn("Edits outside repos: 4", text)
+
+    def test_resume_without_facts_omits_the_section(self):
+        record(self.root, "s1", self.payload("small next"), None, "r")
+        text = self.start("resume")
+        self.assertIn("small next", text)
+        self.assertNotIn("Session facts", text)
+
+    def test_file_list_is_dropped_first(self):
+        record(self.root, "s1", self.payload("small next"), None, "r")
+        path = self.seed_facts(files=300, name_chars=40)
+        text = self.start()
+        self.assertNotIn("f0299", text)
+        self.assertIn("full list: " + str(path), text)
+        self.assertIn("Observed payload: ", text)
+        self.assertIn("small next", text)
+
+    def test_record_shrinks_to_digest_then_to_its_path(self):
+        payload = self.payload("keep next")
+        payload["decisions"] = ["decision %d %s" % (i, "d" * 330) for i in range(12)]  # full JSON still <= 4500
+        written = record(self.root, "s1", payload, None, "r")
+        self.seed_facts(files=300, repos=5, agents=40, name_chars=300)
+        text = self.start()
+        self.assertIn("Observed payload digest", text)
+        self.assertIn("decision 11", text)
+        self.assertNotIn("decision 8 ", text)
+        self.assertIn("Session facts", text)
+        payload["decisions"] = ["decision %d %s" % (i, "d" * 1400) for i in range(12)]
+        record(self.root, "s1", payload, written["revision"], "r2")
+        self.seed_facts(files=300, repos=5, agents=40, name_chars=400)
+        text = self.start()
+        self.assertNotIn("Observed payload", text)
+        self.assertIn("full checkpoint: ", text)
+        self.assertIn("records", text.split("full checkpoint: ")[1])
+        self.assertIn("Session facts", text)
+        self.assertIn("dirty 2/7", text)
+
+    def test_partial_save_status_is_kept_with_the_facts(self):
+        handle_event({"session_id": "s1", "cwd": str(self.root), "hook_event_name": "PreCompact"}, self.config_path)
+        self.seed_facts(files=300, repos=5, agents=40, name_chars=300)
+        text = self.start()
+        self.assertIn("write a decision record from the compaction summary", text)
+        self.assertIn("template.sources", text)
+        self.assertIn("Session facts", text)
+        self.assertIn("full list: ", text)
+
+    def test_oversized_identity_falls_back_to_its_shortest_form(self):
+        from provost_runtime import hooks
+        record(self.root, "s1", self.payload("small next"), None, "r")
+        self.seed_facts(files=300, repos=5, agents=40, name_chars=300)
+        for chars, native in ((2600, True), (2600, False), (9000, True)):
+            with self.subTest(chars=chars, native=native), \
+                    mock.patch.object(hooks, "PLUGIN", Path("C:/" + "p" * chars)), \
+                    mock.patch.object(hooks, "_policy", return_value="POLICY " * 3000):
+                text = self.start(native=native)
+                if chars < 8000:
+                    self.assertIn("status --workspace", text)
+                    self.assertNotIn("Writer limits", text)
+                    self.assertIn("Session: s1", text)
+
+    def test_every_oversized_combination_stays_within_budget(self):
+        expected = None
+        for files, repos, agents, chars, decisions in ((0, 0, 0, 10, 0), (400, 5, 300, 400, 30),
+                                                       (400, 0, 0, 900, 0), (0, 5, 300, 900, 30)):
+            with self.subTest(files=files, repos=repos, chars=chars):
+                payload = self.payload("n" * 3000)
+                payload["decisions"] = ["d" * 900] * decisions
+                expected = record(self.root, "s1", payload, expected, "r-%d-%d" % (files, chars))["revision"]
+                self.seed_facts(files, repos, agents, chars)
+                self.start("compact")
+                self.start("resume", native=False)
+
+    def test_session_start_creates_the_facts_cache_dir(self):
+        facts_dir = self.config_path.parent / "cache" / "facts"
+        self.start("startup")
+        self.assertTrue(facts_dir.is_dir())
+        self.cfg["handoff"] = False
+        self.config_path.write_text(json.dumps(self.cfg))
+        facts_dir.rmdir()
+        self.start("startup")
+        self.assertFalse(facts_dir.exists())
+
+
 class TranscriptFallbackTests(FixtureCase):
     def transcript(self, project, session="sess.jsonl", age=0):
         path = self.root / "projects" / project / session

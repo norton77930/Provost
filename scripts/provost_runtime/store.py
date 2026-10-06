@@ -610,7 +610,10 @@ def _reclaim(root, directory, cutoff, expiry_cutoff=None, repo_key=None):
 
 BINDING_ONLY_DAYS = 14
 EXPIRY_DAYS = 30
-SESSION_FILES = {"binding.json", "horizon.json", "current.json", "latest.json", "compaction.json", ".lock"}
+SESSION_FILES = {"binding.json", "horizon.json", "current.json", "latest.json", "compaction.json", "facts.json", ".lock"}
+# Per-session files of the native-facts cache (<config dir>/cache/facts), keyed by the raw session id.
+CACHE_SESSION = re.compile(r"^[A-Za-z0-9-]+$")
+FACTS_FLAGS = ("pending-edit", "pending-dispatch", "reminded")
 # Rewritten on resume (binding), compaction and every write; their mtime counts as activity.
 ACTIVITY_FILES = SESSION_FILES - {".lock"}
 
@@ -737,12 +740,50 @@ def _remove_expired(home, entry, staging, cutoff, repo_key):
     return True
 
 
+def _cache_of(home, directory, name, cache):
+    """Existing facts-cache files (spool, claimed leftovers, reminder flags) of the session stored
+    in directory; [] without a cache dir or a session id (binding.json, else facts.json) whose
+    digest is name. Never follows links."""
+    if cache is None:
+        return []
+    session = None
+    for file in ("binding.json", "facts.json"):
+        guard(home, directory / file)
+        data = _load(directory / file)
+        found = data.get("session_id") if data else None
+        if isinstance(found, str) and digest(found) == name:
+            session = found
+            break
+    if session is None or not CACHE_SESSION.fullmatch(session):
+        return []
+    cache = Path(cache)
+    try:
+        guard(cache.parent, cache)
+        paths = [cache / (session + ".jsonl"), *[cache / (session + "." + flag) for flag in FACTS_FLAGS],
+                 *sorted(cache.glob(session + ".jsonl.folding-*"))]
+        for path in paths:
+            guard(cache.parent, path)
+    except StoreError:
+        return []  # a linked cache is left alone
+    return [path for path in paths if path.is_file()]
+
+
+def _drop_cache(result, name, paths):
+    """Best effort after the session itself is gone; a failure is reported, never raised."""
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            result["errors"].append({"session_dir": name, "error": type(exc).__name__, "left_at": path.name})
+
+
 def _expired_leftover(home, directory, cutoff, repo_key):
     """True for a staging dir holding an expired, unlocked session of this repo (an interrupted delete)."""
     return _is_expired(_scan(home, directory), cutoff, repo_key) and not _lock_held(home, directory)
 
 
-def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_session=None, apply=False, now=None):
+def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_session=None, apply=False, now=None,
+          facts_cache=None):
     """List (or with apply, remove) abandoned session dirs; dry-run unless apply.
 
     Two kinds, each with its own age: dirs holding only an old binding.json
@@ -758,6 +799,9 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
     before session dirs, so a leftover is cleared before its own session is moved
     aside again. The kept session's own leftover is listed as kept, never reclaimed.
     Only the current store is pruned; legacy stores are never touched.
+    With facts_cache (the native-facts cache dir), each listed entry whose session id is
+    known names that session's existing cache files (`facts_cache`: spool, claimed spool
+    leftovers, reminder flags); under apply they are deleted once the session itself is.
     """
     for days in (older_than_days, expired_older_than_days):
         if days is not None and (not isinstance(days, int) or isinstance(days, bool) or days < 1):
@@ -786,9 +830,12 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
                 state = _leftover_state(home, entry, cutoff)
                 if state == "kept" and _expired_leftover(home, entry, expiry_cutoff, ws.repo_key):
                     state = "reclaimable"
-                result["leftovers"].append({"staging_dir": entry.name, "state": state})
+                item = {"staging_dir": entry.name, "state": state}
+                cached = _cache_of(home, entry, entry.name[len(".pruning-"):], facts_cache) if state == "reclaimable" else []
+                result["leftovers"].append(item | ({"facts_cache": [str(p) for p in cached]} if cached else {}))
                 if apply and state == "reclaimable" and _reclaim(home, entry, cutoff, expiry_cutoff, ws.repo_key):
                     result["reclaimed"] += 1
+                    _drop_cache(result, entry.name, cached)
             except StoreError as exc:
                 result["skipped"].append({"entry": entry.name, "reason": str(exc)})
             except OSError as exc:
@@ -815,22 +862,28 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
                 if _lock_held(home, entry):
                     result["skipped"].append({"entry": entry.name, "reason": "STORE_BUSY"})
                     continue
+                cached = _cache_of(home, entry, entry.name, facts_cache)
                 result["expired"].append({
                     "session_dir": entry.name, "records": scan.records, "snapshots": scan.snapshots,
-                    "newest": datetime.fromtimestamp(scan.newest, timezone.utc).isoformat()})
+                    "newest": datetime.fromtimestamp(scan.newest, timezone.utc).isoformat(),
+                    **({"facts_cache": [str(p) for p in cached]} if cached else {})})
                 if apply and _remove_expired(home, entry, staging, expiry_cutoff, ws.repo_key):
                     result["expired_removed"] += 1
+                    _drop_cache(result, entry.name, cached)
                 continue
             binding, info = found
             try:
                 session_id = json.loads(binding.read_text(encoding="utf-8")).get("session_id")
             except (OSError, ValueError, AttributeError):
                 session_id = None
+            cached = _cache_of(home, entry, entry.name, facts_cache)
             result["candidates"].append({
                 "session_dir": entry.name, "session_id": session_id if isinstance(session_id, str) else None,
-                "bound_at": datetime.fromtimestamp(info.st_mtime, timezone.utc).isoformat()})
+                "bound_at": datetime.fromtimestamp(info.st_mtime, timezone.utc).isoformat(),
+                **({"facts_cache": [str(p) for p in cached]} if cached else {})})
             if apply and _remove_stale(home, entry, staging, info):
                 result["removed"] += 1
+                _drop_cache(result, entry.name, cached)
         except StoreError as exc:
             result["skipped"].append({"entry": entry.name, "reason": str(exc)})
         except OSError as exc:

@@ -4,6 +4,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from _support import FixtureCase, REPO
 from provost_runtime.hooks import bind
 from provost_runtime.store import digest, prune, record, session_dir, snapshot as store_snapshot
@@ -512,6 +513,84 @@ class ExpiredPruneTests(FixtureCase):
         self.assertEqual(listing(), before)
 
 
+class FactsPruneTests(FixtureCase):
+    """facts.json is ordinary session content; a pruned session takes its facts-cache files along."""
+
+    def setUp(self):
+        super().setUp()
+        self.cache = self.root / "cache" / "facts"
+        self.cache.mkdir(parents=True)
+
+    def cache_files(self, session):
+        names = [session + ".jsonl", session + ".jsonl.folding-" + "a" * 32,
+                 session + ".pending-edit", session + ".pending-dispatch", session + ".reminded"]
+        for name in names:
+            (self.cache / name).write_text("x", encoding="utf-8")
+        return sorted(str(self.cache / name) for name in names)
+
+    def expired_session(self, name, days):
+        bind(self.root, name, {})
+        record(self.root, name, self.payload(), None, "r1")
+        self.seed_facts(session=name)
+        directory = session_dir(self.root, name)
+        backdate(directory, days)
+        age(directory / "facts.json", days)
+        return directory
+
+    def test_expired_session_with_facts_is_listed_with_its_cache_and_removed_together(self):
+        old = self.expired_session("old", 40)
+        fresh = self.expired_session("fresh", 2)
+        listed = self.cache_files("old")
+        kept = self.cache_files("fresh") + [str(self.cache / "old2.jsonl"), str(self.cache / "s-old.jsonl")]
+        for path in kept[-2:]:
+            Path(path).write_text("x", encoding="utf-8")
+        dry = prune(self.root, facts_cache=self.cache)
+        self.assertEqual([(e["session_dir"], sorted(e["facts_cache"])) for e in dry["expired"]], [(old.name, listed)])
+        self.assertTrue(all(Path(p).exists() for p in listed))
+        result = prune(self.root, facts_cache=self.cache, apply=True)
+        self.assertEqual((result["expired_removed"], result["errors"]), (1, []))
+        self.assertFalse(old.exists())
+        self.assertEqual([p for p in listed if Path(p).exists()], [])
+        self.assertTrue(fresh.is_dir() and all(Path(p).exists() for p in kept))
+
+    def test_binding_only_candidate_takes_its_cache(self):
+        bind(self.root, "gone", {})
+        age(session_dir(self.root, "gone") / "binding.json", 30)
+        listed = self.cache_files("gone")
+        dry = prune(self.root, facts_cache=self.cache)
+        self.assertEqual(sorted(dry["candidates"][0]["facts_cache"]), listed)
+        result = prune(self.root, facts_cache=self.cache, apply=True)
+        self.assertEqual((result["removed"], result["errors"]), (1, []))
+        self.assertEqual([p for p in listed if Path(p).exists()], [])
+
+    def test_cache_is_kept_without_a_matching_session_id_or_cache_dir(self):
+        bind(self.root, "named", {})
+        path = session_dir(self.root, "named") / "binding.json"
+        path.write_text(json.dumps(dict(json.loads(path.read_text(encoding="utf-8")), session_id="other")),
+                        encoding="utf-8")
+        age(path, 30)
+        listed = self.cache_files("other")
+        dry = prune(self.root, facts_cache=self.cache)
+        self.assertNotIn("facts_cache", dry["candidates"][0])
+        prune(self.root, facts_cache=self.cache, apply=True)
+        self.assertTrue(all(Path(p).exists() for p in listed))
+
+    def test_failed_delete_keeps_the_cache_until_the_leftover_is_reclaimed(self):
+        from unittest import mock
+        old = self.expired_session("stuck", 90)
+        listed = self.cache_files("stuck")
+        with mock.patch("provost_runtime.store.shutil.rmtree", side_effect=PermissionError("in use")):
+            first = prune(self.root, facts_cache=self.cache, apply=True)
+        self.assertEqual(first["expired_removed"], 0)
+        self.assertTrue(all(Path(p).exists() for p in listed))
+        dry = prune(self.root, facts_cache=self.cache)
+        self.assertEqual(sorted(dry["leftovers"][0]["facts_cache"]), listed)
+        second = prune(self.root, facts_cache=self.cache, apply=True)
+        self.assertEqual((second["reclaimed"], second["errors"]), (1, []))
+        self.assertFalse((old.parent / (".pruning-" + old.name)).exists())
+        self.assertEqual([p for p in listed if Path(p).exists()], [])
+
+
 class PruneCliTests(FixtureCase):
     def run_cli(self, *args):
         env = dict(os.environ, PYTHONPATH=str(REPO / "scripts"),
@@ -534,6 +613,21 @@ class PruneCliTests(FixtureCase):
         code, data = self.run_cli("prune", "--workspace", str(self.root), "--apply")
         self.assertEqual((code, data["removed"]), (0, 1))
         self.assertFalse(session_dir(self.root, "old").exists())
+
+    def test_cli_prune_lists_and_removes_the_facts_cache_beside_the_config(self):
+        self.aged("old", 30)
+        cache = self.config_path.parent / "cache" / "facts"
+        cache.mkdir(parents=True)
+        spool, other = cache / "old.jsonl", cache / "new.jsonl"
+        for path in (spool, other):
+            path.write_text("x", encoding="utf-8")
+        code, data = self.run_cli("prune", "--workspace", str(self.root))
+        self.assertEqual((code, data["candidates"][0]["facts_cache"]), (0, [str(spool)]))
+        self.assertTrue(spool.exists())
+        code, data = self.run_cli("prune", "--workspace", str(self.root), "--apply")
+        self.assertEqual((code, data["removed"]), (0, 1))
+        self.assertFalse(spool.exists())
+        self.assertTrue(other.exists())
 
     def test_cli_prune_honours_age_and_kept_session(self):
         self.aged("a", 5)

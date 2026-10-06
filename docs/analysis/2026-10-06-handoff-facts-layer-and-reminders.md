@@ -113,7 +113,8 @@ PreCompact 的 Python 端依序執行：
 
 - 新增檔案 `<session_dir>/facts.json`，與 `binding.json`、`current.json` 同層。
 - 格式：`{"schema_version": 1, "kind": "facts", "workspace_id", "session_id", "updated_at", "last_change_at", "files": [...], "outside_repo_count", "agents": [...], "worktrees": [...], "repos": [{"root", "branch", "first_touched_at", "dirty": [...], "commits": [...], "error"}], "checksum"}`。
-- `last_change_at` 取以下幾個時間中最新的一個：最後一次改檔、最後一次 commit、git 偵測到未 commit 修改的時間。
+- `last_change_at` 取以下幾個時間中最新的一個：最後一次改檔（hook 紀錄）、session 期間最新 commit 的時間、未 commit 檔案的實際修改時間（檔案 mtime；已刪除的檔案略過）。
+  - 2026-10-06 修訂：原本寫「git 偵測到未 commit 修改的時間」，實作成「整理當下的時間」。結果只要 repo 有未 commit 的修改，每次壓縮都會被判成過時，就算 AI 剛寫完紀錄也一樣。改用 mtime 可以同時涵蓋用腳本改的檔案。
 - record 與 snapshot 的格式不變；事實獨立存放。這是本規格唯一的儲存格式新增，因此屬於 R2。
 - 大小上限 64 KB。超過時依序刪減：先刪 `files` 的舊項目，再刪 `agents` 的舊項目，最後刪 `dirty` 超過 50 筆的部分。
 

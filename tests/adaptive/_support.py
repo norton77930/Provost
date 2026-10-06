@@ -99,6 +99,26 @@ class FixtureCase(unittest.TestCase):
                 "assignments": [], "decisions": [], "blockers": [], "evidence": [],
                 "next": next_step, "suggested_skills": []}
 
+    def seed_facts(self, files=3, repos=1, agents=2, name_chars=20, session="s1"):
+        """A sealed facts.json for session: files f0000.. (newest last), repos with 2 of 7 dirty and 1 commit."""
+        from provost_runtime.config import handoff_home
+        from provost_runtime.store import _seal, as_workspace, atomic_write, session_dir
+        ws = as_workspace(self.root)
+        body = {"schema_version": 1, "kind": "facts", "workspace_id": ws.repo_key, "session_id": session,
+                "updated_at": "2026-10-06T00:00:00+00:00", "last_change_at": "2026-10-06T00:00:00+00:00",
+                "files": [{"path": "C:/repo/f%04d-%s.py" % (i, "n" * name_chars), "count": 1, "last_ts": 1000 + i,
+                           "agents": [""]} for i in range(files)],
+                "files_omitted": 0, "outside_repo_count": 4,
+                "agents": [{"role": "implementer" if i % 2 else "code-reviewer", "desc": "d", "bg": False, "ts": i}
+                           for i in range(agents)], "agents_omitted": 0, "worktrees": [],
+                "repos": [{"root": "C:/repo%d-%s" % (i, "r" * name_chars), "branch": "main", "first_touched_at": "x",
+                           "last_touched_at": "x", "dirty": [{"status": " M", "path": "a"}] * 2, "dirty_total": 7,
+                           "commits": [{"hash": "abc", "subject": "s"}], "error": None} for i in range(repos)],
+                "repos_omitted": 0, "spool_errors": 0, "spool_consumed": {}}
+        path = session_dir(ws, session) / "facts.json"
+        atomic_write(handoff_home(), path, _seal(body))
+        return path
+
     def seed_snapshot(self):
         from provost_runtime.store import record, snapshot
         record(self.root, "s1", self.payload(), None, "r1")

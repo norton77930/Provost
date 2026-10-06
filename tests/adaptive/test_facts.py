@@ -136,13 +136,14 @@ class FoldTests(FactsCase):
         self.assertEqual(entry["dirty"], [])
         self.assertEqual(data["last_change_at"], facts._iso(self.now - 50))
 
-    def test_restored_file_shows_no_dirty_entry_and_dirty_marks_now(self):
+    def test_restored_file_shows_no_dirty_entry_and_dirty_marks_its_mtime(self):
         repo = self.repo("a")
         self.commit(repo, "add x", self.now - 3000, "x.py")
         (repo / "x.py").write_text("edited", encoding="utf-8")
+        os.utime(repo / "x.py", (self.now - 50, self.now - 50))
         self.write(self.edit(repo / "x.py", self.now - 100, repo))
         dirty = facts.fold(self.config_path, repo, SESSION, now=self.now)
-        self.assertEqual(dirty["last_change_at"], facts._iso(self.now))
+        self.assertEqual(dirty["last_change_at"], facts._iso(self.now - 50))
         self.git("checkout", "--", "x.py", cwd=repo)
         data = self.fold(repo)
         self.assertEqual(self.repo_entry(data, repo)["dirty"], [])
@@ -351,3 +352,99 @@ class PreCompactTests(FactsCase):
         fold.assert_called_once()
         self.assertIn("decision record saved, facts not saved. FACTS_FAILED", output)
         self.assertIsNotNone(self.snapshots())
+
+
+class LastChangeTests(FactsCase):
+    """last_change_at: newest of hook edits, session commits and dirty files' mtimes, never the fold time."""
+
+    def level(self, repo, now):
+        from provost_runtime.hooks import save_level
+        from provost_runtime.store import current
+        return save_level(current(self.root, SESSION), facts.fold(self.config_path, repo, SESSION, now=now))
+
+    def dirty_repo(self, mtime):
+        repo = self.repo("app")
+        self.commit(repo, "add x", self.now - 3000, "x.py")
+        (repo / "x.py").write_text("edited", encoding="utf-8")
+        os.utime(repo / "x.py", (mtime, mtime))
+        self.write(self.dir_event(repo, self.now - 500, repo))
+        return repo
+
+    def test_old_dirty_file_does_not_make_a_fresh_record_stale(self):
+        from provost_runtime.store import record
+        repo = self.dirty_repo(self.now - 500)
+        (repo / "gone.py").write_text("x", encoding="utf-8")
+        self.git("add", "gone.py", cwd=repo)
+        (repo / "gone.py").unlink()  # a dirty entry without a file is skipped
+        record(self.root, SESSION, self.payload(), None, "r1")
+        self.assertIsNone(self.level(repo, self.now + 60))
+        self.assertEqual(self.stored(repo)["last_change_at"], facts._iso(self.now - 500))
+
+    def test_dirty_file_modified_after_the_record_is_stale(self):
+        from provost_runtime.store import record
+        repo = self.dirty_repo(self.now - 500)
+        record(self.root, SESSION, self.payload(), None, "r1")
+        os.utime(repo / "x.py", (self.now + 120, self.now + 120))  # e.g. a script edit the hook never saw
+        self.assertEqual(self.level(repo, self.now), "partial-stale")
+
+    def test_commit_after_the_record_is_stale(self):
+        from provost_runtime.store import record
+        repo = self.repo("app")
+        self.write(self.dir_event(repo, self.now - 500, repo))
+        record(self.root, SESSION, self.payload(), None, "r1")
+        self.commit(repo, "later", self.now + 120)
+        self.assertEqual(self.level(repo, self.now), "partial-stale")
+
+
+class ChangesTests(FactsCase):
+    def test_changes_merge_stored_live_and_leftover_lines_without_writing(self):
+        repo = self.repo("app")
+        self.write(self.edit(repo / "x.py", self.now - 90, repo))
+        with mock.patch.object(facts._Spool, "release"):  # an interrupted fold leaves its claimed file
+            facts.fold(self.config_path, self.root, SESSION)
+        claimed, = self.spool().parent.glob(SESSION + ".jsonl.folding-*")
+        with claimed.open("ab") as stream:
+            stream.write((json.dumps(self.edit(repo / "z.py", self.now - 60, repo)) + "\n").encode("utf-8"))
+        self.write(self.edit(repo / "y.py", self.now - 50, repo), '{"partial')
+        self.spool().write_bytes(self.spool().read_bytes()[:-1])  # a line still being appended
+        self.commit(repo, "during session", self.now - 10)
+        (repo / "dirty.txt").write_text("d", encoding="utf-8")
+        target = session_dir(self.root, SESSION) / "facts.json"
+        before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in (target, claimed, self.spool())}
+        listing = sorted(self.spool().parent.iterdir())
+        data = facts.changes(self.config_path, self.root, SESSION)
+        self.assertEqual({p: (p.read_bytes(), p.stat().st_mtime_ns) for p in before}, before)
+        self.assertEqual(sorted(self.spool().parent.iterdir()), listing)
+        self.assertEqual((data["pending_events"], data["pending_invalid"]), (2, 0))
+        self.assertEqual(data["folded_at"], self.stored(self.root)["updated_at"])
+        self.assertEqual(data["facts_path"], str(target))
+        body = data["facts"]
+        self.assertEqual(sorted((Path(f["path"]).name, f["count"]) for f in body["files"]),
+                         [("x.py", 1), ("y.py", 1), ("z.py", 1)])
+        entry = self.repo_entry(body, repo)
+        self.assertEqual([c["subject"] for c in entry["commits"]], ["during session"])
+        self.assertEqual([d["path"] for d in entry["dirty"]], ["dirty.txt"])
+        self.assertNotIn("checksum", body)
+        self.assertNotIn("spool_consumed", body)
+
+    def test_changes_without_facts_or_spool_creates_nothing(self):
+        data = facts.changes(self.config_path, self.root, SESSION)
+        self.assertEqual((data["pending_events"], data["folded_at"], data["facts"]["files"]), (0, None, []))
+        self.assertFalse((self.root / "cache").exists())
+        self.assertFalse(session_dir(self.root, SESSION).exists())
+
+    def test_cli_changes_reads_through_the_runtime(self):
+        import contextlib
+        import io
+        from provost_runtime import cli
+        from provost_runtime.hooks import bind
+        repo = self.repo("app")
+        bind(self.root, SESSION, {})
+        self.write(self.edit(repo / "x.py", self.now - 9, repo))
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, PROVOST_CONFIG=str(self.config_path)), contextlib.redirect_stdout(out):
+            code = cli.main(["changes", "--workspace", str(self.root), "--session", SESSION])
+        self.assertEqual(code, 0, out.getvalue())
+        data = json.loads(out.getvalue())
+        self.assertEqual([Path(f["path"]).name for f in data["facts"]["files"]], ["x.py"])
+        self.assertTrue(self.spool().exists())

@@ -262,6 +262,18 @@ def _inspect(git, repo):
     return entry, newest
 
 
+def _dirty_mtimes(entry):
+    """mtimes of the (capped) dirty paths that still exist: a script edit the hook never
+    saw still dates the change, and an old uncommitted file does not look new."""
+    found = []
+    for item in entry["dirty"]:
+        try:
+            found.append(os.stat(Path(entry["root"]) / item["path"]).st_mtime)
+        except (OSError, ValueError):
+            continue  # deleted or unreadable
+    return found
+
+
 def summarize(ws, session, state, git, now):
     """facts.json body (unsealed) from the gathered state plus live git facts, within MAX_BYTES."""
     ranked = sorted(state["repos"].values(), key=lambda r: r["last_touched_at"], reverse=True)
@@ -271,8 +283,7 @@ def summarize(ws, session, state, git, now):
         repos.append(entry)
         if newest is not None:
             changes.append(newest)
-        if entry["dirty_total"]:
-            changes.append(now)
+        changes.extend(_dirty_mtimes(entry))
     files = sorted(state["files"].values(), key=lambda f: (f["last_ts"], f["path"]))
     if files:
         changes.append(files[-1]["last_ts"])
@@ -321,6 +332,80 @@ def _previous(ws, session, path):
     return data if _seal(body)["checksum"] == data.get("checksum") else {}
 
 
+def stored(root, session):
+    """(verified facts.json body or None, its path). Read-only."""
+    ws = as_workspace(root)
+    path = session_dir(ws, session) / "facts.json"
+    guard(handoff_home(), path)
+    return _previous(ws, session, path) or None, path
+
+
+def summary(data, path):
+    """Compact view of stored facts: per-repo counts (at most MAX_REPOS), dispatch counts by role."""
+    roles = {}
+    for agent in data.get("agents", []):
+        roles[agent["role"]] = roles.get(agent["role"], 0) + 1
+    repos = data.get("repos", [])
+    return {"path": str(path), "updated_at": data.get("updated_at"), "last_change_at": data.get("last_change_at"),
+            "repos": [{"root": r["root"], "branch": r["branch"], "dirty": len(r["dirty"]),
+                       "dirty_total": r["dirty_total"], "commits": len(r["commits"]), "error": r["error"]}
+                      for r in repos[:MAX_REPOS]],
+            "repos_omitted": data.get("repos_omitted", 0) + max(0, len(repos) - MAX_REPOS),
+            "agents": dict(sorted(roles.items())), "agents_omitted": data.get("agents_omitted", 0),
+            "files": len(data.get("files", [])), "files_omitted": data.get("files_omitted", 0),
+            "outside_repo_count": data.get("outside_repo_count", 0)}
+
+
+def recent_files(data, limit=None):
+    """Repo file paths of the stored facts, most recently edited first."""
+    files = sorted(data.get("files", []), key=lambda f: (f["last_ts"], f["path"]), reverse=True)
+    return [f["path"] for f in files][:limit]
+
+
+def _unread(path, recorded):
+    """(complete lines past the offset facts.json recorded for this spool file, their end offset)."""
+    data = path.read_bytes()
+    start = recorded.get(path.name, 0) if isinstance(recorded, dict) else 0
+    start = min(start, len(data)) if type(start) is int and start > 0 else 0
+    end = max(start, data.rfind(b"\n") + 1)
+    return data[start:end], end
+
+
+def _pending(cache, session, recorded):
+    """Spool lines not folded yet (claimed leftovers past their offsets, then the live file). Read-only."""
+    live = cache / "facts" / (session + ".jsonl")
+    guard(cache, live)
+    if not live.parent.is_dir():
+        return b""
+    chunks = []
+    for path in [*sorted(live.parent.glob(live.name + ".folding-*")), live]:
+        guard(cache, path)
+        try:
+            chunks.append(_unread(path, recorded)[0])
+        except OSError:  # gone (a fold claimed it meanwhile) or held by an appender
+            continue
+    return b"".join(chunks)
+
+
+def changes(config_path, root, session, *, now=None):
+    """Read-only view of what the session changed: stored facts merged with the spool lines
+    not folded yet, plus a fresh git query. Writes neither facts.json nor any spool file."""
+    ws = as_workspace(root)
+    previous, path = stored(ws, session)
+    previous = previous or {}
+    raw = b""
+    if SPOOL_SESSION.fullmatch(session):
+        raw = _pending(Path(config_path).parent / "cache", session, previous.get("spool_consumed"))
+    events, invalid = _parse(raw)
+    git = _Git()
+    state = gather(previous, events, invalid, _Finder(git))
+    body = summarize(ws, session, state, git, int(time.time()) if now is None else now)
+    body.pop("spool_consumed", None)
+    return {"workspace": str(ws.root), "session_id": session, "facts_path": str(path),
+            "folded_at": previous.get("updated_at"), "pending_events": len(events), "pending_invalid": invalid,
+            "facts": body}
+
+
 class _Spool:
     """Claim and release of one session's spool, safe against the async appender.
 
@@ -355,11 +440,8 @@ class _Spool:
         chunks = []
         for path in paths:
             guard(self.cache, path)
-            data = path.read_bytes()
-            start = recorded.get(path.name, 0) if isinstance(recorded, dict) else 0
-            start = min(start, len(data)) if type(start) is int and start > 0 else 0
-            end = max(start, data.rfind(b"\n") + 1)
-            chunks.append(data[start:end])
+            chunk, end = _unread(path, recorded)
+            chunks.append(chunk)
             self.claimed.append((path, end))
         return b"".join(chunks)
 
