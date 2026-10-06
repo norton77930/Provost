@@ -4,6 +4,10 @@
 # 0.5 s on Windows). Never blocks and always exits 0. It never creates the facts
 # directory (the runtime side does) and never stores command text, file
 # contents, prompts or responses.
+# The authoritative gate is the session's enablement marker <session_id>.enabled,
+# created by the native SessionStart only when adaptive mode resolves for the
+# workspace and handoff is enabled: without it nothing is written or reminded.
+# The "handoff": true config match below is only a cheap first check.
 # - PostToolUse (async): appends one JSON line per fact to
 #   <provost dir>/cache/facts/<session_id>.jsonl, prints {}, and touches the
 #   reminder flags <session_id>.pending-edit (main-session edit of a repo file)
@@ -57,7 +61,7 @@ get "$head" session_id
 session_id="$val"
 if [[ "$event" == UserPromptSubmit && "$session_id" =~ ^[A-Za-z0-9-]+$ ]]; then
     flag="${facts_dir}/${session_id}"
-    if [[ ( -e "${flag}.pending-edit" || -e "${flag}.pending-dispatch" ) && ! -e "${flag}.reminded" ]]; then
+    if [[ -e "${flag}.enabled" && ( -e "${flag}.pending-edit" || -e "${flag}.pending-dispatch" ) && ! -e "${flag}.reminded" ]]; then
         # Remind only when the marker was written, so a failing write cannot repeat it every turn.
         if : 2>/dev/null > "${flag}.reminded"; then
             printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"Handoff: since the last record this session edited repo files or dispatched a writer subagent. Record the decisions behind them now (status, then record); facts are captured automatically."}}'
@@ -79,7 +83,7 @@ get "$head" agent_type
 agent="$val"
 main_session=false
 [[ -z "$agent" ]] && ! get "$head" agent_id && main_session=true
-if ! [[ "$session_id" =~ ^[A-Za-z0-9-]+$ ]]; then
+if ! [[ "$session_id" =~ ^[A-Za-z0-9-]+$ && -e "${facts_dir}/${session_id}.enabled" ]]; then
     printf '{}\n'
     exit 0
 fi
@@ -88,7 +92,7 @@ prefix="\"v\":1,\"ts\":${ts}"
 tail_fields="\"cwd\":\"${cwd}\",\"agent\":\"${agent}\""
 out=""
 flag=""
-writers="${PROVOST_REMINDER_ROLES:-implementer implementer-high implementer-sonnet mech-executor general-purpose}"
+writers="${PROVOST_REMINDER_ROLES:-implementer implementer-high implementer-sonnet implementer-deep mech-executor general-purpose}"
 
 case "$tool" in
     Edit|Write|NotebookEdit)
@@ -113,14 +117,18 @@ case "$tool" in
             desc=""
             get "$body" description && desc="${val:0:120}"
             # Keep the clipped value valid JSON: drop a dangling backslash, a
-            # partial \uXXXX escape or a lone high surrogate from the tail.
-            if [[ "$desc" =~ (\\+)$ ]]; then
-                run="${BASH_REMATCH[1]}"
-                (( ${#run} % 2 )) && desc="${desc%\\}"
-            elif [[ "$desc" =~ (\\+)(u[0-9A-Fa-f]{0,3}|u[dD][89abAB][0-9A-Fa-f]{2})$ ]]; then
-                run="${BASH_REMATCH[1]}"
-                (( ${#run} % 2 )) && desc="${desc%\\u*}"
-            fi
+            # partial \uXXXX escape or a lone high surrogate from the tail, until
+            # none is left (cutting a partial low escape can expose its high one).
+            while :; do
+                if [[ "$desc" =~ (\\+)$ ]] && (( ${#BASH_REMATCH[1]} % 2 )); then
+                    desc="${desc%\\}"
+                elif [[ "$desc" =~ (\\+)(u[0-9A-Fa-f]{0,3}|u[dD][89abAB][0-9A-Fa-f]{2})$ ]] \
+                        && (( ${#BASH_REMATCH[1]} % 2 )); then
+                    desc="${desc%\\u*}"
+                else
+                    break
+                fi
+            done
             bg=false
             [[ "$body" =~ \"run_in_background\"[[:space:]]*:[[:space:]]*true([^A-Za-z0-9_]|$) ]] && bg=true
             out="{${prefix},\"k\":\"agent\",${tail_fields},\"role\":\"${role}\",\"desc\":\"${desc}\",\"bg\":${bg}}"$'\n'

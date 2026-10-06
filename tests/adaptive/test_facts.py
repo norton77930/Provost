@@ -207,6 +207,37 @@ class FoldTests(FactsCase):
         self.write("[]")
         self.assertEqual(self.fold(repo)["spool_errors"], 6)
 
+    def test_lone_surrogate_line_is_counted_and_the_spool_released(self):
+        repo = self.repo("a")
+        bad = json.dumps(self.agent("implementer", self.now - 9, repo))[:-1] + ',"desc":"x\\ud83d"}'
+        self.assertRaises(UnicodeEncodeError, lambda: json.loads(bad)["desc"].encode("utf-8"))
+        self.write(bad, self.edit(repo / "x.py", self.now - 8, repo))
+        data = self.fold(repo)
+        self.assertEqual((data["spool_errors"], data["events_captured"], data["agents"]), (1, 1, []))
+        self.assertEqual(self.stored(repo)["spool_errors"], 1)
+        self.assertFalse(self.spool().exists())
+        self.assertEqual(list(self.spool().parent.glob("*.folding-*")), [])
+
+    def test_events_captured_accumulates_across_folds(self):
+        repo = self.repo("a")
+        self.write(self.edit(repo / "x.py", self.now - 9, repo), "{bad")
+        self.assertEqual((self.fold(repo)["events_captured"], self.stored(repo)["spool_errors"]), (1, 1))
+        self.write(self.dir_event(repo, self.now - 5, repo), self.agent("implementer", self.now - 4, repo))
+        self.assertEqual(self.fold(repo)["events_captured"], 3)
+        self.assertEqual(self.fold(repo)["events_captured"], 3)
+
+    def test_worktrees_keep_the_last_twenty(self):
+        repo = self.repo("a")
+        self.write(*[{"v": 1, "ts": self.now - 100 + i, "k": "worktree", "cwd": str(repo), "agent": "",
+                      "tool": "EnterWorktree", "p": "wt-%02d" % i} for i in range(25)])
+        data = self.fold(repo)
+        self.assertEqual([w["path"] for w in data["worktrees"]], ["wt-%02d" % i for i in range(5, 25)])
+        self.write({"v": 1, "ts": self.now, "k": "worktree", "cwd": str(repo), "agent": "", "tool": "ExitWorktree",
+                    "p": "last"})
+        data = self.fold(repo)
+        self.assertEqual(len(data["worktrees"]), 20)
+        self.assertEqual((data["worktrees"][0]["path"], data["worktrees"][-1]["path"]), ("wt-06", "last"))
+
     def test_split_multibyte_characters_are_replaced_not_rejected(self):
         repo = self.repo("a")
         line = json.dumps(dict(self.agent("implementer", self.now - 9, repo), desc="fix XY"), ensure_ascii=False)
@@ -286,9 +317,13 @@ class PreCompactTests(FactsCase):
     def event(self):
         return {"session_id": SESSION, "cwd": str(self.root), "hook_event_name": "PreCompact"}
 
+    def setUp(self):
+        super().setUp()
+        self.enable_facts(SESSION)
+
     def precompact(self):
         from provost_runtime.hooks import handle_event
-        return json.dumps(handle_event(self.event(), self.config_path))
+        return json.dumps(handle_event(self.event(), self.config_path, native=True))
 
     def snapshots(self):
         from provost_runtime.store import latest
@@ -385,7 +420,23 @@ class LastChangeTests(FactsCase):
         repo = self.dirty_repo(self.now - 500)
         record(self.root, SESSION, self.payload(), None, "r1")
         os.utime(repo / "x.py", (self.now + 120, self.now + 120))  # e.g. a script edit the hook never saw
-        self.assertEqual(self.level(repo, self.now), "partial-stale")
+        self.assertEqual(self.level(repo, self.now + 300), "partial-stale")
+
+    def test_untracked_file_created_after_the_record_is_not_a_change(self):
+        from provost_runtime.store import record
+        repo = self.dirty_repo(self.now - 500)
+        record(self.root, SESSION, self.payload(), None, "r1")
+        (repo / "scratch.log").write_text("x", encoding="utf-8")
+        os.utime(repo / "scratch.log", (self.now + 120, self.now + 120))
+        self.assertIsNone(self.level(repo, self.now + 60))
+        entry = self.repo_entry(self.stored(repo), repo)
+        self.assertIn(("??", "scratch.log"), [(d["status"], d["path"]) for d in entry["dirty"]])
+        self.assertEqual(self.stored(repo)["last_change_at"], facts._iso(self.now - 500))
+
+    def test_future_mtime_is_clamped_to_now(self):
+        repo = self.dirty_repo(self.now + 86400)
+        data = facts.fold(self.config_path, repo, SESSION, now=self.now)
+        self.assertEqual(data["last_change_at"], facts._iso(self.now))
 
     def test_commit_after_the_record_is_stale(self):
         from provost_runtime.store import record

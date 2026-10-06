@@ -165,7 +165,7 @@ class CliTests(FixtureCase):
         bind(self.root, "s1", {})
         facts = self.config_path.parent / "cache" / "facts"
         facts.mkdir(parents=True)
-        keep = [facts / "s1.jsonl", facts / "s2.pending-edit"]
+        keep = [facts / "s1.jsonl", facts / "s2.pending-edit", facts / "s1.enabled"]
         flags = [facts / f"s1.{name}" for name in ("pending-edit", "pending-dispatch", "reminded")]
         args = ("record", "--workspace", str(self.root), "--session", "s1", "--expected", "null")
         outputs = []
@@ -188,7 +188,7 @@ class CliTests(FixtureCase):
     def test_reminder_rearms_after_record(self):
         hook = REPO / "hooks" / "native-facts"
         bind(self.root, "s1", {})
-        (self.config_path.parent / "cache" / "facts").mkdir(parents=True)
+        marker = self.enable_facts("s1")
 
         def run(data):
             result = self.run_bash(hook, stdin=json.dumps({"session_id": "s1", **data}))
@@ -204,6 +204,7 @@ class CliTests(FixtureCase):
                               "--expected", "null", "--request-id", "r1", data=self.payload())
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(run(prompt), {})
+        self.assertTrue(marker.exists())  # record clears the reminder flags, never the enablement marker
         run(edit)
         self.assertIn("hookSpecificOutput", run(prompt))
 
@@ -232,6 +233,7 @@ class CliTests(FixtureCase):
                          [(2, 7, 1, "main")])
         self.assertEqual((facts["agents"], facts["outside_repo_count"], facts["files"]),
                          ({"code-reviewer": 1, "implementer": 1}, 4, 12))
+        self.assertEqual((facts["events_captured"], facts["spool_errors"]), (15, 0))
         template = status["template"]
         self.assertEqual(set(template), {"work_id", "phase", "sources", "assignments", "decisions", "blockers",
                                          "evidence", "next", "suggested_skills"})

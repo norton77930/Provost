@@ -114,10 +114,18 @@ class FixtureCase(unittest.TestCase):
                 "repos": [{"root": "C:/repo%d-%s" % (i, "r" * name_chars), "branch": "main", "first_touched_at": "x",
                            "last_touched_at": "x", "dirty": [{"status": " M", "path": "a"}] * 2, "dirty_total": 7,
                            "commits": [{"hash": "abc", "subject": "s"}], "error": None} for i in range(repos)],
-                "repos_omitted": 0, "spool_errors": 0, "spool_consumed": {}}
+                "repos_omitted": 0, "spool_errors": 0, "events_captured": files + agents + repos,
+                "spool_consumed": {}}
         path = session_dir(ws, session) / "facts.json"
         atomic_write(handoff_home(), path, _seal(body))
         return path
+
+    def enable_facts(self, session="s1"):
+        """The marker a native SessionStart leaves when handoff is enabled for the workspace."""
+        marker = self.config_path.parent / "cache" / "facts" / (session + ".enabled")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+        return marker
 
     def seed_snapshot(self):
         from provost_runtime.store import record, snapshot

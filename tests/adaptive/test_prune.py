@@ -523,7 +523,8 @@ class FactsPruneTests(FixtureCase):
 
     def cache_files(self, session):
         names = [session + ".jsonl", session + ".jsonl.folding-" + "a" * 32,
-                 session + ".pending-edit", session + ".pending-dispatch", session + ".reminded"]
+                 session + ".pending-edit", session + ".pending-dispatch", session + ".reminded",
+                 session + ".enabled"]
         for name in names:
             (self.cache / name).write_text("x", encoding="utf-8")
         return sorted(str(self.cache / name) for name in names)
@@ -655,7 +656,7 @@ class FactsPruneTests(FixtureCase):
         self.assertEqual((orphans["removed"], orphans["errors"]), (0, []))
         self.assertTrue(all(Path(p).exists() for p in old))
         result = prune(self.root, facts_cache=self.cache, keep_session="current", apply=True)
-        self.assertEqual((result["orphan_facts_cache"]["removed"], result["orphan_facts_cache"]["errors"]), (5, []))
+        self.assertEqual((result["orphan_facts_cache"]["removed"], result["orphan_facts_cache"]["errors"]), (6, []))
         self.assertEqual([p for p in old if Path(p).exists()], [])
         self.assertTrue(all(p.exists() for p in [*map(Path, young + bound + kept), *unsafe, target]))
         self.assertTrue(session_dir(self.root, "live").is_dir())

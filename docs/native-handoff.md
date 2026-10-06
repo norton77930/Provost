@@ -47,7 +47,9 @@ session startup/workspace configuration; do not fabricate binding files.
 (at most 5: `root`, `branch`, `dirty` listed/`dirty_total` uncommitted entries,
 `commits` made during the session, `error`), `repos_omitted`, `agents` (dispatch
 count by role), `agents_omitted`, `files`/`files_omitted` (edited repo files kept
-or dropped by the size cap) and `outside_repo_count`. When facts exist,
+or dropped by the size cap), `outside_repo_count`, and collection health:
+`events_captured` (valid hook events folded so far) and `spool_errors` (unreadable
+spool lines skipped). When facts exist,
 `template.sources` is prefilled with up to 10 most recently edited repo files as
 `{"kind": "file", "ref": <path>}`; delete or edit them like any other field.
 
@@ -143,7 +145,9 @@ in priority order: the save status with the required action (after a facts-only
 save: write a record from the compaction summary; status prefills facts and
 `template.sources`), the facts summary (one line per repo, at most 5: branch,
 uncommitted count, session commit count; a subagent count by role; edits outside
-repos; omitted without `facts.json`), the checkpoint (payload, or its digest when
+repos; a `Facts capture:` line when spool lines were unreadable or the session
+compacted with zero captured events, which means capture may be failing; omitted
+without `facts.json`), the checkpoint (payload, or its digest when
 over 4,500 characters) and the edited repo files, most recent first. Over budget,
 whole items are replaced, never cut: the file list first (by the facts.json path),
 then the checkpoint payload (its digest, then only the checkpoint path), then the
@@ -152,7 +156,14 @@ facts summary (by its path), and last the identity (paths and `status` usage onl
 PreCompact folds the facts spool into facts.json and snapshots an existing record,
 without a model call. Without a record the save is partial ("decision record
 missing"), never an empty snapshot; a record older than the latest change is
-partial-stale. Startup/clear/fork do not adopt old tasks.
+partial-stale. The fold and these save levels apply only to a session with the
+enablement marker `<provost dir>/cache/facts/<session_id>.enabled`, which the
+native SessionStart creates when adaptive mode resolves for the workspace and
+handoff is enabled. Without it (the plugin path, or a session started before the
+facts layer was installed) PreCompact only snapshots an existing record, or reports
+`NO_CHECKPOINT`. Untracked (`??`) files are listed as dirty but never date a
+change, and file times in the future count as now. Startup/clear/fork do not adopt
+old tasks.
 Notifications and host/model behavior still need a live pilot. Normal Bash path
 and payload input must satisfy project guards; report refusals rather than bypassing.
 
@@ -171,8 +182,8 @@ Activity is the newest record/snapshot timestamp (else file mtime) or the mtime 
 `facts.json`, so a session resumed today is not expired. Each listed session (and
 reclaimable leftover) whose session id is known from `binding.json` or `facts.json`
 also names, under `facts_cache`, its existing files in `<provost dir>/cache/facts`:
-the spool `<session_id>.jsonl`, `.folding-*` spool leftovers and the three reminder
-flags. `--apply` deletes them after the session dir itself is removed; a failed
+the spool `<session_id>.jsonl`, `.folding-*` spool leftovers, the three reminder
+flags and the `.enabled` marker. `--apply` deletes them after the session dir itself is removed; a failed
 delete is reported in `errors` with the file name in `left_at`. Cache files whose
 session has no directory anywhere in the store are listed per session under
 `orphan_facts_cache` (`candidates`, `removed`, `skipped`, `errors`; present only when
@@ -230,8 +241,8 @@ hook, and for `UserPromptSubmit` as a sync hook.
   or NotebookEdit outside the scratch locations (`/.claude/jobs/`,
   `/.claude/projects/`, `AppData/Local/Temp`, `/tmp/`), and
   `<session_id>.pending-dispatch` when a writer subagent is dispatched (default
-  roles `implementer`, `implementer-high`, `implementer-sonnet`, `mech-executor`,
-  `general-purpose`; override with the space-separated env var
+  roles `implementer`, `implementer-high`, `implementer-sonnet`, `implementer-deep`,
+  `mech-executor`, `general-purpose`; override with the space-separated env var
   `PROVOST_REMINDER_ROLES`). Its output is always `{}`.
 - `UserPromptSubmit` reminds at the start of the next turn, once: when a pending
   flag exists and `<session_id>.reminded` does not, it creates `.reminded` and adds
@@ -240,10 +251,24 @@ hook, and for `UserPromptSubmit` as a sync hook.
   dispatch re-arms it. A background subagent's result also arrives as a
   `UserPromptSubmit`, so results get the reminder too.
 
-Nothing is written when the config lacks `"handoff": true`, the session id is not
-`[A-Za-z0-9-]+`, or the facts directory does not exist (the hook never creates
-it; SessionStart creates it, best effort, whenever handoff is enabled). The hook never blocks and always exits 0. It is pure bash with no
-interpreter, subprocess or pipe, because each process costs about 0.5 s on Windows.
+Nothing is written or reminded unless the session's enablement marker
+`<session_id>.enabled` exists in the facts directory. The native SessionStart
+creates the directory and the marker, best effort, only when adaptive mode
+resolves for the workspace and handoff is enabled; the marker is authoritative.
+The hook first checks the config for `"handoff": true` only as a cheap early exit,
+and also exits when the session id is not `[A-Za-z0-9-]+` or the facts directory
+does not exist (it never creates either). `record` deletes the reminder flags, never
+the marker; `prune` removes the marker with the session's other cache files. The
+hook never blocks and always exits 0. It is pure bash with no interpreter,
+subprocess or pipe, because each process costs about 0.5 s on Windows.
+
+Known limits: `PostToolUse` is async, so an edit that happened just before a
+`record` can land its flag after `record` cleared the flags, giving one spurious
+reminder at the next turn; recording again (or ignoring it) clears it. A session
+started before the facts layer was installed has no marker until its next
+SessionStart (resume or compact); from then on its facts, including the
+`git log --since` window of session commits, start at its first captured event,
+not at the session's real start.
 
 ```json
 {

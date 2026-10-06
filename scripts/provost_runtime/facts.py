@@ -25,6 +25,7 @@ OUTSIDE = OUTSIDE_DEFAULT
 MAX_REPOS = 5
 MAX_DIRTY = 50
 MAX_COMMITS = 20
+MAX_WORKTREES = 20  # the newest worktree events are kept
 SUBJECT_CHARS = 80
 DESC_CHARS = 120
 MAX_BYTES = 65536
@@ -146,6 +147,11 @@ def _parse(raw):
         except ValueError:
             invalid += 1
             continue
+        try:
+            encoded(item)  # a lone surrogate escape loads but could never be written to facts.json
+        except ValueError:
+            invalid += 1
+            continue
         if _valid(item):
             events.append(item)
         else:
@@ -189,6 +195,7 @@ def gather(previous, events, invalid, finder):
              "agents_omitted": previous.get("agents_omitted", 0),
              "repos_omitted": previous.get("repos_omitted", 0),
              "spool_errors": previous.get("spool_errors", 0) + invalid,
+             "events_captured": previous.get("events_captured", 0) + len(events),
              "last_change_at": previous.get("last_change_at")}
 
     def touch(path, ts):
@@ -222,6 +229,7 @@ def gather(previous, events, invalid, finder):
             touch(_worktree_path(event["p"], cwd), ts)
         else:
             touch(_absolute(event["p"], cwd), ts)
+    state["worktrees"] = state["worktrees"][-MAX_WORKTREES:]
     return state
 
 
@@ -262,13 +270,17 @@ def _inspect(git, repo):
     return entry, newest
 
 
-def _dirty_mtimes(entry):
-    """mtimes of the (capped) dirty paths that still exist: a script edit the hook never
-    saw still dates the change, and an old uncommitted file does not look new."""
+def _dirty_mtimes(entry, now):
+    """mtimes of the (capped) tracked dirty paths that still exist, each clamped to now: a script
+    edit the hook never saw still dates the change, an old uncommitted file does not look new, and
+    a future mtime cannot keep a record stale. Untracked (??) entries stay listed but never date a
+    change: logs and build output appear there without being session work."""
     found = []
     for item in entry["dirty"]:
+        if item["status"] == "??":
+            continue
         try:
-            found.append(os.stat(Path(entry["root"]) / item["path"]).st_mtime)
+            found.append(min(os.stat(Path(entry["root"]) / item["path"]).st_mtime, now))
         except (OSError, ValueError):
             continue  # deleted or unreadable
     return found
@@ -283,7 +295,7 @@ def summarize(ws, session, state, git, now):
         repos.append(entry)
         if newest is not None:
             changes.append(newest)
-        changes.extend(_dirty_mtimes(entry))
+        changes.extend(_dirty_mtimes(entry, now))
     files = sorted(state["files"].values(), key=lambda f: (f["last_ts"], f["path"]))
     if files:
         changes.append(files[-1]["last_ts"])
@@ -296,7 +308,8 @@ def summarize(ws, session, state, git, now):
             "agents": sorted(state["agents"], key=lambda a: a["ts"]), "agents_omitted": state["agents_omitted"],
             "worktrees": state["worktrees"], "repos": repos,
             "repos_omitted": state["repos_omitted"] + max(0, len(ranked) - MAX_REPOS),
-            "spool_errors": state["spool_errors"], "spool_consumed": state.get("spool_consumed", {})}
+            "spool_errors": state["spool_errors"], "events_captured": state["events_captured"],
+            "spool_consumed": state.get("spool_consumed", {})}
     return _cap(data)
 
 
@@ -353,7 +366,9 @@ def summary(data, path):
             "repos_omitted": data.get("repos_omitted", 0) + max(0, len(repos) - MAX_REPOS),
             "agents": dict(sorted(roles.items())), "agents_omitted": data.get("agents_omitted", 0),
             "files": len(data.get("files", [])), "files_omitted": data.get("files_omitted", 0),
-            "outside_repo_count": data.get("outside_repo_count", 0)}
+            "outside_repo_count": data.get("outside_repo_count", 0),
+            # Collection health: valid events folded so far (None when unknown) and unreadable lines.
+            "events_captured": data.get("events_captured"), "spool_errors": data.get("spool_errors", 0)}
 
 
 def recent_files(data, limit=None):
@@ -467,6 +482,10 @@ def fold(config_path, root, session, *, now=None):
     """Merge the session's spool into facts.json, refresh git facts, then truncate the spool.
 
     Store problems raise StoreError; git problems only mark the repo entry.
+    Assumes a single folder per session: only PreCompact folds (changes() is read-only), and
+    Claude Code does not run two compactions of one session at once. The facts.json write is
+    locked, but the spool claim/release is not, so concurrent folds of one session could merge
+    a claimed spool file twice.
     """
     ws = as_workspace(root)
     target = session_dir(ws, session) / "facts.json"

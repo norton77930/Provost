@@ -84,6 +84,7 @@ handoff 目前只靠主 AI 自己呼叫 `record`。AI 沒記錄時，壓縮前�
   - 檔名只接受 `[A-Za-z0-9-]` 組成的 session_id，其他字元一律放棄記錄。
   - 路徑字串直接沿用 hook 輸入裡已經轉義過的 JSON 字串，不重新編碼。
 - 以下任一情況都輸出 `{}` 並以 exit 0 結束，絕不阻擋工具：設定沒有 `"handoff": true`、解析失敗、寫入失敗。
+- 2026-10-06 審查修訂：**啟用標記**。native SessionStart 只在該 workspace 解析為 adaptive、而且 handoff 已啟用時，建立 `cache/facts/<session_id>.enabled`（連同 facts 目錄）。收集 hook 先用 `[[ -e ]]` 確認這個標記才寫 spool、建立旗標或提醒；沒有標記就輸出 `{}`。標記是權威判斷，設定檔的 `"handoff": true` 比對只是便宜的第一關。Provost plugin（非 native）路徑不建立標記，行為不變。
 - 註冊方式（S0 後修訂，見 §6）：
   - PostToolUse `Edit|Write|NotebookEdit|Agent|Bash|PowerShell|EnterWorktree|ExitWorktree` 全部設成 `async: true`，只做收集，AI 不等待。
   - `UserPromptSubmit` 同步，負責判斷並輸出提醒（§6）。每輪只多一次 bash 啟動（約 0.6 秒）。
@@ -116,6 +117,7 @@ PreCompact 的 Python 端依序執行：
 - `last_change_at` 取以下幾個時間中最新的一個：最後一次改檔（hook 紀錄）、session 期間最新 commit 的時間、未 commit 檔案的實際修改時間（檔案 mtime；已刪除的檔案略過）。
   - 2026-10-06 修訂：原本寫「git 偵測到未 commit 修改的時間」，實作成「整理當下的時間」。結果只要 repo 有未 commit 的修改，每次壓縮都會被判成過時，就算 AI 剛寫完紀錄也一樣。改用 mtime 可以同時涵蓋用腳本改的檔案。
 - record 與 snapshot 的格式不變；事實獨立存放。這是本規格唯一的儲存格式新增，因此屬於 R2。
+- 2026-10-06 審查修訂：另存 `events_captured`（累計有效事件數）與 `spool_errors`（無法讀取或含孤立 surrogate 的 spool 行數）；`worktrees` 只保留最近 20 筆。未追蹤（`??`）的檔案仍列在 `dirty`，但不參與 `last_change_at`；檔案 mtime 晚於現在時以現在計。
 - 大小上限 64 KB。超過時依序刪減：先刪 `files` 的舊項目，再刪 `agents` 的舊項目，最後刪 `dirty` 超過 50 筆的部分。
 
 ## 5. 存檔三級狀態
@@ -139,15 +141,18 @@ PreCompact 判斷：
 **旗標**（收集 hook 以 `: > <path>` 建立，只用內建功能）：
 
 - `<session_id>.pending-edit`：**主 session**（輸入不含 `agent_id`）用 Edit、Write 或 NotebookEdit 改了 repo 內的檔案。
-  - repo 外的檔案不建立旗標。判斷方式是路徑含 `/.claude/jobs/`、`/tmp/`、`AppData/Local/Temp`、`/memory/` 等片段（含反斜線寫法）就視為 repo 外。
+  - repo 外的檔案不建立旗標。判斷方式是路徑含 `/.claude/jobs/`、`/.claude/projects/`、`AppData/Local/Temp`、`/tmp/` 這四種片段（不分大小寫，含反斜線寫法）就視為 repo 外。2026-10-06 審查修訂：原本列的 `/memory/` 改為 `/.claude/projects/`，因為 auto-memory 位於其下，而 repo 內名為 `memory` 的目錄不該被排除。
 - `<session_id>.pending-dispatch`：派出寫程式角色的子代理。角色清單沿用 `PROVOST_REMINDER_ROLES` 與其預設值。
 - `<session_id>.reminded`：已經提醒過。
+- `<session_id>.enabled`：啟用標記（§4.2），由 native SessionStart 建立。沒有它就不收集也不提醒。它不是提醒旗標，`record` 不刪它。
 
 旗標都放在 `~/.claude/provost/cache/facts/`。
 
+預設的寫程式角色清單：`implementer`、`implementer-high`、`implementer-sonnet`、`implementer-deep`、`mech-executor`、`general-purpose`（2026-10-06 審查修訂加入 `implementer-deep`）。
+
 **UserPromptSubmit 判斷**：有 `pending-edit` 或 `pending-dispatch`，而且沒有 `reminded` 時，輸出一次提醒並建立 `reminded`；其他情況輸出 `{}`。
 
-**`record` 指令**（Python）成功後，刪除該 session 的三個旗標。
+**`record` 指令**（Python）成功後，刪除該 session 的三個提醒旗標（不含 `.enabled`）。
 
 效果：
 
@@ -177,11 +182,18 @@ PreCompact 判斷：
 
 startup、clear、fork 不注入事實。只有 compact 和 resume 會注入，與現有的 `recovery_context` 一致。
 
+2026-10-06 審查修訂（接受的偏差）：
+
+- 縮減順序實作為：檔案清單 → AI record（digest，再縮成路徑）→ 事實摘要 → 身份。也就是說，事實摘要可能在身份縮短之前就被換成「Session facts omitted for size: <facts.json 路徑>」，而不是上表寫的「保留」。
+- 事實摘要先於 checkpoint 讀取組好，所以 checkpoint 損壞時事實仍會注入。
+- 收集異常（§12）：`spool_errors` 大於 0，或 session 壓縮時 `events_captured` 為 0（facts.json 只會在有標記時由 PreCompact 寫出），事實摘要加一行 `Facts capture: ...`；縮成路徑時這一行仍保留。
+
 ## 8. 對外介面的變動
 
-- `status`：輸出新增 `facts` 欄位，內容是 §7 第 3 項的摘要。`template.sources` 預填最多 10 個 repo 內改過的檔案（`kind: file`），AI 可以刪改。
+- `status`：輸出新增 `facts` 欄位，內容是 §7 第 3 項的摘要，另含收集健康度 `events_captured` 與 `spool_errors`。`template.sources` 預填最多 10 個 repo 內改過的檔案（`kind: file`），AI 可以刪改。
 - 新指令 `changes --workspace <root> --session <id>`：唯讀，輸出 `facts.json` 加上尚未整合的 spool 內容，並即時跑一次 §4.3 的 git 查詢。
-- `prune`：一併處理 spool、`.state` 和 `facts.json`，過期條件與 session 相同。
+- `prune`：一併處理 spool、`.folding-*` 殘留、三個提醒旗標、`.enabled` 標記和 `facts.json`，過期條件與 session 相同。2026-10-06 審查修訂：只有 `facts.json` 或 `compaction.json`、從未 record 的 session 也會依其最新檔案時間過期；session 目錄已不存在的快取檔另列為 `orphan_facts_cache`。
+- PreCompact：只有 native 路徑、而且該 session 有 `.enabled` 標記時，才整合事實並套用 §5 的三級狀態；否則維持事實層之前的行為（有 record 就 snapshot，沒有就 `NO_CHECKPOINT`）。
 - hook 註冊：需要在 `~/.claude/settings.json` 新增 `native-facts`（PostToolUse 一組 async、UserPromptSubmit 一組同步），並移除 `native-reminder` 的註冊。這一步屬於「寫入 workspace 外」，安裝時另行徵求同意；修改時只能用 parser 讀寫，因為該檔含有憑證。
 - `runtime_hash` 的檔案清單新增 `hooks/native-facts`。
 
@@ -218,12 +230,12 @@ S1 到 S5 依序進行，因為後面的切片依賴前面的資料格式。各�
 ## 11. 待使用者決定
 
 1. **`native-reminder` 的處理**：建議併入 `native-facts`，舊檔保留一版作為轉呼叫入口，下一版移除。另一個做法是兩支腳本並存，但要協調節流狀態。
-2. **事實的保留期**：建議與 session 的過期規則相同，沿用現有 prune 的 30 天。
+2. **事實的保留期**：建議與 session 的過期規則相同，沿用現有 prune 的 30 天。2026-10-06 審查修訂：只有壓縮紀錄（`facts.json`／`compaction.json`）而沒有 record 的 session 同樣 30 天後過期。
 3. **`status` 是否預填 `template.sources`**：建議預填，可以減輕 AI 的負擔；代價是 AI 可能原封不動照抄。
 
 ## 12. 風險
 
-- **hook 輸入格式改變**：PostToolUse 的輸入欄位（`tool_input.file_path`、`agent_id`）若在 Claude Code 改版後變動，事實會缺漏。由 S0 探測與 S1 測試釘住目前的格式，並在缺漏時於事實摘要中標示「收集異常」。
+- **hook 輸入格式改變**：PostToolUse 的輸入欄位（`tool_input.file_path`、`agent_id`）若在 Claude Code 改版後變動，事實會缺漏。由 S0 探測與 S1 測試釘住目前的格式，並在缺漏時於事實摘要中標示「收集異常」：facts.json 記錄累計的 `events_captured` 與 `spool_errors`，`status.facts` 與 SessionStart 事實摘要會呈現（§7）。
 - **Windows 上的 hook 成本**：每個 Bash 和 PowerShell 指令都會多啟動一次 bash。這部分設為 async，不會讓 AI 等待，但會增加背景負擔。S0 會量測單次耗時。
 - **`git log --since` 依 commit 時間判斷**：rebase 或 amend 會改變時間，可能多列或少列 commit。摘要只是提示，不作為正式證據。
 - **提醒仍需 AI 配合**：歷史資料顯示約 82% 會照做，但個別 session 差異很大（例如 12 次只照做 2 次）。事實層是保底，`partial` 狀態會在壓縮後再要求補記一次。

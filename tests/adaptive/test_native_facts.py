@@ -23,7 +23,7 @@ class NativeFactsTests(FixtureCase):
     def setUp(self):
         super().setUp()
         self.facts_dir = self.config_path.parent / "cache" / "facts"
-        self.facts_dir.mkdir(parents=True)
+        self.marker = self.enable_facts(SESSION)
 
     def capture(self, stdin, **kwargs):
         result = self.run_bash(HOOK, stdin=stdin, **kwargs)
@@ -43,7 +43,7 @@ class NativeFactsTests(FixtureCase):
 
     def assertNothingWritten(self, stdin, **kwargs):
         self.assertEqual(self.capture(stdin, **kwargs), [])
-        self.assertEqual(list(self.facts_dir.iterdir()), [])
+        self.assertEqual([p for p in self.facts_dir.iterdir() if p.suffix != ".enabled"], [])
 
     def test_edit_tools_record_path(self):
         for tool, key in (("Edit", "file_path"), ("Write", "file_path"), ("NotebookEdit", "notebook_path")):
@@ -121,12 +121,15 @@ class NativeFactsTests(FixtureCase):
                  ("a" * 115 + "\u00e9", "a" * 115),                # cut inside \u00e9
                  ("a" * 114 + "\u00e9", "a" * 114 + "\u00e9"),      # exactly complete
                  ("a" * 114 + "\U0001f600", "a" * 114),            # lone high surrogate dropped
+                 ("a" * 112 + "\U0001f600", "a" * 112),            # partial low escape, then the high one
+                 ("a" * 113 + "\U0001f600", "a" * 113),
                  ("a" * 116 + "\\u1", "a" * 116 + "\\u1"),          # literal backslash-u text kept
                  ("short", "short")]
         for description, expected in cases:
             self.spool_path().unlink(missing_ok=True)
             rows = self.capture(event("Agent", {"subagent_type": "Explore", "description": description}))
             self.assertEqual(rows[0]["desc"], expected, description[-8:])
+            rows[0]["desc"].encode("utf-8")  # no lone surrogate survives the repair
 
     def test_raw_non_ascii_description_stays_valid(self):
         data = json.loads(event("Agent", {"subagent_type": "Explore", "description": "\u00e9\u4e2d" * 100}))
@@ -207,6 +210,19 @@ class NativeFactsTests(FixtureCase):
             self.assertNothingWritten(event("Edit", {"file_path": "/a"}, session=session))
         self.assertEqual(list(self.facts_dir.parent.iterdir()), [self.facts_dir])
 
+    def test_session_without_marker_writes_and_reminds_nothing(self):
+        self.marker.unlink()
+        self.assertNothingWritten(event("Edit", {"file_path": "C:\\Users\\x\\repo\\a.py"}))
+        self.assertNothingWritten(event("Agent", {"subagent_type": "implementer"}))
+        (self.facts_dir / f"{SESSION}.pending-edit").touch()
+        self.assertEqual(self.prompt(), {})
+        self.assertEqual(self.flags(), ["pending-edit"])
+        self.enable_facts("other-1")  # another session's marker does not enable this one
+        self.capture(event("Edit", {"file_path": "/a"}))
+        self.assertEqual(self.lines(), [])
+        self.capture(event("Edit", {"file_path": "/a"}, session="other-1"))
+        self.assertEqual(len(self.lines("other-1")), 1)
+
     def test_missing_session_id_writes_nothing(self):
         data = json.loads(event("Edit", {"file_path": "/a"}))
         del data["session_id"]
@@ -249,7 +265,7 @@ class NativeFactsTests(FixtureCase):
 
     def flags(self, session=SESSION):
         return sorted(p.name[len(session) + 1:] for p in self.facts_dir.glob(session + ".*")
-                      if p.suffix != ".jsonl")
+                      if p.suffix not in (".jsonl", ".enabled"))
 
     def test_main_repo_edit_sets_pending_edit(self):
         for tool, key in (("Edit", "file_path"), ("Write", "file_path"), ("NotebookEdit", "notebook_path")):
@@ -285,6 +301,7 @@ class NativeFactsTests(FixtureCase):
 
     def test_writer_dispatch_sets_pending_dispatch(self):
         for role, agent_type, env in (("implementer-sonnet", None, None), ("mech-executor", "implementer", None),
+                                      ("implementer-deep", None, None),
                                       (None, None, None), ("custom-writer", None, {"PROVOST_REMINDER_ROLES": "custom-writer"})):
             for flag in self.facts_dir.glob(SESSION + ".pending-*"):
                 flag.unlink()
@@ -317,7 +334,7 @@ class NativeFactsTests(FixtureCase):
         self.capture(event("Agent", {"subagent_type": "implementer"}))
         self.assertEqual(self.prompt(), {})
         for flag in self.facts_dir.glob(SESSION + ".*"):
-            if flag.suffix != ".jsonl":
+            if flag.suffix not in (".jsonl", ".enabled"):
                 flag.unlink()  # what record does
         self.assertEqual(self.prompt(), {})
         self.capture(event("Agent", {"subagent_type": "implementer"}))

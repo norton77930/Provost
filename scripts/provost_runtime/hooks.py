@@ -6,8 +6,8 @@ from pathlib import Path
 from . import facts, legacy
 from .config import ConfigError, handoff_home, load_config, resolve_mode, workspace_key
 from .notifications import PARTIAL, notice
-from .store import (StoreError, _base, as_workspace, atomic_write, current, digest, guard, latest,
-                    locate, session_dir, snapshot, storage_ready)
+from .store import (CACHE_SESSION, FACTS_MARKER, StoreError, _base, as_workspace, atomic_write, current, digest,
+                    guard, latest, locate, session_dir, snapshot, storage_ready)
 
 PLUGIN = Path(__file__).resolve().parents[2]
 RECOVERY_PAYLOAD_LIMIT = 4500     # inline the payload in full up to this size; digest is capped to it too
@@ -218,11 +218,28 @@ def _facts_variants(root, session):
     if info["agents_omitted"]:
         agents += " (+%d older not listed)" % info["agents_omitted"]
     lines += ["Subagents dispatched: " + agents, "Edits outside repos: %d" % info["outside_repo_count"]]
-    summary = ["\n".join(lines), "Session facts omitted for size: " + info["path"]]
+    note = _capture_note(info)
+    summary = ["\n".join(lines + [note] if note else lines),
+               "Session facts omitted for size: " + info["path"] + ("\n" + note if note else "")]
     if not files:
         return summary, []
     return summary, ["\n".join(["Edited repo files, most recent first:"] + ["- " + f for f in files]),
                      "Edited repo files omitted for size; full list: " + info["path"]]
+
+
+def _capture_note(info):
+    """Collection anomaly line, else "". facts.json is written only by a PreCompact fold, which runs
+    only for a session with the enablement marker: zero events there means capture is not reaching
+    the spool (hook not installed, not firing, or failing)."""
+    events, errors = info.get("events_captured"), info.get("spool_errors") or 0
+    if not errors and events != 0:
+        return ""
+    note = "Facts capture: %s events" % ("unknown" if events is None else events)
+    if errors:
+        note += ", %d unreadable spool lines" % errors
+    if events == 0:
+        note += " — capture may be failing"
+    return note
 
 
 def _fit(sections, steps, budget=SESSION_START_BUDGET):
@@ -251,14 +268,36 @@ def _policy(native):
     return (PLUGIN / "policies/adaptive-orchestration.md").read_text(encoding="utf-8")
 
 
-def _ensure_facts_dir(config_path):
-    """Best effort: the capture hook appends to cache/facts but cannot create it."""
+def _marker(config_path, session):
+    """Path of the session's facts enablement marker (<config dir>/cache/facts/<session>.enabled),
+    None for a session id the capture hook would never use."""
+    if not isinstance(session, str) or not CACHE_SESSION.fullmatch(session):
+        return None
     cache = Path(config_path).parent / "cache"
+    marker = cache / "facts" / (session + "." + FACTS_MARKER)
+    guard(cache, marker)
+    return marker
+
+
+def _enable_facts(config_path, session):
+    """Best effort: create cache/facts (the capture hook appends there but cannot create it) and the
+    session's enablement marker, which native-facts and the PreCompact fold require."""
     try:
-        guard(cache, cache / "facts")
-        (cache / "facts").mkdir(parents=True, exist_ok=True)
+        marker = _marker(config_path, session)
+        if marker is not None:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
     except (StoreError, OSError):
         pass
+
+
+def facts_enabled(config_path, session):
+    """True when the session's enablement marker exists; an unreadable cache counts as absent."""
+    try:
+        marker = _marker(config_path, session)
+        return marker is not None and marker.is_file()
+    except (StoreError, OSError):
+        return False
 
 
 def fold_facts(config_path, root, session):
@@ -287,6 +326,11 @@ def save_level(checkpoint, saved):
         return "partial-stale" if _utc(checkpoint["recorded_at"]) < _utc(changed) else None
     except (KeyError, TypeError, ValueError):  # freshness unprovable: not complete
         return "partial-stale"
+
+
+def _event_key(event, checkpoint):
+    return digest(json.dumps({"trigger": event.get("trigger"), "cursor": cursor(resolve_transcript(event.get("transcript_path"))),
+                              "revision": checkpoint["revision"] if checkpoint else None}, sort_keys=True))
 
 
 def handle_event(event, config_path, *, native=False):
@@ -343,13 +387,15 @@ def handle_event(event, config_path, *, native=False):
             sections = [[policy + info, short + info, shortest], [], [], [], []]
             status, warning, partial = [], "", False
             if enabled:
-                _ensure_facts_dir(config_path)
+                if native:
+                    _enable_facts(config_path, session)
                 try:
                     bind(root, session, event)
                     recovering = source in ("compact", "resume")
                     if recovering:
-                        sections[3] = _recovery_variants(root, session)
+                        # Facts first: a corrupt checkpoint raises and must not drop them.
                         sections[2], sections[4] = _facts_variants(root, session)
+                        sections[3] = _recovery_variants(root, session)
                     elif source in ("startup", "clear", "fork"):
                         status.append("New work context: do not load or start old work unless explicitly requested.")
                     else:
@@ -380,15 +426,19 @@ def handle_event(event, config_path, *, native=False):
         if not enabled:
             return {}
         if name == "PreCompact":
+            if not (native and facts_enabled(config_path, session)):
+                # Plugin path, or a session no native SessionStart enabled: save exactly as before
+                # the facts layer (a snapshot, or NO_CHECKPOINT without a record).
+                checkpoint = current(root, session)
+                snapshot(root, session, _event_key(event, checkpoint))
+                return _notification(notice(key, None, state_dir)["message"])
             saved, facts_error = fold_facts(config_path, root, session)
             checkpoint = current(root, session)
             if checkpoint is None:
                 # partial-missing: facts alone are the save; no empty snapshot. failed: neither saved.
                 code = facts_error or ("partial-missing" if saved is not None else "NO_CHECKPOINT")
                 return _notification(notice(key, code, state_dir)["message"])
-            event_key = digest(json.dumps({"trigger": event.get("trigger"), "cursor": cursor(resolve_transcript(event.get("transcript_path"))),
-                                          "revision": checkpoint["revision"]}, sort_keys=True))
-            snapshot(root, session, event_key)
+            snapshot(root, session, _event_key(event, checkpoint))
             if facts_error:
                 return _notification(notice(key, facts_error, state_dir, record_saved=True)["message"])
             return _notification(notice(key, save_level(checkpoint, saved), state_dir)["message"])

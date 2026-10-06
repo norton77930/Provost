@@ -613,8 +613,12 @@ EXPIRY_DAYS = 30
 SESSION_FILES = {"binding.json", "horizon.json", "current.json", "latest.json", "compaction.json", "facts.json", ".lock"}
 # Per-session files of the native-facts cache (<config dir>/cache/facts), keyed by the raw session id.
 CACHE_SESSION = re.compile(r"^[A-Za-z0-9-]+$")
-FACTS_FLAGS = ("pending-edit", "pending-dispatch", "reminded")
-CACHE_FILE = re.compile(r"^([A-Za-z0-9-]+)\.(?:jsonl(?:\.folding-[A-Za-z0-9]+)?|%s)$" % "|".join(FACTS_FLAGS))
+FACTS_FLAGS = ("pending-edit", "pending-dispatch", "reminded")  # reminder flags; record clears them
+# Enablement marker: a native SessionStart with handoff enabled for the workspace creates it; capture,
+# reminders and the PreCompact fold run only for sessions that have it. record never clears it.
+FACTS_MARKER = "enabled"
+CACHE_FLAGS = (*FACTS_FLAGS, FACTS_MARKER)
+CACHE_FILE = re.compile(r"^([A-Za-z0-9-]+)\.(?:jsonl(?:\.folding-[A-Za-z0-9]+)?|%s)$" % "|".join(CACHE_FLAGS))
 # Rewritten on resume (binding), compaction and every write; their mtime counts as activity.
 ACTIVITY_FILES = SESSION_FILES - {".lock"}
 # Session content that lets a dir without records or snapshots expire (a binding alone does not).
@@ -746,7 +750,7 @@ def _remove_expired(home, entry, staging, cutoff, repo_key):
 
 
 def _cache_of(home, directory, name, cache):
-    """Existing facts-cache files (spool, claimed leftovers, reminder flags) of the session stored
+    """Existing facts-cache files (spool, claimed leftovers, reminder flags, marker) of the session stored
     in directory; [] without a cache dir or a session id (binding.json, facts.json, compaction.json)
     whose digest is name. Never follows links."""
     if cache is None:
@@ -764,7 +768,7 @@ def _cache_of(home, directory, name, cache):
     cache = Path(cache)
     try:
         guard(cache.parent, cache)
-        paths = [cache / (session + ".jsonl"), *[cache / (session + "." + flag) for flag in FACTS_FLAGS],
+        paths = [cache / (session + ".jsonl"), *[cache / (session + "." + flag) for flag in CACHE_FLAGS],
                  *sorted(cache.glob(session + ".jsonl.folding-*"))]
         for path in paths:
             guard(cache.parent, path)
@@ -878,7 +882,7 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
     Only the current store is pruned; legacy stores are never touched.
     With facts_cache (the native-facts cache dir), each listed entry whose session id is
     known names that session's existing cache files (`facts_cache`: spool, claimed spool
-    leftovers, reminder flags); under apply they are deleted once the session itself is.
+    leftovers, reminder flags, enablement marker); under apply they are deleted once the session itself is.
     Cache files of sessions with no dir anywhere in the store are listed under
     `orphan_facts_cache` (only when there is something to report) once their newest
     file is older than the expiry age; under apply they are deleted.

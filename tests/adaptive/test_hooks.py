@@ -44,13 +44,31 @@ class HookTests(FixtureCase):
         self.assertIn("terminalSequence", output)
 
     def test_missing_checkpoint_not_reported_as_saved(self):
-        output = json.dumps(handle_event(self.event("PreCompact"), self.config_path))
+        self.enable_facts()
+        output = json.dumps(handle_event(self.event("PreCompact"), self.config_path, native=True))
         self.assertIn("decision record missing", output)
         self.assertNotIn("handoff saving recovered", output)
 
+    def test_precompact_without_marker_keeps_the_pre_facts_behaviour(self):
+        from provost_runtime.store import session_dir
+        for native in (False, True):
+            output = json.dumps(handle_event(self.event("PreCompact"), self.config_path, native=native))
+            self.assertIn("NO_CHECKPOINT", output)
+            self.assertFalse((session_dir(self.root, "s1") / "facts.json").exists())
+        record(self.root, "s1", self.payload(), None, "r")
+        self.assertIn("handoff saving recovered", json.dumps(handle_event(self.event("PreCompact"), self.config_path)))
+        self.assertFalse((session_dir(self.root, "s1") / "facts.json").exists())
+
+    def test_marker_on_plugin_path_does_not_fold(self):
+        from provost_runtime.store import session_dir
+        self.enable_facts()
+        self.assertIn("NO_CHECKPOINT", json.dumps(handle_event(self.event("PreCompact"), self.config_path)))
+        self.assertFalse((session_dir(self.root, "s1") / "facts.json").exists())
+
     def test_compact_after_partial_save_asks_for_a_record_and_points_to_facts(self):
         from provost_runtime.store import session_dir
-        handle_event(self.event("PreCompact"), self.config_path)
+        self.enable_facts()
+        handle_event(self.event("PreCompact"), self.config_path, native=True)
         output = handle_event(self.event("SessionStart", "compact"), self.config_path)
         self.assertEqual(output["systemMessage"],
                          "Provost: last compaction saved facts only; write a decision record from the compaction "
@@ -59,8 +77,10 @@ class HookTests(FixtureCase):
 
     def test_compact_after_failed_save_keeps_failure_warning(self):
         from provost_runtime import facts
-        with mock.patch.object(facts, "fold", side_effect=StoreError("WRITE_FAILED")):
-            handle_event(self.event("PreCompact"), self.config_path)
+        self.enable_facts()
+        with mock.patch.object(facts, "fold", side_effect=StoreError("WRITE_FAILED")) as fold:
+            handle_event(self.event("PreCompact"), self.config_path, native=True)
+        fold.assert_called_once()
         output = handle_event(self.event("SessionStart", "compact"), self.config_path)
         self.assertEqual(output["systemMessage"],
                          "Provost: previous handoff save failed; verify any older checkpoint before continuing.")
@@ -184,7 +204,9 @@ class SessionStartBudgetTests(FixtureCase):
         self.assertIn("dirty 2/7", text)
 
     def test_partial_save_status_is_kept_with_the_facts(self):
-        handle_event({"session_id": "s1", "cwd": str(self.root), "hook_event_name": "PreCompact"}, self.config_path)
+        self.enable_facts()
+        handle_event({"session_id": "s1", "cwd": str(self.root), "hook_event_name": "PreCompact"}, self.config_path,
+                     native=True)
         self.seed_facts(files=300, repos=5, agents=40, name_chars=300)
         text = self.start()
         self.assertIn("write a decision record from the compaction summary", text)
@@ -218,15 +240,66 @@ class SessionStartBudgetTests(FixtureCase):
                 self.start("compact")
                 self.start("resume", native=False)
 
-    def test_session_start_creates_the_facts_cache_dir(self):
+    def test_session_start_creates_the_facts_cache_dir_and_marker(self):
         facts_dir = self.config_path.parent / "cache" / "facts"
         self.start("startup")
         self.assertTrue(facts_dir.is_dir())
+        self.assertEqual([p.name for p in facts_dir.iterdir()], ["s1.enabled"])
         self.cfg["handoff"] = False
         self.config_path.write_text(json.dumps(self.cfg))
+        (facts_dir / "s1.enabled").unlink()
         facts_dir.rmdir()
         self.start("startup")
         self.assertFalse(facts_dir.exists())
+
+    def test_marker_needs_native_path_and_resolved_workspace(self):
+        facts_dir = self.config_path.parent / "cache" / "facts"
+        self.start("startup", native=False)
+        self.assertFalse(facts_dir.exists())
+        self.cfg["workspace_roots"] = []
+        self.config_path.write_text(json.dumps(self.cfg))
+        handle_event(self.event("startup"), self.config_path, native=True)
+        self.assertFalse(facts_dir.exists())
+        self.cfg["workspace_roots"] = [str(self.root)]
+        self.config_path.write_text(json.dumps(self.cfg))
+        handle_event(self.event("startup", session="bad.id"), self.config_path, native=True)
+        self.assertFalse(facts_dir.exists())  # the hook could never use such a session id
+
+    def test_corrupt_checkpoint_keeps_the_facts_section(self):
+        from provost_runtime.store import session_dir
+        written = record(self.root, "s1", self.payload("small next"), None, "r")
+        (session_dir(self.root, "s1") / "records" / (written["revision"] + ".json")).write_text("{broken")
+        path = self.seed_facts()
+        text = self.start()
+        self.assertIn("Checkpoint unavailable", text)
+        self.assertIn("Session facts", text)
+        self.assertIn(str(path), text)
+
+    def test_capture_anomalies_are_surfaced(self):
+        from provost_runtime import facts
+        from provost_runtime.config import handoff_home
+        from provost_runtime.store import _seal, atomic_write
+        record(self.root, "s1", self.payload("small next"), None, "r")
+
+        def seed(events, errors, **sizes):
+            path = self.seed_facts(**sizes)
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data.pop("checksum")
+            atomic_write(handoff_home(), path, _seal(dict(data, events_captured=events, spool_errors=errors)))
+            return path
+
+        path = seed(12, 0)
+        self.assertNotIn("Facts capture", self.start())
+        info = facts.summary(json.loads(path.read_text(encoding="utf-8")), path)
+        self.assertEqual((info["events_captured"], info["spool_errors"]), (12, 0))
+        seed(12, 3)
+        self.assertIn("Facts capture: 12 events, 3 unreadable spool lines", self.start())
+        seed(0, 0)
+        self.assertIn("Facts capture: 0 events — capture may be failing", self.start())
+        seed(0, 2, files=0, repos=5, name_chars=1500)  # the summary shrinks to its path
+        text = self.start()
+        self.assertIn("Session facts omitted for size", text)
+        self.assertIn("capture may be failing", text)
 
 
 class TranscriptFallbackTests(FixtureCase):
