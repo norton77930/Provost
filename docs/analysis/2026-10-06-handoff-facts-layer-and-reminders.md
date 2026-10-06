@@ -35,6 +35,14 @@ handoff 目前只靠主 AI 自己呼叫 `record`。AI 沒記錄時，壓縮前�
   - 事件先寫本機 spool 再背景整理（`src/cli/spool-hook-event.ts`）。
   - SessionStart 輸出有 10,000 字元的硬預算，按固定順序整筆刪除；註解說明 Claude Code 會把超量輸出換成約 2KB 的替代內容（`src/services/context/ContextBudget.ts`）。
   - 不採用的部分：每次工具呼叫都叫 LLM、常駐 worker 加資料庫、儲存原始工具輸入輸出。
+- **S0 實機探測（2026-10-06，Claude Code 2.1.291，Windows 11，Git Bash）**
+  - 方法：在 job 暫存目錄用 `claude -p --model haiku --settings <探測設定>` 開獨立子 session，探測 hook 把收到的輸入寫成檔案；沒有修改使用者的 settings。
+  - 子代理的工具事件會觸發 PostToolUse，輸入帶 `agent_id` 和 `agent_type`；主 session 的事件沒有這兩個欄位。
+  - PostToolUse(Agent)：前景子代理在它結束時觸發一次；背景子代理（`run_in_background: true`）在啟動時就觸發。
+  - `async: true` 的 hook 在 Windows 正常執行（刻意延遲 2 秒的 hook 仍寫出紀錄）。
+  - 背景子代理結果回來時會觸發 UserPromptSubmit，`prompt` 以 `<task-notification>` 開頭；輸入欄位有 `prompt_id`。
+  - SessionStart 的 `additionalContext`：8,000 和 9,500 字元完整保留；10,500 和約 15,600 字元被換成 `<persisted-output>` 與 2KB 預覽，AI 只看得到前 2KB。9,500 那次另一支 hook（native-event）也輸出了約 1,600 字元，合計超過 10,000 仍完整，所以上限是**每支 hook 各自計算**。
+  - **Windows 上 bash 的啟動成本**：`bash -c exit` 中位數約 656 ms；現有 `native-reminder` 中位數約 570 ms。腳本內每個子程序（`$(...)`、`printf | tr`、`seq`、`date`）也要再花數百毫秒：第一版探測腳本因此跑了 13 到 19 秒，超過 20 秒 timeout 而沒有輸出，改成純內建寫法後降到 1 秒內。**`native-facts` 不可以使用任何子程序或命令替換。**
 
 ## 3. 範圍與非目標
 
@@ -65,7 +73,7 @@ handoff 目前只靠主 AI 自己呼叫 `record`。AI 沒記錄時，壓縮前�
 | PostToolUse `Agent` | `subagent_type`、`description`（截斷到 120 字元）、`run_in_background`、時間 | 給子代理的 prompt |
 | PostToolUse `EnterWorktree`、`ExitWorktree` | worktree 路徑或名稱、時間 | |
 | PostToolUse `Bash`、`PowerShell` | 只取 `cd <路徑>`、`git -C <路徑>`、`Set-Location <路徑>` 的目錄路徑，用來找出動過的 repo | 指令內容 |
-| UserPromptSubmit | 輪次編號加 1（供 §6 節流用） | 提示內容 |
+| UserPromptSubmit | 不寫入 spool，只依旗標決定是否提醒（§6） | 提示內容 |
 
 子代理的工具事件也收集，並標記 `agent_type`。在 Claude Code 中，子代理的工具事件同樣會觸發 PostToolUse，輸入帶有 `agent_id`；這一點列入 §9 S0 實測。
 
@@ -76,10 +84,10 @@ handoff 目前只靠主 AI 自己呼叫 `record`。AI 沒記錄時，壓縮前�
   - 檔名只接受 `[A-Za-z0-9-]` 組成的 session_id，其他字元一律放棄記錄。
   - 路徑字串直接沿用 hook 輸入裡已經轉義過的 JSON 字串，不重新編碼。
 - 以下任一情況都輸出 `{}` 並以 exit 0 結束，絕不阻擋工具：設定沒有 `"handoff": true`、解析失敗、寫入失敗。
-- 註冊方式：
-  - `Bash|PowerShell|EnterWorktree|ExitWorktree` 設成 `async: true`，只做收集。
-  - `Edit|Write|NotebookEdit|Agent` 用同步 hook，因為同一支腳本也要決定是否輸出提醒（§6）。
-  - `UserPromptSubmit` 同步，只遞增輪次。
+- 註冊方式（S0 後修訂，見 §6）：
+  - PostToolUse `Edit|Write|NotebookEdit|Agent|Bash|PowerShell|EnterWorktree|ExitWorktree` 全部設成 `async: true`，只做收集，AI 不等待。
+  - `UserPromptSubmit` 同步，負責判斷並輸出提醒（§6）。每輪只多一次 bash 啟動（約 0.6 秒）。
+- 腳本內不得使用任何子程序：不可用 `$(...)`、管線、`date`、`seq` 等外部指令。時間取 `printf -v ts '%(%s)T' -1`，建立旗標檔用 `: > <path>`。
 
 ### 4.3 PreCompact 整合
 
@@ -125,24 +133,32 @@ PreCompact 判斷：
 
 ## 6. 提醒規則
 
-觸發條件：
+2026-10-06 S0 後修訂：因 Windows 上每次啟動 bash 約 0.6 秒，提醒不在改檔當下發出，改在**下一輪開頭**（UserPromptSubmit）判斷。做法參考 claude-mem：工具事件的收集一律 async，只在每輪開頭與 AI 說話。使用者已同意。
 
-1. 派出寫程式角色的子代理（現有規則，角色清單不變）。
-2. 上次 `record` 之後，**主 session** 第一次用 Edit、Write 或 NotebookEdit 改 repo 內的檔案。
-   - 子代理的改檔不觸發（輸入含 `agent_id`）。
-   - repo 外的檔案不觸發。在 bash 端，判斷方式是路徑不含 `/.claude/jobs/`、`/tmp/`、`AppData/Local/Temp`、`/memory/` 等片段。
+**旗標**（收集 hook 以 `: > <path>` 建立，只用內建功能）：
 
-節流：
+- `<session_id>.pending-edit`：**主 session**（輸入不含 `agent_id`）用 Edit、Write 或 NotebookEdit 改了 repo 內的檔案。
+  - repo 外的檔案不建立旗標。判斷方式是路徑含 `/.claude/jobs/`、`/tmp/`、`AppData/Local/Temp`、`/memory/` 等片段（含反斜線寫法）就視為 repo 外。
+- `<session_id>.pending-dispatch`：派出寫程式角色的子代理。角色清單沿用 `PROVOST_REMINDER_ROLES` 與其預設值。
+- `<session_id>.reminded`：已經提醒過。
 
-- 同一輪（兩次 UserPromptSubmit 之間）最多提醒一次。
-- 這一輪已經有 `record` 時不提醒。
-- 狀態存在 `~/.claude/provost/cache/facts/<session_id>.state`，格式是一行 `turn=<n> reminded=<n> recorded_turn=<n> armed=<0|1>`。
-  - 寫入者：`native-facts` 寫 `turn`、`reminded`、`armed=0`；`record` 指令（Python）寫 `recorded_turn` 和 `armed=1`。
-  - 兩邊都以「整檔覆寫」寫入，不做讀改寫鎖。最壞情況是一輪內多提醒一次或少提醒一次，可以接受。
+旗標都放在 `~/.claude/provost/cache/facts/`。
 
-提醒文字（第 2 種觸發）：`Handoff: first repo edit since the last record. Record the decision behind this change now (status, then record); facts are captured automatically.`
+**UserPromptSubmit 判斷**：有 `pending-edit` 或 `pending-dispatch`，而且沒有 `reminded` 時，輸出一次提醒並建立 `reminded`；其他情況輸出 `{}`。
 
-`native-reminder` 的功能併入 `native-facts`。舊腳本保留一個版本作為相容入口，直接轉呼叫新腳本。
+**`record` 指令**（Python）成功後，刪除該 session 的三個旗標。
+
+效果：
+
+- 每輪最多提醒一次。提醒一次後，直到下一次 `record` 前都不再提醒，避免洪水。
+- 上一輪結束前已經 record 的話，旗標已被清除，不提醒。
+- record 之後又改檔，旗標重新建立，下一輪會再提醒。
+- 背景子代理的結果通知也會觸發 UserPromptSubmit（S0 實測），所以結果回來時也能提醒。
+- async 收集可能晚於下一次 UserPromptSubmit 才寫入旗標。最壞情況是晚一輪提醒，可以接受。
+
+提醒文字：`Handoff: since the last record this session edited repo files or dispatched a writer subagent. Record the decisions behind them now (status, then record); facts are captured automatically.`
+
+`native-reminder` 不再註冊（它是 PostToolUse(Agent) 的同步 hook，每次派工要多等約 0.6 秒）。腳本保留一個版本，只輸出 `{}`，避免舊設定報錯，下一版再移除。
 
 ## 7. SessionStart 開場訊息預算
 
@@ -165,18 +181,18 @@ startup、clear、fork 不注入事實。只有 compact 和 resume 會注入，�
 - `status`：輸出新增 `facts` 欄位，內容是 §7 第 3 項的摘要。`template.sources` 預填最多 10 個 repo 內改過的檔案（`kind: file`），AI 可以刪改。
 - 新指令 `changes --workspace <root> --session <id>`：唯讀，輸出 `facts.json` 加上尚未整合的 spool 內容，並即時跑一次 §4.3 的 git 查詢。
 - `prune`：一併處理 spool、`.state` 和 `facts.json`，過期條件與 session 相同。
-- hook 註冊：需要在 `~/.claude/settings.json` 新增 `native-facts`（PostToolUse 兩組、UserPromptSubmit 一組），並移除 `native-reminder` 的註冊。這一步屬於「寫入 workspace 外」，安裝時另行徵求同意；修改時只能用 parser 讀寫，因為該檔含有憑證。
+- hook 註冊：需要在 `~/.claude/settings.json` 新增 `native-facts`（PostToolUse 一組 async、UserPromptSubmit 一組同步），並移除 `native-reminder` 的註冊。這一步屬於「寫入 workspace 外」，安裝時另行徵求同意；修改時只能用 parser 讀寫，因為該檔含有憑證。
 - `runtime_hash` 的檔案清單新增 `hooks/native-facts`。
 
 ## 9. 實作切片（核准後）
 
 | 切片 | 內容 | 驗證 |
 |---|---|---|
-| S0 | 實機探測（不改 runtime）：子代理的工具事件是否觸發 PostToolUse 並帶 `agent_id`；async hook 在 Windows 是否正常；背景子代理的結果通知是否觸發 UserPromptSubmit；SessionStart 實際上限 | 探測紀錄寫進本文 §2 |
+| S0 | 實機探測（不改 runtime）：子代理的工具事件是否觸發 PostToolUse 並帶 `agent_id`；async hook 在 Windows 是否正常；背景子代理的結果通知是否觸發 UserPromptSubmit；SessionStart 實際上限 | 已完成，結果見 §2 |
 | S1 | `native-facts` 收集與 spool（不含提醒） | bash 腳本測試：各事件類型、子代理標記、路徑抽取、異常輸入輸出 `{}` |
 | S2 | PreCompact 整合、`facts.json`、git 查詢與逾時 | 用暫存 git repo 測：未 commit、session 期間 commit、checkout 還原、跨 repo、逾時 |
 | S3 | 三級狀態與通知 | 測三種狀態的判斷與去重 |
-| S4 | 提醒節流（併入 `native-facts`）、`record` 更新 `.state` | 測同輪一次、record 後重新啟用、子代理改檔不觸發 |
+| S4 | 提醒旗標與 UserPromptSubmit 判斷（`native-facts`）、`record` 清除旗標、`native-reminder` 改為只輸出 `{}` | 測提醒一次後不重複、record 後重新啟用、子代理改檔與 repo 外檔案不觸發 |
 | S5 | SessionStart 預算與刪除順序、`status` 的 `facts` 欄位、`changes` 指令、`prune` 擴充 | 測各種超量組合都不拋錯、輸出都在 8,000 以內 |
 | S6 | 文件、安裝（含回滾複本）、settings 註冊（徵求同意後） | 完整測試、hash 一致、實機壓縮一次確認 `partial` 和 `complete` |
 
@@ -190,7 +206,8 @@ S1 到 S5 依序進行，因為後面的切片依賴前面的資料格式。各�
 | 不儲存指令內容、檔案內容、提示內容 | S1 測試以含密碼字串的輸入驗證 spool 不含該字串；code-reviewer |
 | PreCompact 在 git 逾時或失敗時仍在 30 秒內完成 | S2 測試（模擬逾時） |
 | 沒有 record 時壓縮結果為 `partial`，不再是 `NO_CHECKPOINT` | S3 測試、S6 實機 |
-| 一輪最多一次提醒；record 後的下一次主 session 改檔會再提醒 | S4 測試 |
+| 一輪最多一次提醒；提醒後到下一次 record 前不重複；record 後的下一次主 session 改檔會再提醒 | S4 測試 |
+| AI 使用工具時不需要等待 handoff hook | S6 實機：設定中只有 UserPromptSubmit 與 SessionStart、PreCompact、PostCompact 是同步 |
 | 開場訊息永遠不超過 8,000 字元且不拋錯 | S5 測試 |
 | 安裝版與 repo 版一致，可回滾 | S6 hash 比對與回滾複本 |
 | 新資料格式與既有 store、prune、legacy 路徑相容 | code-reviewer 與 architecture-reviewer（R2 必要） |
