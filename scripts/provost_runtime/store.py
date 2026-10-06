@@ -614,14 +614,17 @@ SESSION_FILES = {"binding.json", "horizon.json", "current.json", "latest.json", 
 # Per-session files of the native-facts cache (<config dir>/cache/facts), keyed by the raw session id.
 CACHE_SESSION = re.compile(r"^[A-Za-z0-9-]+$")
 FACTS_FLAGS = ("pending-edit", "pending-dispatch", "reminded")
+CACHE_FILE = re.compile(r"^([A-Za-z0-9-]+)\.(?:jsonl(?:\.folding-[A-Za-z0-9]+)?|%s)$" % "|".join(FACTS_FLAGS))
 # Rewritten on resume (binding), compaction and every write; their mtime counts as activity.
 ACTIVITY_FILES = SESSION_FILES - {".lock"}
+# Session content that lets a dir without records or snapshots expire (a binding alone does not).
+UNRECORDED = ("facts.json", "compaction.json")
 
 
 @dataclass(frozen=True)
 class Scan:
     newest: object   # newest activity (epoch seconds): record/snapshot stamps and
-                     # session-file mtimes; None without any record or snapshot
+                     # session-file mtimes; None without any record, snapshot, facts.json or compaction.json
     records: int
     snapshots: int
     extra: bool      # anything a session dir does not normally hold
@@ -661,7 +664,7 @@ def _stamp(path, key, data):
 def _scan(home, directory):
     """Read-only inventory of a session dir; never follows links (StoreError LINKED_STORAGE)."""
     guard(home, directory)
-    newest, counts, extra, touched = None, {"records": 0, "snapshots": 0}, False, None
+    newest, counts, extra, touched, unrecorded = None, {"records": 0, "snapshots": 0}, False, None, False
     owners = set()
     for child in directory.iterdir():
         guard(home, child)
@@ -684,10 +687,12 @@ def _scan(home, directory):
         elif child.name in ACTIVITY_FILES:
             mtime = child.lstat().st_mtime
             touched = mtime if touched is None else max(touched, mtime)
-            if child.name == "binding.json":
+            unrecorded = unrecorded or child.name in UNRECORDED
+            if child.name in ("binding.json", *UNRECORDED):
                 owners.add(_owner(_load(child)))
-    if newest is not None and touched is not None:
-        newest = max(newest, touched)
+    if touched is not None and (newest is not None or unrecorded):
+        # A session that compacted or folded facts but never recorded ages on its files alone.
+        newest = touched if newest is None else max(newest, touched)
     return Scan(newest, counts["records"], counts["snapshots"], extra, frozenset(owners - {None}))
 
 
@@ -742,12 +747,12 @@ def _remove_expired(home, entry, staging, cutoff, repo_key):
 
 def _cache_of(home, directory, name, cache):
     """Existing facts-cache files (spool, claimed leftovers, reminder flags) of the session stored
-    in directory; [] without a cache dir or a session id (binding.json, else facts.json) whose
-    digest is name. Never follows links."""
+    in directory; [] without a cache dir or a session id (binding.json, facts.json, compaction.json)
+    whose digest is name. Never follows links."""
     if cache is None:
         return []
     session = None
-    for file in ("binding.json", "facts.json"):
+    for file in ("binding.json", *UNRECORDED):
         guard(home, directory / file)
         data = _load(directory / file)
         found = data.get("session_id") if data else None
@@ -782,6 +787,78 @@ def _expired_leftover(home, directory, cutoff, repo_key):
     return _is_expired(_scan(home, directory), cutoff, repo_key) and not _lock_held(home, directory)
 
 
+def _stored_sessions(home):
+    """Session digests with a dir (or .pruning- leftover) anywhere in the current store, any repo."""
+    found, repos = set(), home / "v2" / "repos"
+    if not repos.is_dir():
+        return found
+    for repo in repos.iterdir():
+        sessions = repo / "sessions"
+        if sessions.is_dir():
+            for entry in sessions.iterdir():
+                name = entry.name[len(".pruning-"):] if STAGING.fullmatch(entry.name) else entry.name
+                if ID.fullmatch(name):
+                    found.add(name)
+    return found
+
+
+def _orphan_cache(home, cache, cutoff, keep_session, claimed, apply):
+    """Facts-cache files whose session has no dir anywhere in the store, grouped by session id.
+
+    A session's files are listed when the newest of them is older than cutoff; under apply
+    they are deleted after re-checking that no session dir appeared and none was touched.
+    Names without a safe session id and linked entries are skipped, never followed."""
+    out = {"candidates": [], "removed": 0, "skipped": [], "errors": []}
+    cache, groups = Path(cache), {}
+    try:
+        guard(cache.parent, cache)
+        if not cache.is_dir():
+            return out
+        present = _stored_sessions(home)
+        for path in sorted(cache.iterdir()):
+            if str(path) in claimed:
+                continue
+            try:
+                guard(cache.parent, path)
+            except StoreError as exc:
+                out["skipped"].append({"path": str(path), "reason": str(exc)})
+                continue
+            match = CACHE_FILE.fullmatch(path.name)
+            reason = None if match else "UNEXPECTED_NAME"
+            if match and not path.is_file():
+                reason = "UNEXPECTED_CONTENT"
+            if reason:
+                out["skipped"].append({"path": str(path), "reason": reason})
+            elif match[1] != keep_session and digest(match[1]) not in present:
+                groups.setdefault(match[1], []).append(path)
+    except (StoreError, OSError) as exc:
+        reason = str(exc) if isinstance(exc, StoreError) else type(exc).__name__
+        out["skipped"].append({"path": str(cache), "reason": reason})
+        return out
+    for session, paths in sorted(groups.items()):
+        try:
+            newest = max(path.lstat().st_mtime for path in paths)
+            if newest >= cutoff:
+                continue
+            out["candidates"].append({"session_id": session, "files": [str(p) for p in paths],
+                                      "newest": datetime.fromtimestamp(newest, timezone.utc).isoformat()})
+            if not apply or digest(session) in _stored_sessions(home):
+                continue
+            if max(path.lstat().st_mtime for path in paths) >= cutoff:
+                continue
+        except OSError:
+            continue  # changed since the listing; left for a later run
+        for path in paths:
+            try:
+                path.unlink()
+                out["removed"] += 1
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                out["errors"].append({"path": str(path), "error": type(exc).__name__})
+    return out
+
+
 def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_session=None, apply=False, now=None,
           facts_cache=None):
     """List (or with apply, remove) abandoned session dirs; dry-run unless apply.
@@ -802,6 +879,9 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
     With facts_cache (the native-facts cache dir), each listed entry whose session id is
     known names that session's existing cache files (`facts_cache`: spool, claimed spool
     leftovers, reminder flags); under apply they are deleted once the session itself is.
+    Cache files of sessions with no dir anywhere in the store are listed under
+    `orphan_facts_cache` (only when there is something to report) once their newest
+    file is older than the expiry age; under apply they are deleted.
     """
     for days in (older_than_days, expired_older_than_days):
         if days is not None and (not isinstance(days, int) or isinstance(days, bool) or days < 1):
@@ -889,4 +969,10 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
         except OSError as exc:
             result["errors"].append({"session_dir": entry.name, "error": type(exc).__name__,
                                      "left_at": staging.name if staging.exists() else None})
+    if facts_cache is not None:
+        claimed = {path for item in (*result["candidates"], *result["expired"], *result["leftovers"])
+                   for path in item.get("facts_cache", ())}
+        orphans = _orphan_cache(home, facts_cache, expiry_cutoff, keep_session, claimed, apply)
+        if orphans["candidates"] or orphans["skipped"] or orphans["errors"]:
+            result["orphan_facts_cache"] = orphans
     return result

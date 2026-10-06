@@ -163,8 +163,9 @@ sessions that never recorded anything. `doctor` reports them as `stale_sessions`
 `prune` lists session directories that hold only `binding.json` older than
 `--older-than-days` (default 14); it deletes nothing unless `--apply` is given.
 
-`prune` also lists, under `expired`, sessions that hold records or snapshots and
-whose newest activity is older than `--expired-older-than-days` (default 30).
+`prune` also lists, under `expired`, sessions that hold records, snapshots,
+`facts.json` or `compaction.json` and whose newest activity is older than
+`--expired-older-than-days` (default 30).
 Activity is the newest record/snapshot timestamp (else file mtime) or the mtime of
 `binding.json`, `compaction.json`, `current.json`, `latest.json`, `horizon.json` or
 `facts.json`, so a session resumed today is not expired. Each listed session (and
@@ -172,7 +173,12 @@ reclaimable leftover) whose session id is known from `binding.json` or `facts.js
 also names, under `facts_cache`, its existing files in `<provost dir>/cache/facts`:
 the spool `<session_id>.jsonl`, `.folding-*` spool leftovers and the three reminder
 flags. `--apply` deletes them after the session dir itself is removed; a failed
-delete is reported in `errors` with the file name in `left_at`. `--older-than-days` (default 14) applies
+delete is reported in `errors` with the file name in `left_at`. Cache files whose
+session has no directory anywhere in the store are listed per session under
+`orphan_facts_cache` (`candidates`, `removed`, `skipped`, `errors`; present only when
+non-empty) once their newest file is older than the expiry age, and deleted only with
+`--apply`; names without a `[A-Za-z0-9-]+` session id (`UNEXPECTED_NAME`) and linked
+entries (`LINKED_STORAGE`) are skipped. `--older-than-days` (default 14) applies
 to binding-only dirs only. `doctor` reports `expired_sessions` at the default age.
 `--apply` removes expired sessions (counted in `expired_removed`) with the same
 move, re-check and delete steps as below; a session that became fresh or locked in
@@ -186,8 +192,7 @@ Known limits: `horizon.json` carries no checksum, so tampering with it can hide 
 remove records; a reader that overlaps a trim can see a transient
 `CORRUPT_RECORD`/`INCOMPLETE_CHAIN` that a retry clears; `REQUEST_ID_EXPIRED`
 covers the newest trimmed id and on-disk leftovers, while an older trimmed id
-reused against the current head records a new entry (the chain stays valid); a
-session that compacted but never recorded never expires; a corrupt legacy store
+reused against the current head records a new entry (the chain stays valid); a corrupt legacy store
 surfaces as "Checkpoint unavailable" during recovery; submodules, bare-backed and
 separate-git-dir checkouts are refused (`REPO_KEY_UNRESOLVED`); Git older than
 2.31 is refused (`GIT_UNSUPPORTED`); on Windows without long-path support a long

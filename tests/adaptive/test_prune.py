@@ -590,6 +590,76 @@ class FactsPruneTests(FixtureCase):
         self.assertFalse((old.parent / (".pruning-" + old.name)).exists())
         self.assertEqual([p for p in listed if Path(p).exists()], [])
 
+    def unrecorded_session(self, name, days, kind):
+        """A bound session holding only facts.json or compaction.json, its files aged days."""
+        bind(self.root, name, {})
+        directory = session_dir(self.root, name)
+        if kind == "facts":
+            self.seed_facts(session=name)
+        else:
+            (directory / "compaction.json").write_text(json.dumps({"observed": True, "session_id": name}),
+                                                       encoding="utf-8")
+        for path in directory.iterdir():
+            age(path, days)
+        return directory
+
+    def test_unrecorded_facts_or_compaction_sessions_expire_on_their_newest_file(self):
+        for kind in ("facts", "compaction"):
+            with self.subTest(kind=kind):
+                old = self.unrecorded_session(kind + "-old", 40, kind)
+                young = self.unrecorded_session(kind + "-young", 2, kind)
+                recorded = self.expired_session(kind + "-recorded", 40)
+                listed = self.cache_files(kind + "-old")
+                dry = prune(self.root, facts_cache=self.cache)
+                items = {e["session_dir"]: e for e in dry["expired"]}
+                self.assertEqual(sorted(items), sorted([old.name, recorded.name]))
+                self.assertEqual((items[old.name]["records"], items[old.name]["snapshots"]), (0, 0))
+                self.assertEqual(items[recorded.name]["records"], 1)
+                self.assertEqual(sorted(items[old.name]["facts_cache"]), listed)
+                self.assertTrue(old.is_dir() and all(Path(p).exists() for p in listed))
+                self.assertNotIn("orphan_facts_cache", dry)
+                result = prune(self.root, facts_cache=self.cache, apply=True)
+                self.assertEqual((result["expired_removed"], result["errors"]), (2, []))
+                self.assertFalse(old.exists() or recorded.exists())
+                self.assertEqual([p for p in listed if Path(p).exists()], [])
+                self.assertTrue(young.is_dir())
+                self.assertNotIn("orphan_facts_cache", result)
+
+    def test_orphan_cache_files_older_than_the_expiry_are_listed_and_removed_only_with_apply(self):
+        old = self.cache_files("gone")
+        for path in old:
+            age(Path(path), 40)
+        young = self.cache_files("recent")
+        for path in young:
+            age(Path(path), 2)
+        bind(self.root, "live", {})
+        bound = self.cache_files("live")
+        kept = self.cache_files("current")
+        unsafe = [self.cache / "bad name.jsonl", self.cache / "x.unknown"]
+        for path in [*map(Path, bound + kept), *unsafe]:
+            path.write_text("x", encoding="utf-8")
+            age(path, 40)
+        linked = self.cache / "linked.jsonl"
+        target = self.root / "elsewhere"
+        target.mkdir()
+        has_link = make_link(target, linked)
+        dry = prune(self.root, facts_cache=self.cache, keep_session="current")
+        orphans = dry["orphan_facts_cache"]
+        self.assertEqual([(c["session_id"], sorted(c["files"])) for c in orphans["candidates"]], [("gone", old)])
+        self.assertLess(datetime.fromisoformat(orphans["candidates"][0]["newest"]).timestamp(), time.time() - 39 * DAY)
+        reasons = {Path(s["path"]).name: s["reason"] for s in orphans["skipped"]}
+        self.assertEqual({k: v for k, v in reasons.items() if k != "linked.jsonl"},
+                         {"bad name.jsonl": "UNEXPECTED_NAME", "x.unknown": "UNEXPECTED_NAME"})
+        if has_link:
+            self.assertEqual(reasons["linked.jsonl"], "LINKED_STORAGE")
+        self.assertEqual((orphans["removed"], orphans["errors"]), (0, []))
+        self.assertTrue(all(Path(p).exists() for p in old))
+        result = prune(self.root, facts_cache=self.cache, keep_session="current", apply=True)
+        self.assertEqual((result["orphan_facts_cache"]["removed"], result["orphan_facts_cache"]["errors"]), (5, []))
+        self.assertEqual([p for p in old if Path(p).exists()], [])
+        self.assertTrue(all(p.exists() for p in [*map(Path, young + bound + kept), *unsafe, target]))
+        self.assertTrue(session_dir(self.root, "live").is_dir())
+
 
 class PruneCliTests(FixtureCase):
     def run_cli(self, *args):
