@@ -241,7 +241,105 @@ class NativeFactsTests(FixtureCase):
             self.fake_interpreter(bin_dir, name, log)
         self.capture(event("Edit", {"file_path": "/a"}), path_dirs=[bin_dir])
         self.capture(event("Bash", {"command": "cd /x"}), path_dirs=[bin_dir])
+        self.capture(event("Agent", {"subagent_type": "implementer"}), path_dirs=[bin_dir])
+        result = self.run_bash(HOOK, stdin=json.dumps({"session_id": SESSION, "hook_event_name": "UserPromptSubmit",
+                                                       "prompt": "x"}), path_dirs=[bin_dir])
+        self.assertIn("hookSpecificOutput", json.loads(result.stdout))
         self.assertFalse(log.exists(), "native-facts must not launch an interpreter")
+
+    def flags(self, session=SESSION):
+        return sorted(p.name[len(session) + 1:] for p in self.facts_dir.glob(session + ".*")
+                      if p.suffix != ".jsonl")
+
+    def test_main_repo_edit_sets_pending_edit(self):
+        for tool, key in (("Edit", "file_path"), ("Write", "file_path"), ("NotebookEdit", "notebook_path")):
+            for flag in self.facts_dir.glob(SESSION + ".pending-*"):
+                flag.unlink()
+            self.capture(event(tool, {key: "C:\\Users\\x\\repo\\a.py"}))
+            self.assertEqual(self.flags(), ["pending-edit"], tool)
+            self.assertEqual((self.facts_dir / f"{SESSION}.pending-edit").stat().st_size, 0)
+
+    def test_subagent_edit_does_not_set_pending_edit(self):
+        self.capture(event("Edit", {"file_path": "/repo/a.py"}, agent_type="implementer"))
+        data = json.loads(event("Write", {"file_path": "/repo/b.py"}))
+        data = {"agent_id": "a1", **data}  # agent_id alone also marks a subagent
+        self.capture(json.dumps(data))
+        self.assertEqual(self.flags(), [])
+        self.assertEqual(len(self.lines()), 2)
+
+    def test_outside_repo_edits_do_not_set_pending_edit(self):
+        from provost_runtime import facts
+        outside = ["C:\\Users\\x\\.claude\\jobs\\j1\\brief.md", "C:/Users/x/.claude/jobs/j1/a.md",
+                   "C:\\Users\\x\\.Claude\\Projects\\p\\memory\\m.md", "/c/Users/x/.claude/projects/p/a.md",
+                   "C:\\Users\\X\\AppData\\Local\\Temp\\a.txt", "C:/Users/X/appdata/local/temp/b.txt",
+                   "/tmp/a.py", "C:\\tmp\\x.py", "/TMP/y"]
+        for path in outside:
+            self.assertTrue(facts._outside(path), path)  # the hook mirrors facts.OUTSIDE_DEFAULT
+            self.capture(event("Edit", {"file_path": path}))
+            self.assertEqual(self.flags(), [], path)
+        for path in ("C:\\Users\\x\\repo\\a.py", "/home/x/temperature/a.py", "C:/Users/x/.claude/settings.json"):
+            self.assertFalse(facts._outside(path), path)
+            (self.facts_dir / f"{SESSION}.pending-edit").unlink(missing_ok=True)
+            self.capture(event("Edit", {"file_path": path}))
+            self.assertEqual(self.flags(), ["pending-edit"], path)
+
+    def test_writer_dispatch_sets_pending_dispatch(self):
+        for role, agent_type, env in (("implementer-sonnet", None, None), ("mech-executor", "implementer", None),
+                                      (None, None, None), ("custom-writer", None, {"PROVOST_REMINDER_ROLES": "custom-writer"})):
+            for flag in self.facts_dir.glob(SESSION + ".pending-*"):
+                flag.unlink()
+            tool_input = {"prompt": "x"} if role is None else {"subagent_type": role, "prompt": "x"}
+            self.capture(event("Agent", tool_input, agent_type=agent_type), env=env)
+            self.assertEqual(self.flags(), ["pending-dispatch"], role)
+
+    def test_read_only_dispatch_does_not_set_pending_dispatch(self):
+        for role in ("Explore", "code-reviewer", "test-analyst"):
+            self.capture(event("Agent", {"subagent_type": role}))
+        self.capture(event("Agent", {"subagent_type": "implementer"}), env={"PROVOST_REMINDER_ROLES": "x"})
+        self.assertEqual(self.flags(), [])
+
+    def prompt(self, *, session=SESSION, text="go on", env=None):
+        stdin = json.dumps({"session_id": session, "transcript_path": "C:\\Users\\x\\t.jsonl", "cwd": CWD,
+                            "permission_mode": "default", "hook_event_name": "UserPromptSubmit",
+                            "prompt_id": "p1", "prompt": text})
+        result = self.run_bash(HOOK, stdin=stdin, env=env)
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        return json.loads(result.stdout)
+
+    def test_prompt_reminds_once_until_flags_clear(self):
+        self.assertEqual(self.prompt(), {})
+        self.capture(event("Edit", {"file_path": "/repo/a.py"}))
+        out = self.prompt()["hookSpecificOutput"]
+        self.assertEqual(out["hookEventName"], "UserPromptSubmit")
+        self.assertTrue(out["additionalContext"].startswith("Handoff: since the last record"))
+        self.assertEqual(self.flags(), ["pending-edit", "reminded"])
+        self.assertEqual(self.prompt(), {})
+        self.capture(event("Agent", {"subagent_type": "implementer"}))
+        self.assertEqual(self.prompt(), {})
+        for flag in self.facts_dir.glob(SESSION + ".*"):
+            if flag.suffix != ".jsonl":
+                flag.unlink()  # what record does
+        self.assertEqual(self.prompt(), {})
+        self.capture(event("Agent", {"subagent_type": "implementer"}))
+        self.assertIn("hookSpecificOutput", self.prompt())
+
+    def test_prompt_never_writes_the_spool(self):
+        (self.facts_dir / f"{SESSION}.pending-edit").touch()
+        self.prompt(text='"tool_input":{"file_path":"/x"},"hook_event_name":"PostToolUse"')
+        self.assertFalse(self.spool_path().exists())
+        self.assertEqual(self.flags(), ["pending-edit", "reminded"])
+
+    def test_prompt_is_silent_when_disabled_unsafe_or_missing_dir(self):
+        (self.facts_dir / f"{SESSION}.pending-edit").touch()
+        self.config_path.write_text(json.dumps(dict(self.cfg, handoff=False)), encoding="utf-8")
+        self.assertEqual(self.prompt(), {})
+        self.config_path.write_text(json.dumps(self.cfg), encoding="utf-8")
+        for session in ("", "../evil", "a b", 'a"b'):
+            self.assertEqual(self.prompt(session=session), {}, session)
+        self.assertEqual(self.flags(), ["pending-edit"])
+        shutil.rmtree(self.facts_dir)
+        self.assertEqual(self.prompt(), {})
+        self.assertFalse(self.facts_dir.exists())
 
     def test_runtime_hash_covers_the_facts_hook(self):
         from provost_runtime.cli import runtime_hash

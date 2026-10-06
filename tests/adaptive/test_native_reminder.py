@@ -10,66 +10,22 @@ def post_tool_use(role):
                        "tool_input": {"subagent_type": role, "prompt": "x"}})
 
 
-def subagent_stop(role):
-    return json.dumps({"hook_event_name": "SubagentStop", "agent_type": role, "session_id": "s1"})
-
-
 class NativeReminderTests(FixtureCase):
+    """Deprecated: native-facts reminds at turn start; this stub stays one release
+    so stale registrations keep working, and answers {} to everything."""
+
     def reminder(self, stdin, **kwargs):
         result = self.run_bash(HOOK, stdin=stdin, **kwargs)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
         return json.loads(result.stdout)
 
-    def test_missing_config_is_silent(self):
-        self.config_path.unlink()
-        self.assertEqual(self.reminder(post_tool_use("implementer")), {})
-
-    def test_handoff_disabled_is_silent(self):
-        self.config_path.write_text(json.dumps(dict(self.cfg, handoff=False)), encoding="utf-8")
-        self.assertEqual(self.reminder(post_tool_use("implementer")), {})
-
-    def test_pretty_printed_config_is_accepted(self):
-        self.config_path.write_text(json.dumps(self.cfg, indent=2), encoding="utf-8")
-        self.assertIn("hookSpecificOutput", self.reminder(post_tool_use("implementer")))
-
-    def test_dispatch_of_writer_reminds(self):
-        out = self.reminder(post_tool_use("implementer-high"))["hookSpecificOutput"]
-        self.assertEqual(out["hookEventName"], "PostToolUse")
-        self.assertIn("dispatched implementer-high", out["additionalContext"])
-        self.assertIn("record --input", out["additionalContext"])
-        self.assertIn("again after its result arrives", out["additionalContext"])
-
-    def test_subagent_stop_is_always_silent(self):
-        # SubagentStop context lands in the subagent's own conversation and keeps it
-        # running; the reminder must never feed it, even for writer roles.
-        for role in ("implementer", "mech-executor", "custom-writer"):
-            env = {"PROVOST_REMINDER_ROLES": role}
-            self.assertEqual(self.reminder(subagent_stop(role), env=env), {}, role)
-
-    def test_read_only_roles_are_silent(self):
-        for role in ("Explore", "code-reviewer", "test-analyst"):
-            for build in (post_tool_use, subagent_stop):
-                self.assertEqual(self.reminder(build(role)), {}, role)
-
-    def test_unsafe_role_is_silent(self):
-        for role in ('imple"menter', "implementer x", "implementer\\", ""):
-            for build in (post_tool_use, subagent_stop):
-                self.assertEqual(self.reminder(build(role)), {}, role)
-
-    def test_malformed_or_unknown_input_is_silent(self):
-        for stdin in ("", "not json", "{", '{"hook_event_name":"SessionStart","agent_type":"implementer"}',
-                      '{"hook_event_name":"PostToolUse","tool_name":"Agent"}'):
+    def test_every_input_is_silent(self):
+        stdins = [post_tool_use(role) for role in ("implementer", "implementer-high", "general-purpose", "Explore")]
+        stdins += ["", "not json", json.dumps({"hook_event_name": "SubagentStop", "agent_type": "implementer"})]
+        for stdin in stdins:
             self.assertEqual(self.reminder(stdin), {}, stdin)
-
-    def test_role_set_is_overridable(self):
-        env = {"PROVOST_REMINDER_ROLES": "code-reviewer custom-writer"}
-        self.assertIn("hookSpecificOutput", self.reminder(post_tool_use("code-reviewer"), env=env))
-        self.assertIn("hookSpecificOutput", self.reminder(post_tool_use("custom-writer"), env=env))
-        self.assertEqual(self.reminder(post_tool_use("implementer"), env=env), {})
-
-    def test_default_writer_set(self):
-        for role in ("implementer", "implementer-high", "implementer-sonnet", "mech-executor", "general-purpose"):
-            self.assertIn("hookSpecificOutput", self.reminder(post_tool_use(role)), role)
+        env = {"PROVOST_REMINDER_ROLES": "custom-writer"}
+        self.assertEqual(self.reminder(post_tool_use("custom-writer"), env=env), {})
 
     def test_runtime_hash_covers_the_reminder_hook(self):
         from provost_runtime.cli import runtime_hash
@@ -84,6 +40,5 @@ class NativeReminderTests(FixtureCase):
         bin_dir = self.root / "bin"
         for name in ("python", "python3", "py"):
             self.fake_interpreter(bin_dir, name, log)
-        for stdin in (post_tool_use("implementer"), subagent_stop("implementer"), "", post_tool_use("Explore")):
-            self.reminder(stdin, path_dirs=[bin_dir])
+        self.reminder(post_tool_use("implementer"), path_dirs=[bin_dir])
         self.assertFalse(log.exists(), "native-reminder must not launch an interpreter")

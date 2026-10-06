@@ -9,10 +9,26 @@ from . import legacy
 from .config import ConfigError, config_path, handoff_home, load_config, resolve_mode
 from .hooks import (bind, binding, cursor, handle_event, last_binding_at, recovery_context,
                     resolve_transcript, workspace_root)
-from .store import StoreError, current, latest, list_snapshots, prune, record, snapshot, storage_ready
+from .facts import SPOOL_SESSION
+from .store import StoreError, current, guard, latest, list_snapshots, prune, record, snapshot, storage_ready
 
 
 RUNTIME_ROOT = Path(__file__).resolve().parents[2]
+REMINDER_FLAGS = ("pending-edit", "pending-dispatch", "reminded")  # touched by hooks/native-facts
+
+
+def clear_reminder_flags(cfg_path, session):
+    """Best effort: a missing dir or file, or any I/O error, leaves the record untouched."""
+    if not isinstance(session, str) or not SPOOL_SESSION.fullmatch(session):
+        return
+    cache = Path(cfg_path).parent / "cache"
+    for name in REMINDER_FLAGS:
+        flag = cache / "facts" / f"{session}.{name}"
+        try:
+            guard(cache, flag)
+            flag.unlink(missing_ok=True)
+        except (OSError, StoreError):
+            continue
 
 
 def runtime_hash(root=RUNTIME_ROOT):
@@ -139,6 +155,7 @@ def main(argv=None):
                     result = record(root, options.session, payload,
                                     None if options.expected == "null" else options.expected,
                                     options.request_id, cursor=cursor(resolve_transcript(source.get("transcript_path"))))
+                    clear_reminder_flags(config_path(), options.session)
                 elif options.command == "snapshot":
                     if not options.request_id:
                         raise StoreError("REQUEST_ID_REQUIRED")

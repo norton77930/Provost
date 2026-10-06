@@ -171,30 +171,53 @@ Show the listed candidates to the user before running the same command with
 
 ## Reminder hook
 
-`hooks/native-reminder` is an optional, advisory nudge for the main session, which
-otherwise tends to skip milestone records. Register it for `PostToolUse` with
-matcher `Agent` only: when a writer subagent is dispatched it reminds main to
-record the dispatch now and the result once it arrives.
+`hooks/native-facts` captures facts and reminds the main session, which otherwise
+tends to skip milestone records. Register it twice: for `PostToolUse` as an async
+hook, and for `UserPromptSubmit` as a sync hook.
 
-Do not register it for `SubagentStop`. That event's context is delivered to the
-subagent's own conversation and keeps the subagent running, so it would loop the
-worker instead of reaching main; the hook answers `{}` there.
+- `PostToolUse` appends facts to `<provost dir>/cache/facts/<session_id>.jsonl` and
+  touches a flag in the same directory: `<session_id>.pending-edit` when the main
+  session (no `agent_id`/`agent_type` in the input) edits a file with Edit, Write
+  or NotebookEdit outside the scratch locations (`/.claude/jobs/`,
+  `/.claude/projects/`, `AppData/Local/Temp`, `/tmp/`), and
+  `<session_id>.pending-dispatch` when a writer subagent is dispatched (default
+  roles `implementer`, `implementer-high`, `implementer-sonnet`, `mech-executor`,
+  `general-purpose`; override with the space-separated env var
+  `PROVOST_REMINDER_ROLES`). Its output is always `{}`.
+- `UserPromptSubmit` reminds at the start of the next turn, once: when a pending
+  flag exists and `<session_id>.reminded` does not, it creates `.reminded` and adds
+  the reminder as context; otherwise it answers `{}`. A successful `record`
+  (including an idempotent replay) deletes all three flags, so the next edit or
+  dispatch re-arms it. A background subagent's result also arrives as a
+  `UserPromptSubmit`, so results get the reminder too.
 
-It only reminds for writer roles (default `implementer`, `implementer-high`,
-`implementer-sonnet`, `mech-executor`, `general-purpose`; override with the
-space-separated env var `PROVOST_REMINDER_ROLES`). Read-only roles, unknown events,
-malformed input and a config without `"handoff": true` produce `{}`. The hook adds
-context only: it never blocks, never records, and always exits 0. It is pure bash
-with no interpreter launch, so it stays cheap where process spawns are slow.
+Nothing is written when the config lacks `"handoff": true`, the session id is not
+`[A-Za-z0-9-]+`, or the facts directory does not exist (the hook never creates
+it). The hook never blocks and always exits 0. It is pure bash with no
+interpreter, subprocess or pipe, because each process costs about 0.5 s on Windows.
 
 ```json
 {
   "hooks": {
     "PostToolUse": [
-      {"matcher": "Agent", "hooks": [
-        {"type": "command", "command": "bash \"<runtime>/hooks/native-reminder\"", "timeout": 10}
+      {"matcher": "Edit|Write|NotebookEdit|Agent|Bash|PowerShell|EnterWorktree|ExitWorktree", "hooks": [
+        {"type": "command", "command": "bash \"<runtime>/hooks/native-facts\"", "async": true, "timeout": 20}
+      ]}
+    ],
+    "UserPromptSubmit": [
+      {"hooks": [
+        {"type": "command", "command": "bash \"<runtime>/hooks/native-facts\"", "timeout": 10}
       ]}
     ]
   }
 }
 ```
+
+Do not register either hook for `SubagentStop`. That event's context is delivered
+to the subagent's own conversation and keeps the subagent running, so it would loop
+the worker instead of reaching main.
+
+`hooks/native-reminder` is deprecated. It used to remind on `PostToolUse(Agent)`
+synchronously, which cost every dispatch about 0.6 s. It now reads nothing and
+answers `{}`, and stays one release so stale registrations do not error; remove
+its registration.

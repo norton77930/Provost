@@ -1,34 +1,7 @@
 #!/usr/bin/env bash
-# Advisory handoff reminder for PostToolUse(Agent). Pure bash builtins on every
-# path: no interpreter, no external commands. Never blocks. SubagentStop is
-# deliberately silent: its context goes to the subagent's own conversation and
-# keeps that subagent running, so the result reminder rides on the dispatch one.
-set -uo pipefail
-config_file="${PROVOST_CONFIG:-${HOME}/.claude/provost/config.json}"
-config=""
-[[ -r "$config_file" ]] && { IFS= read -r -d '' config < "$config_file" || true; }
-if ! [[ "$config" =~ \"handoff\"[[:space:]]*:[[:space:]]*true([^A-Za-z0-9_]|$) ]]; then
-    printf '{}\n'
-    exit 0
-fi
-input=""
-IFS= read -r -d '' input || true
-event="" role=""
-if [[ "$input" =~ \"hook_event_name\"[[:space:]]*:[[:space:]]*\"([A-Za-z]+)\" ]]; then
-    event="${BASH_REMATCH[1]}"
-fi
-if [[ "$event" != PostToolUse ]]; then
-    printf '{}\n'
-    exit 0
-fi
-if [[ "$input" =~ \"subagent_type\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then
-    role="${BASH_REMATCH[1]}"
-fi
-writers="${PROVOST_REMINDER_ROLES:-implementer implementer-high implementer-sonnet mech-executor general-purpose}"
-if ! [[ "$role" =~ ^[A-Za-z0-9_.-]+$ && " $writers " == *" $role "* ]]; then
-    printf '{}\n'
-    exit 0
-fi
-text="Handoff milestone: dispatched ${role}. Record it now unless already recorded, and record again after its result arrives: run status, write the payload with the Write tool, then one single-line record --input call (see the operations guide from SessionStart)."
-printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"%s"}}\n' "$text"
+# Deprecated: the handoff reminder moved to hooks/native-facts, which reminds at
+# the start of the next turn (UserPromptSubmit). This stub stays for one release
+# so stale PostToolUse/SubagentStop registrations keep working: it reads nothing
+# and always answers {}. Remove its registration from settings.json.
+printf '{}\n'
 exit 0

@@ -161,6 +161,52 @@ class CliTests(FixtureCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(json.loads(result.stdout)["transcript_cursor"]["bytes"], 3)
 
+    def test_record_clears_reminder_flags_and_tolerates_a_missing_dir(self):
+        bind(self.root, "s1", {})
+        facts = self.config_path.parent / "cache" / "facts"
+        facts.mkdir(parents=True)
+        keep = [facts / "s1.jsonl", facts / "s2.pending-edit"]
+        flags = [facts / f"s1.{name}" for name in ("pending-edit", "pending-dispatch", "reminded")]
+        args = ("record", "--workspace", str(self.root), "--session", "s1", "--expected", "null")
+        outputs = []
+        for _ in range(2):  # the idempotent replay clears re-armed flags too
+            for path in keep + flags:
+                path.touch()
+            result = self.run_cli(*args, "--request-id", "r1", data=self.payload())
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            outputs.append(result.stdout)
+            self.assertEqual([p.name for p in flags if p.exists()], [])
+            self.assertTrue(all(p.exists() for p in keep))
+        self.assertEqual(json.loads(outputs[0]), json.loads(outputs[1]))
+        self.assertNotIn("error", json.loads(outputs[0]))
+        shutil.rmtree(facts.parent)
+        result = self.run_cli(*args[:-1], json.loads(outputs[0])["revision"], "--request-id", "r2",
+                              data=self.payload())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(facts.parent.exists())
+
+    def test_reminder_rearms_after_record(self):
+        hook = REPO / "hooks" / "native-facts"
+        bind(self.root, "s1", {})
+        (self.config_path.parent / "cache" / "facts").mkdir(parents=True)
+
+        def run(data):
+            result = self.run_bash(hook, stdin=json.dumps({"session_id": "s1", **data}))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+
+        edit = {"hook_event_name": "PostToolUse", "tool_name": "Edit", "tool_input": {"file_path": "/repo/a.py"}}
+        prompt = {"hook_event_name": "UserPromptSubmit", "prompt": "next"}
+        self.assertEqual(run(edit), {})
+        self.assertIn("hookSpecificOutput", run(prompt))
+        self.assertEqual(run(prompt), {})
+        result = self.run_cli("record", "--workspace", str(self.root), "--session", "s1",
+                              "--expected", "null", "--request-id", "r1", data=self.payload())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(run(prompt), {})
+        run(edit)
+        self.assertIn("hookSpecificOutput", run(prompt))
+
     def test_doctor_host_verified_follows_binding_evidence(self):
         data = json.loads(self.run_cli("doctor", "--workspace", str(self.root)).stdout)
         self.assertIs(data["host_verified"], False)
