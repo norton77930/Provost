@@ -5,6 +5,34 @@
 分類：困難 / R2（handoff store 新增資料種類、hook 輸入解析）/ 證據：測試 + 實機 + 審查
 基底：`wip/adaptive-handoff` @ 474799b（runtime_hash 7d31da04，已安裝）；工作分支 `handoff-facts-layer`
 
+## 0. 實作結果與後續
+
+- **實作**：S1 fe1816a、S2 f7907e9、S3 70ccf00、S4 8d9f9d8、S5 8588110、S5b 17ac5dd、審查修正 R1 aaea3a1。
+- **審查**：
+  - code-reviewer：無 blocker；1 個 major（截斷的描述留下孤立的 surrogate，導致之後每次整理都失敗）。
+  - architecture-reviewer：無 blocker；3 個 major（hook 與 workspace 啟用條件不一致、未追蹤檔案影響時間判斷、回滾不完整）。
+  - 以上於 R1 修正；回滾問題於 S6 安裝時處理。
+  - R1 複審：無 blocker、無 major。
+  - 完整測試曾抓到 plugin 路徑的回歸（PreCompact 改變了非 native 行為），以 `.enabled` 標記修正。
+- **驗證**：
+  - 完整測試 283 OK / 2 skipped（aaea3a1）。
+  - 2026-10-06 全域安裝：runtime_hash 54650df5，與 repo 一致。
+  - 回滾複本 `native-pilot-v1.bak-20261006`，內含只回 `{}` 的 `native-facts`；hooks 區段備份 `~/.claude/provost/settings-hooks.bak-20261006.json`；回滾腳本 `~/.claude/provost/rollback-20261006.py`。
+  - settings 新增 native-facts（PostToolUse async + UserPromptSubmit），移除 native-reminder 的註冊。
+- **實機**（`claude -p` 子 session，真實設定，探測 repo）：
+  - SessionStart 建立 `.enabled`。
+  - Write 寫入 spool（只有路徑）並建立 `pending-edit`。
+  - 下一輪開頭出現提醒並建立 `.reminded`。
+  - `/compact` 回報「facts saved, decision record missing.」，`facts.json` 含檔案、repo、分支與未 commit 修改，spool 已清空；壓縮後的開場要求先補決策紀錄。
+  - 注意：在 Git Bash 用 `claude -p "/compact"` 需設 `MSYS_NO_PATHCONV=1`，否則參數會被轉成 Windows 路徑。
+- **後續（未做）**：
+  - workspace 停用後移除舊的 `.enabled`。
+  - 只綁定、沒有紀錄的 session 被 prune 會中斷執行中的收集，要在文件補一句說明。
+  - commit 時間也要截到「現在」。
+  - session id 規則與 cache 路徑集中成常數。
+  - spool 大小上限。
+  - 安裝前已在執行的 session 要到下一次 SessionStart 才開始收集。
+
 ## 1. 白話摘要
 
 handoff 目前只靠主 AI 自己呼叫 `record`。AI 沒記錄時，壓縮前的 PreCompact 找不到任何 checkpoint，只能回報 `NO_CHECKPOINT`，壓縮後的 AI 什麼都拿不到。
