@@ -1,0 +1,252 @@
+import json
+import shutil
+from _support import FixtureCase, REPO
+
+HOOK = REPO / "hooks" / "native-facts"
+SESSION = "5d1c-ab12"
+CWD = "C:\\Users\\x\\repo"
+
+
+def event(tool, tool_input, *, session=SESSION, agent_type=None, name="PostToolUse", cwd=CWD):
+    """A PostToolUse payload with the key order measured in Claude Code 2.1.291."""
+    data = {"session_id": session, "transcript_path": "C:\\Users\\x\\t.jsonl", "cwd": cwd,
+            "prompt_id": "p1", "permission_mode": "default"}
+    if agent_type:
+        data.update(agent_id="a1", agent_type=agent_type)
+    data.update(effort={"level": "high"}, hook_event_name=name, tool_name=tool,
+                tool_input=tool_input, tool_response={"filePath": "ignored", "success": True},
+                tool_use_id="t1")
+    return json.dumps(data)
+
+
+class NativeFactsTests(FixtureCase):
+    def setUp(self):
+        super().setUp()
+        self.facts_dir = self.config_path.parent / "cache" / "facts"
+        self.facts_dir.mkdir(parents=True)
+
+    def capture(self, stdin, **kwargs):
+        result = self.run_bash(HOOK, stdin=stdin, **kwargs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(json.loads(result.stdout), {})
+        return self.lines()
+
+    def spool_path(self, session=SESSION):
+        return self.facts_dir / f"{session}.jsonl"
+
+    def lines(self, session=SESSION):
+        path = self.spool_path(session)
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+    def assertNothingWritten(self, stdin, **kwargs):
+        self.assertEqual(self.capture(stdin, **kwargs), [])
+        self.assertEqual(list(self.facts_dir.iterdir()), [])
+
+    def test_edit_tools_record_path(self):
+        for tool, key in (("Edit", "file_path"), ("Write", "file_path"), ("NotebookEdit", "notebook_path")):
+            self.spool_path().unlink(missing_ok=True)
+            rows = self.capture(event(tool, {key: "/repo/a.py", "old_string": "x"}))
+            self.assertEqual(len(rows), 1, tool)
+            row = rows[0]
+            self.assertEqual(list(row), ["v", "ts", "k", "cwd", "agent", "tool", "p"])
+            self.assertEqual((row["v"], row["k"], row["tool"], row["p"]), (1, "edit", tool, "/repo/a.py"))
+            self.assertEqual((row["cwd"], row["agent"]), (CWD, ""))
+            self.assertIsInstance(row["ts"], int)
+            self.assertGreater(row["ts"], 1_700_000_000)
+
+    def test_edit_without_path_writes_nothing(self):
+        self.assertNothingWritten(event("Edit", {"old_string": "x"}))
+        self.assertNothingWritten(event("NotebookEdit", {"file_path": "/repo/a.py"}))
+
+    def test_subagent_event_carries_agent_and_main_does_not(self):
+        sub = self.capture(event("Edit", {"file_path": "/r/a"}, agent_type="implementer-sonnet"))[0]
+        self.assertEqual(sub["agent"], "implementer-sonnet")
+        main = self.capture(event("Edit", {"file_path": "/r/b"}))[1]
+        self.assertEqual(main["agent"], "")
+
+    def test_tool_content_cannot_spoof_header_or_path(self):
+        content = '"agent_id":"evil","agent_type":"spoof","tool_input":{"file_path":"/evil"},"cwd":"/evil","session_id":"x"'
+        tool_input = {"content": content, "file_path": "/real/a.py"}
+        rows = self.capture(event("Write", tool_input))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["agent"], rows[0]["cwd"], rows[0]["p"]), ("", CWD, "/real/a.py"))
+        # Content before the path in key order must not win either.
+        reordered = {"content": content, "file_path": "/real/b.py"}
+        data = json.loads(event("Write", reordered))
+        rows = self.capture(json.dumps(data))
+        self.assertEqual(rows[-1]["p"], "/real/b.py")
+        self.assertEqual(rows[-1]["agent"], "")
+
+    def test_tool_response_cannot_supply_fields(self):
+        data = json.loads(event("Write", {"file_path": "/real/a.py"}))
+        data["tool_response"] = {"file_path": "/evil", "run_in_background": True}
+        self.assertEqual(self.capture(json.dumps(data))[0]["p"], "/real/a.py")
+
+    def test_windows_backslash_paths_round_trip(self):
+        path = "C:\\Users\\x\\repo\\new\\tab\\\u00e9 \"q\".py"
+        rows = self.capture(event("Edit", {"file_path": path}))
+        self.assertEqual(rows[0]["p"], path)
+        self.assertEqual(rows[0]["cwd"], CWD)
+
+    def test_agent_event(self):
+        tool_input = {"description": "review the diff", "prompt": "secret prompt text",
+                      "subagent_type": "code-reviewer", "run_in_background": True}
+        rows = self.capture(event("Agent", tool_input))
+        self.assertEqual(list(rows[0]), ["v", "ts", "k", "cwd", "agent", "role", "desc", "bg"])
+        self.assertEqual((rows[0]["k"], rows[0]["role"], rows[0]["desc"], rows[0]["bg"]),
+                         ("agent", "code-reviewer", "review the diff", True))
+        self.assertNotIn("secret prompt text", self.spool_path().read_text(encoding="utf-8"))
+
+    def test_agent_defaults(self):
+        rows = self.capture(event("Agent", {"prompt": "x"}, agent_type="implementer"))
+        self.assertEqual((rows[0]["role"], rows[0]["desc"], rows[0]["bg"], rows[0]["agent"]),
+                         ("general-purpose", "", False, "implementer"))
+        rows = self.capture(event("Agent", {"subagent_type": "Explore", "run_in_background": False}))
+        self.assertIs(rows[1]["bg"], False)
+
+    def test_agent_with_unsafe_role_writes_nothing(self):
+        for role in ('bad"role', "two words", "back\\slash", ""):
+            self.assertNothingWritten(event("Agent", {"subagent_type": role, "description": "d"}))
+
+    def test_description_is_clipped_and_stays_valid_json(self):
+        # The clip is 120 characters of the raw (escaped) JSON text, then repaired.
+        cases = [("a" * 300, "a" * 120),
+                 ("a" * 119 + "\\", "a" * 119),                    # dangling backslash dropped
+                 ("a" * 118 + "\\\\", "a" * 118 + "\\"),            # complete escaped backslash kept
+                 ("a" * 119 + "\n", "a" * 119),                    # cut inside the \n escape
+                 ("a" * 118 + "\u00e9", "a" * 118),                # cut right after \u
+                 ("a" * 115 + "\u00e9", "a" * 115),                # cut inside \u00e9
+                 ("a" * 114 + "\u00e9", "a" * 114 + "\u00e9"),      # exactly complete
+                 ("a" * 114 + "\U0001f600", "a" * 114),            # lone high surrogate dropped
+                 ("a" * 116 + "\\u1", "a" * 116 + "\\u1"),          # literal backslash-u text kept
+                 ("short", "short")]
+        for description, expected in cases:
+            self.spool_path().unlink(missing_ok=True)
+            rows = self.capture(event("Agent", {"subagent_type": "Explore", "description": description}))
+            self.assertEqual(rows[0]["desc"], expected, description[-8:])
+
+    def test_raw_non_ascii_description_stays_valid(self):
+        data = json.loads(event("Agent", {"subagent_type": "Explore", "description": "\u00e9\u4e2d" * 100}))
+        rows = self.capture(json.dumps(data, ensure_ascii=False))
+        self.assertEqual(rows[0]["desc"], ("\u00e9\u4e2d" * 100)[:len(rows[0]["desc"])])
+        self.assertGreater(len(rows[0]["desc"]), 0)
+
+    def test_worktree_events(self):
+        rows = self.capture(event("EnterWorktree", {"path": "C:\\wt\\one"}))
+        self.assertEqual(list(rows[0]), ["v", "ts", "k", "cwd", "agent", "tool", "p"])
+        self.assertEqual((rows[0]["k"], rows[0]["tool"], rows[0]["p"]), ("worktree", "EnterWorktree", "C:\\wt\\one"))
+        rows = self.capture(event("EnterWorktree", {"name": "feature-x"}))
+        self.assertEqual(rows[1]["p"], "feature-x")
+        rows = self.capture(event("ExitWorktree", {"action": "keep"}))
+        self.assertEqual((rows[2]["tool"], rows[2]["p"]), ("ExitWorktree", ""))
+
+    def dirs(self, command, tool="Bash", **kwargs):
+        self.spool_path().unlink(missing_ok=True)
+        rows = self.capture(event(tool, {"command": command, "description": "d"}), **kwargs)
+        for row in rows:
+            self.assertEqual(list(row), ["v", "ts", "k", "cwd", "agent", "p"])
+            self.assertEqual(row["k"], "dir")
+        return [row["p"] for row in rows]
+
+    def test_dir_extraction_forms(self):
+        self.assertEqual(self.dirs("cd /tmp/a && ls"), ["/tmp/a"])
+        self.assertEqual(self.dirs('cd "C:\\Program Files\\x"; ls'), ["C:\\Program Files\\x"])
+        self.assertEqual(self.dirs("cd 'D:\\my dir' && make"), ["D:\\my dir"])
+        self.assertEqual(self.dirs("git -C ../other status"), ["../other"])
+        self.assertEqual(self.dirs('git -C "C:\\r p" log --oneline'), ["C:\\r p"])
+        self.assertEqual(self.dirs("Set-Location C:\\Users\\x\\repo; git status", tool="PowerShell"), ["C:\\Users\\x\\repo"])
+        self.assertEqual(self.dirs("Set-Location -Path 'D:\\a b'", tool="PowerShell"), ["D:\\a b"])
+        self.assertEqual(self.dirs('Set-Location -LiteralPath "D:\\a b" | Out-Null', tool="PowerShell"), ["D:\\a b"])
+        self.assertEqual(self.dirs("(cd sub/dir) && echo hi"), ["sub/dir"])
+        self.assertEqual(self.dirs("echo x\ncd /second\nls"), ["/second"])
+
+    def test_dir_extraction_limits(self):
+        self.assertEqual(self.dirs("cd /a; cd /b && git -C /c log; cd /d"), ["/a", "/b", "/c"])
+        self.assertEqual(self.dirs("cd - && cd '' && cd /ok"), ["/ok"])
+        self.assertEqual(self.dirs("abcd /nope; git status; echo cd"), [])
+        self.assertEqual(self.dirs("cd $(dirname x) && cd `pwd`"), [])
+
+    def test_command_text_is_never_stored(self):
+        command = 'export PASSWORD=hunter2; cd /work && curl -H "Authorization: hunter2" https://x/?t=hunter2'
+        self.assertEqual(self.dirs(command), ["/work"])
+        self.assertNotIn("hunter2", self.spool_path().read_text(encoding="utf-8"))
+        self.spool_path().unlink()
+        self.assertNothingWritten(event("Bash", {"command": "PASSWORD=hunter2 ./deploy.sh"}))
+
+    def test_large_input_is_handled(self):
+        content = "line \"quoted\" \\ text\n" * 20000
+        rows = self.capture(event("Write", {"file_path": "/big/a.py", "content": content}))
+        self.assertEqual(rows[0]["p"], "/big/a.py")
+
+    def test_other_tools_write_nothing(self):
+        for tool in ("Read", "Grep", "TaskCreate", "mcp__x__y"):
+            self.assertNothingWritten(event(tool, {"file_path": "/a", "command": "cd /x"}))
+
+    def test_other_events_write_nothing(self):
+        for name in ("PreToolUse", "UserPromptSubmit", "SessionStart", "SubagentStop"):
+            self.assertNothingWritten(event("Edit", {"file_path": "/a"}, name=name))
+
+    def test_disabled_or_missing_config_writes_nothing(self):
+        stdin = event("Edit", {"file_path": "/a"})
+        self.config_path.write_text(json.dumps(dict(self.cfg, handoff=False)), encoding="utf-8")
+        self.assertNothingWritten(stdin)
+        self.config_path.write_text(json.dumps({k: v for k, v in self.cfg.items() if k != "handoff"}), encoding="utf-8")
+        self.assertNothingWritten(stdin)
+        self.config_path.unlink()
+        self.assertNothingWritten(stdin)
+
+    def test_pretty_printed_config_is_accepted(self):
+        self.config_path.write_text(json.dumps(self.cfg, indent=2), encoding="utf-8")
+        self.assertEqual(len(self.capture(event("Edit", {"file_path": "/a"}))), 1)
+
+    def test_unsafe_session_id_writes_nothing(self):
+        for session in ("", "../evil", "a/b", "a\\\\b", "a b", "a.b", "a:b", 'a"b'):
+            self.assertNothingWritten(event("Edit", {"file_path": "/a"}, session=session))
+        self.assertEqual(list(self.facts_dir.parent.iterdir()), [self.facts_dir])
+
+    def test_missing_session_id_writes_nothing(self):
+        data = json.loads(event("Edit", {"file_path": "/a"}))
+        del data["session_id"]
+        self.assertNothingWritten(json.dumps(data))
+
+    def test_missing_facts_dir_is_not_created(self):
+        shutil.rmtree(self.facts_dir)
+        result = self.run_bash(HOOK, stdin=event("Edit", {"file_path": "/a"}))
+        self.assertEqual((result.returncode, json.loads(result.stdout), result.stderr), (0, {}, ""))
+        self.assertFalse(self.facts_dir.exists())
+
+    def test_unwritable_target_is_silent(self):
+        self.spool_path().mkdir()
+        result = self.run_bash(HOOK, stdin=event("Edit", {"file_path": "/a"}))
+        self.assertEqual((result.returncode, json.loads(result.stdout), result.stderr), (0, {}, ""))
+
+    def test_malformed_input_writes_nothing(self):
+        for stdin in ("", "not json", "{", "{}", '{"hook_event_name":"PostToolUse"}',
+                      '{"hook_event_name":"PostToolUse","tool_name":"Edit","session_id":"s1"}',
+                      '{"session_id":"s1","hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":'):
+            self.assertNothingWritten(stdin)
+
+    def test_appends_across_runs(self):
+        self.capture(event("Edit", {"file_path": "/a"}))
+        rows = self.capture(event("Write", {"file_path": "/b"}))
+        self.assertEqual([row["p"] for row in rows], ["/a", "/b"])
+
+    def test_no_python_is_launched(self):
+        log = self.root / "python.log"
+        bin_dir = self.root / "bin"
+        for name in ("python", "python3", "py"):
+            self.fake_interpreter(bin_dir, name, log)
+        self.capture(event("Edit", {"file_path": "/a"}), path_dirs=[bin_dir])
+        self.capture(event("Bash", {"command": "cd /x"}), path_dirs=[bin_dir])
+        self.assertFalse(log.exists(), "native-facts must not launch an interpreter")
+
+    def test_runtime_hash_covers_the_facts_hook(self):
+        from provost_runtime.cli import runtime_hash
+        copy = self.root / "runtime-copy"
+        shutil.copytree(REPO / "hooks", copy / "hooks")
+        base = runtime_hash(copy)
+        (copy / "hooks" / "native-facts").unlink()
+        self.assertNotEqual(runtime_hash(copy), base)

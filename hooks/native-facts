@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# PostToolUse fact capture for the handoff facts layer. Pure bash builtins on
+# every path: no interpreter, no external command, no command substitution, no
+# pipe (each process costs about 0.5 s on Windows). Appends one JSON line per
+# fact to <provost dir>/cache/facts/<session_id>.jsonl and never blocks: every
+# path prints {} and exits 0. It never creates the facts directory (the runtime
+# side does) and never stores command text, file contents, prompts or responses.
+set -uo pipefail
+config_file="${PROVOST_CONFIG:-${HOME}/.claude/provost/config.json}"
+config=""
+[[ -r "$config_file" ]] && { IFS= read -r -d '' config < "$config_file" || true; }
+if ! [[ "$config" =~ \"handoff\"[[:space:]]*:[[:space:]]*true([^A-Za-z0-9_]|$) ]]; then
+    printf '{}\n'
+    exit 0
+fi
+facts_dir="${config_file%[/\\]*}/cache/facts"
+if [[ ! -d "$facts_dir" ]]; then
+    printf '{}\n'
+    exit 0
+fi
+input=""
+IFS= read -r -d '' input || true
+
+# Header fields come only from the part before tool_input, tool fields only from
+# the part after it, so text inside a tool's own arguments cannot spoof a header.
+if [[ "$input" != *'"tool_input":'* ]]; then
+    printf '{}\n'
+    exit 0
+fi
+head="${input%%\"tool_input\":*}"
+body="${input#*\"tool_input\":}"
+body="${body%%\"tool_response\":*}"
+
+# val_re matches a JSON string value; the capture keeps escapes exactly as sent.
+val_re='"(([^"\\]|\\.)*)"'
+# get <text> <key>: sets val to the raw first string value of "key", else fails.
+get() {
+    local re='"'"$2"'"[[:space:]]*:[[:space:]]*'"$val_re"
+    if [[ "$1" =~ $re ]]; then
+        val="${BASH_REMATCH[1]}"
+        return 0
+    fi
+    val=""
+    return 1
+}
+
+val=""
+get "$head" hook_event_name
+if [[ "$val" != PostToolUse ]]; then
+    printf '{}\n'
+    exit 0
+fi
+get "$head" session_id
+session_id="$val"
+get "$head" tool_name
+tool="$val"
+get "$head" cwd
+cwd="$val"
+get "$head" agent_type
+agent="$val"
+if ! [[ "$session_id" =~ ^[A-Za-z0-9-]+$ ]]; then
+    printf '{}\n'
+    exit 0
+fi
+printf -v ts '%(%s)T' -1
+prefix="\"v\":1,\"ts\":${ts}"
+tail_fields="\"cwd\":\"${cwd}\",\"agent\":\"${agent}\""
+out=""
+
+case "$tool" in
+    Edit|Write|NotebookEdit)
+        key=file_path
+        [[ "$tool" == NotebookEdit ]] && key=notebook_path
+        if get "$body" "$key" && [[ -n "$val" ]]; then
+            out="{${prefix},\"k\":\"edit\",${tail_fields},\"tool\":\"${tool}\",\"p\":\"${val}\"}"$'\n'
+        fi
+        ;;
+    Agent)
+        role="general-purpose"
+        if get "$body" subagent_type; then role="$val"; fi
+        if [[ "$role" =~ ^[A-Za-z0-9_.:-]+$ ]]; then
+            desc=""
+            get "$body" description && desc="${val:0:120}"
+            # Keep the clipped value valid JSON: drop a dangling backslash, a
+            # partial \uXXXX escape or a lone high surrogate from the tail.
+            if [[ "$desc" =~ (\\+)$ ]]; then
+                run="${BASH_REMATCH[1]}"
+                (( ${#run} % 2 )) && desc="${desc%\\}"
+            elif [[ "$desc" =~ (\\+)(u[0-9A-Fa-f]{0,3}|u[dD][89abAB][0-9A-Fa-f]{2})$ ]]; then
+                run="${BASH_REMATCH[1]}"
+                (( ${#run} % 2 )) && desc="${desc%\\u*}"
+            fi
+            bg=false
+            [[ "$body" =~ \"run_in_background\"[[:space:]]*:[[:space:]]*true([^A-Za-z0-9_]|$) ]] && bg=true
+            out="{${prefix},\"k\":\"agent\",${tail_fields},\"role\":\"${role}\",\"desc\":\"${desc}\",\"bg\":${bg}}"$'\n'
+        fi
+        ;;
+    EnterWorktree|ExitWorktree)
+        p=""
+        if get "$body" path || get "$body" name; then p="$val"; fi
+        out="{${prefix},\"k\":\"worktree\",${tail_fields},\"tool\":\"${tool}\",\"p\":\"${p}\"}"$'\n'
+        ;;
+    Bash|PowerShell)
+        if get "$body" command; then
+            cmd="$val"
+            # A directory is bare, \"double-quoted\" (escaped in the raw JSON) or
+            # 'single-quoted'; bare ends at whitespace, ; & | ) or an escaped quote.
+            lead='(^|[^A-Za-z0-9_./-]|\\[nrt])'
+            kw='(cd|git[[:space:]]+-C|Set-Location([[:space:]]+-(Path|LiteralPath))?)'
+            dq='\\"(([^"\\]|\\[^"])*)\\"'
+            sq="'([^']*)'"
+            bare='(([^[:space:];&|)\\"'"'"']|\\\\)+)'
+            re="${lead}${kw}[[:space:]]+(${dq}|${sq}|${bare})"
+            count=0
+            while (( count < 3 )) && [[ "$cmd" =~ $re ]]; do
+                matched="${BASH_REMATCH[0]}"
+                d="${BASH_REMATCH[6]}${BASH_REMATCH[8]}${BASH_REMATCH[9]}"
+                cmd="${cmd#*"$matched"}"
+                if [[ -z "$d" || "$d" == -* || "$d" == *'$('* || "$d" == *'`'* ]]; then
+                    continue
+                fi
+                out+="{${prefix},\"k\":\"dir\",${tail_fields},\"p\":\"${d}\"}"$'\n'
+                count=$(( count + 1 ))
+            done
+        fi
+        ;;
+esac
+
+if [[ -n "$out" ]]; then
+    printf '%s' "$out" 2>/dev/null >> "${facts_dir}/${session_id}.jsonl" || true
+fi
+printf '{}\n'
+exit 0
