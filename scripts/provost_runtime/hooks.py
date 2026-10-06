@@ -3,7 +3,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import legacy
+from . import facts, legacy
 from .config import ConfigError, handoff_home, load_config, resolve_mode, workspace_key
 from .notifications import notice
 from .store import (StoreError, _base, as_workspace, atomic_write, current, digest, guard, latest,
@@ -177,6 +177,17 @@ def recovery_context(root, session):
             + payload)
 
 
+def fold_facts(config_path, root, session):
+    """Fold the facts spool before the snapshot. Never raises: a failure becomes its code."""
+    try:
+        facts.fold(config_path, root, session)
+        return None
+    except StoreError as exc:
+        return str(exc)
+    except Exception:  # facts must never decide or block compaction
+        return "FACTS_FAILED"
+
+
 def handle_event(event, config_path, *, native=False):
     name = event.get("hook_event_name") if isinstance(event, dict) else None
     source = event.get("source", "startup") if isinstance(event, dict) else "startup"
@@ -256,6 +267,7 @@ def handle_event(event, config_path, *, native=False):
         if not enabled:
             return {}
         if name == "PreCompact":
+            facts_error = fold_facts(config_path, root, session)  # noqa: F841 -- save level (S3) reads it
             checkpoint = current(root, session)
             event_key = digest(json.dumps({"trigger": event.get("trigger"), "cursor": cursor(resolve_transcript(event.get("transcript_path"))),
                                           "revision": checkpoint["revision"] if checkpoint else None}, sort_keys=True))
