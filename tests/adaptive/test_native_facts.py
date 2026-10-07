@@ -146,9 +146,9 @@ class NativeFactsTests(FixtureCase):
         rows = self.capture(event("ExitWorktree", {"action": "keep"}))
         self.assertEqual((rows[2]["tool"], rows[2]["p"]), ("ExitWorktree", ""))
 
-    def dirs(self, command, tool="Bash", **kwargs):
+    def dirs(self, command, tool="Bash", cwd=CWD, **kwargs):
         self.spool_path().unlink(missing_ok=True)
-        rows = self.capture(event(tool, {"command": command, "description": "d"}), **kwargs)
+        rows = self.capture(event(tool, {"command": command, "description": "d"}, cwd=cwd), **kwargs)
         for row in rows:
             self.assertEqual(list(row), ["v", "ts", "k", "cwd", "agent", "p"])
             self.assertEqual(row["k"], "dir")
@@ -160,7 +160,7 @@ class NativeFactsTests(FixtureCase):
         self.assertEqual(self.dirs("cd 'D:\\my dir' && make"), ["D:\\my dir"])
         self.assertEqual(self.dirs("git -C ../other status"), ["../other"])
         self.assertEqual(self.dirs('git -C "C:\\r p" log --oneline'), ["C:\\r p"])
-        self.assertEqual(self.dirs("Set-Location C:\\Users\\x\\repo; git status", tool="PowerShell"), ["C:\\Users\\x\\repo"])
+        self.assertEqual(self.dirs("Set-Location C:\\Users\\x\\other; git status", tool="PowerShell"), ["C:\\Users\\x\\other"])
         self.assertEqual(self.dirs("Set-Location -Path 'D:\\a b'", tool="PowerShell"), ["D:\\a b"])
         self.assertEqual(self.dirs('Set-Location -LiteralPath "D:\\a b" | Out-Null', tool="PowerShell"), ["D:\\a b"])
         self.assertEqual(self.dirs("(cd sub/dir) && echo hi"), ["sub/dir"])
@@ -357,6 +357,57 @@ class NativeFactsTests(FixtureCase):
         shutil.rmtree(self.facts_dir)
         self.assertEqual(self.prompt(), {})
         self.assertFalse(self.facts_dir.exists())
+
+    def notification(self, status="completed"):
+        return ("<task-notification>\n<task-id>a1</task-id>\n<status>" + status + "</status>\n"
+                "<summary>Agent done</summary>\n<result>see \"tool_input\": x</result>\n</task-notification>")
+
+    def test_completed_result_notification_reminds_every_time(self):
+        for text in (self.notification(), "\n  " + self.notification()):
+            out = self.prompt(text=text)["hookSpecificOutput"]
+            self.assertEqual(out["hookEventName"], "UserPromptSubmit")
+            self.assertTrue(out["additionalContext"].startswith("Handoff: a subagent result just arrived"))
+            self.assertIn("record the result milestone", out["additionalContext"])
+        self.assertEqual(self.flags(), [])  # the result reminder neither needs nor sets flags
+
+    def test_escaped_result_notification_reminds(self):
+        stdin = json.dumps({"session_id": SESSION, "hook_event_name": "UserPromptSubmit",
+                            "prompt": self.notification()}).replace("<", "\\u003c").replace(">", "\\u003e")
+        result = self.run_bash(HOOK, stdin=stdin)
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertTrue(context.startswith("Handoff: a subagent result just arrived"))
+
+    def test_other_statuses_and_mentions_do_not_remind(self):
+        for text in (self.notification("failed"), self.notification("killed"),
+                     "please explain " + self.notification(), "x\n" + self.notification()):
+            self.assertEqual(self.prompt(text=text), {}, text[:20])
+        self.assertEqual(self.flags(), [])
+
+    def test_result_and_pending_flag_combine_into_one_context(self):
+        (self.facts_dir / f"{SESSION}.pending-dispatch").touch()
+        out = self.prompt(text=self.notification())
+        context = out["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("since the last record", context)
+        self.assertIn("result milestone", context)
+        self.assertEqual(self.flags(), ["pending-dispatch", "reminded"])
+        context = self.prompt(text=self.notification())["hookSpecificOutput"]["additionalContext"]
+        self.assertNotIn("since the last record", context)  # the flag part stays once per record
+        self.assertEqual(self.prompt(), {})
+
+    def test_result_notification_without_marker_is_silent(self):
+        self.marker.unlink()
+        (self.facts_dir / f"{SESSION}.pending-edit").touch()
+        self.assertEqual(self.prompt(text=self.notification()), {})
+        self.assertEqual(self.flags(), ["pending-edit"])
+
+    def test_dir_same_as_cwd_is_not_recorded(self):
+        for command in ("cd C:/Users/x/repo && ls", "cd 'c:\\users\\X\\Repo\\' && ls",
+                        "git -C /c/Users/x/repo status", 'cd "C:\\Users\\x\\repo/"'):
+            self.assertEqual(self.dirs(command), [], command)
+        self.assertEqual(self.dirs("cd /d", cwd="D:\\"), [])
+        self.assertEqual(self.dirs("cd /d/work/ && cd D:/other", cwd="d:/WORK"), ["D:/other"])
+        self.assertEqual(self.dirs("cd C:/Users/x/repo2; cd sub"), ["C:/Users/x/repo2", "sub"])
 
     def test_runtime_hash_covers_the_facts_hook(self):
         from provost_runtime.cli import runtime_hash

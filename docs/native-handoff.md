@@ -262,8 +262,15 @@ hook, and for `UserPromptSubmit` as a sync hook.
   flag exists and `<session_id>.reminded` does not, it creates `.reminded` and adds
   the reminder as context; otherwise it answers `{}`. A successful `record`
   (including an idempotent replay) deletes all three flags, so the next edit or
-  dispatch re-arms it. A background subagent's result also arrives as a
-  `UserPromptSubmit`, so results get the reminder too.
+  dispatch re-arms it. A background subagent's result arrives as a
+  `UserPromptSubmit` whose prompt starts with `<task-notification>`; when its
+  `<status>` is `completed` (any role), the hook also reminds main to record the
+  result milestone if it changes the work state. That reminder fires for every
+  completed result and ignores the flags; when both apply they share one
+  context. Other statuses and ordinary prompts behave as above.
+- A `cd`/`git -C`/`Set-Location` target that names the event's own `cwd` (after
+  normalizing slashes, case, a trailing `/` and a Git Bash `/x/` drive prefix) is
+  not stored as a `dir` fact; relative targets are kept as written.
 
 Nothing is written or reminded unless the session's enablement marker
 `<session_id>.enabled` exists in the facts directory. The native SessionStart

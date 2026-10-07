@@ -11,10 +11,13 @@
 # - PostToolUse (async): appends one JSON line per fact to
 #   <provost dir>/cache/facts/<session_id>.jsonl, prints {}, and touches the
 #   reminder flags <session_id>.pending-edit (main-session edit of a repo file)
-#   and <session_id>.pending-dispatch (writer subagent dispatched).
+#   and <session_id>.pending-dispatch (writer subagent dispatched). A dir fact
+#   whose target normalizes to the event's cwd is skipped.
 # - UserPromptSubmit (sync): with a pending flag and no <session_id>.reminded,
-#   creates .reminded and prints the record reminder once; otherwise {}.
-#   `record` deletes all three flags.
+#   creates .reminded and adds the record reminder once. Independently, every
+#   prompt that is a completed <task-notification> (a subagent result) adds a
+#   result-record reminder, without reading or touching the flags. Both arrive
+#   as one additionalContext; otherwise {}. `record` deletes all three flags.
 set -uo pipefail
 config_file="${PROVOST_CONFIG:-${HOME}/.claude/provost/config.json}"
 config=""
@@ -54,6 +57,17 @@ get() {
     return 1
 }
 
+# norm <raw JSON path>: sets normed to a comparable form: escaped or plain
+# backslashes become /, lowercase, no trailing /, and Git Bash /x/... becomes x:/...
+norm() {
+    local p="${1//\\\\//}"
+    p="${p//\\//}"
+    p="${p,,}"
+    while [[ ${#p} -gt 1 && "$p" == */ ]]; do p="${p%/}"; done
+    [[ "$p" =~ ^/([a-z])(/.*)?$ ]] && p="${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"
+    normed="$p"
+}
+
 val=""
 get "$head" hook_event_name
 event="$val"
@@ -61,14 +75,34 @@ get "$head" session_id
 session_id="$val"
 if [[ "$event" == UserPromptSubmit && "$session_id" =~ ^[A-Za-z0-9-]+$ ]]; then
     flag="${facts_dir}/${session_id}"
-    if [[ -e "${flag}.enabled" && ( -e "${flag}.pending-edit" || -e "${flag}.pending-dispatch" ) && ! -e "${flag}.reminded" ]]; then
-        # Remind only when the marker was written, so a failing write cannot repeat it every turn.
-        if : 2>/dev/null > "${flag}.reminded"; then
-            printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"Handoff: since the last record this session edited repo files or dispatched a writer subagent. Record the decisions behind them now (status, then record); facts are captured automatically."}}'
-            exit 0
+    msg=""
+    if [[ -e "${flag}.enabled" ]]; then
+        if [[ ( -e "${flag}.pending-edit" || -e "${flag}.pending-dispatch" ) && ! -e "${flag}.reminded" ]]; then
+            # Remind only when the marker was written, so a failing write cannot repeat it every turn.
+            if : 2>/dev/null > "${flag}.reminded"; then
+                msg="Handoff: since the last record this session edited repo files or dispatched a writer subagent. Record the decisions behind them now (status, then record); facts are captured automatically."
+            fi
+        fi
+        # A finished subagent's result arrives as a prompt that starts with
+        # <task-notification> (< and > possibly \u-escaped); its first <status> decides.
+        # The prompt is read from the whole input: its text may contain "tool_input":.
+        lt='(<|\\u003[cC])' gt='(>|\\u003[eE])'
+        note_re="^([[:space:]]|\\\\[nrt])*${lt}task-notification${gt}"
+        status_re="${lt}status${gt}([A-Za-z_-]*)${lt}"
+        if get "$input" prompt && [[ "$val" =~ $note_re ]] && [[ "$val" =~ $status_re ]] \
+                && [[ "${BASH_REMATCH[3]}" == completed ]]; then
+            if [[ -n "$msg" ]]; then
+                msg+=" A subagent result also just arrived: if it changes the work state, record the result milestone too."
+            else
+                msg="Handoff: a subagent result just arrived. If it changes the work state, record the result milestone now (status, then record); facts are captured automatically."
+            fi
         fi
     fi
-    printf '{}\n'
+    if [[ -n "$msg" ]]; then
+        printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"'"$msg"'"}}'
+    else
+        printf '{}\n'
+    fi
     exit 0
 fi
 if [[ "$event" != PostToolUse || -z "$body" ]]; then
@@ -151,6 +185,8 @@ case "$tool" in
             sq="'([^']*)'"
             bare='(([^[:space:];&|)\\"'"'"']|\\\\)+)'
             re="${lead}${kw}[[:space:]]+(${dq}|${sq}|${bare})"
+            norm "$cwd"
+            cwd_norm="$normed"
             count=0
             while (( count < 3 )) && [[ "$cmd" =~ $re ]]; do
                 matched="${BASH_REMATCH[0]}"
@@ -159,6 +195,9 @@ case "$tool" in
                 if [[ -z "$d" || "$d" == -* || "$d" == *'$('* || "$d" == *'`'* ]]; then
                     continue
                 fi
+                # The event's cwd already names this directory; relative targets are kept.
+                norm "$d"
+                [[ "$normed" == "$cwd_norm" ]] && continue
                 out+="{${prefix},\"k\":\"dir\",${tail_fields},\"p\":\"${d}\"}"$'\n'
                 count=$(( count + 1 ))
             done
