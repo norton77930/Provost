@@ -30,6 +30,20 @@ switch) still works: `status` reports `legacy_binding`, and the first `record` o
 to or deleted from legacy stores; remove them yourself when no longer needed.
 This bridge is temporary.
 
+## Excluding workspaces
+
+The personal config enables adaptive mode per workspace (`workspace_roots`, exact
+match) or everywhere (`all_workspaces: true`). The optional `exclude_roots` is a list
+of absolute directories that always resolve to legacy, with no binding and no facts
+marker, even under `all_workspaces` or an exact `workspace_roots` match. A workspace,
+or the main checkout it belongs to, is excluded when it equals or lies inside an
+excluded directory (path containment, not name prefix: `C:\Temp2` is not inside
+`C:\Temp`). Use it for scratch locations such as `%TEMP%`, where automated `claude -p`
+runs would otherwise bind a session each. An invalid list is `INVALID_EXCLUDE_ROOTS`.
+Runtimes older than this key reject it as `INVALID_CONFIG`, which disables handoff
+everywhere: add it only after installing a runtime that supports it, and remove it
+before rolling back to an older one.
+
 ## Read status before writing
 
 In Bash (Git Bash on Windows), quote each argument:

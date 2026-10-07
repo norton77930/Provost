@@ -21,6 +21,37 @@ class ConfigTests(FixtureCase):
         with self.assertRaises(ConfigError):
             load_config(self.config_path)
 
+    def test_exclude_roots_win_over_all_workspaces_and_exact_allowlist(self):
+        self.cfg["exclude_roots"] = [str(self.root)]
+        self.assertEqual(resolve_mode(self.cfg, self.root), "legacy")  # exact workspace_roots match
+        self.cfg["workspace_roots"] = []
+        self.cfg["all_workspaces"] = True
+        self.assertEqual(resolve_mode(self.cfg, self.root), "legacy")
+        self.assertEqual(resolve_mode(self.cfg, self.root.with_name(self.root.name + "-copy")), "adaptive")
+
+    def test_exclude_roots_match_nested_paths_not_sibling_prefixes(self):
+        self.cfg.update(all_workspaces=True, exclude_roots=[str(self.root)])
+        self.assertEqual(resolve_mode(self.cfg, self.root / "a" / "b"), "legacy")
+        self.assertEqual(resolve_mode(self.cfg, self.root.with_name(self.root.name + "2")), "adaptive")
+        self.assertEqual(resolve_mode(self.cfg, self.root.parent), "adaptive")
+
+    def test_exclude_roots_cover_main_checkout_of_a_worktree(self):
+        other = self.root.with_name(self.root.name + "-wt")
+        self.cfg.update(all_workspaces=True, exclude_roots=[str(self.root)])
+        self.assertEqual(resolve_mode(self.cfg, other, self.root), "legacy")
+        self.assertEqual(resolve_mode(self.cfg, other, other), "adaptive")
+
+    def test_exclude_roots_validated_and_optional(self):
+        for value in ("C:/tmp", ["relative/path"], [1], {"a": "b"}):
+            cfg = dict(self.cfg, exclude_roots=value)
+            self.config_path.write_text(json.dumps(cfg))
+            with self.subTest(value=value), self.assertRaisesRegex(ConfigError, "INVALID_EXCLUDE_ROOTS"):
+                load_config(self.config_path)
+        self.config_path.write_text(json.dumps(self.cfg))
+        self.assertEqual(load_config(self.config_path)["exclude_roots"], [])
+        self.config_path.write_text(json.dumps(dict(self.cfg, exclude_roots=[str(self.root / "x")])))
+        self.assertEqual(resolve_mode(load_config(self.config_path), self.root), "adaptive")
+
     def test_invalid_schema_types_and_writer_limits(self):
         for key, value in [("schema_version", 99), ("max_writers", True),
                            ("burst_writers", 4), ("max_writers", 3),

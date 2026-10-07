@@ -4,6 +4,7 @@
   "workspace_roots": [
     "D:/work/example-project"
   ],
+  "exclude_roots": [],
   "all_workspaces": false,
   "max_writers": 2,
   "burst_writers": 3,

@@ -28,6 +28,14 @@ class NativeTests(FixtureCase):
             self.assertEqual(json.loads(r.stdout),{})
         self.assertNoStore()
 
+    def test_native_excluded_workspace_creates_no_binding_or_marker(self):
+        self.config_path.write_text(json.dumps({**self.cfg, "all_workspaces": True, "exclude_roots": [str(self.root)]}))
+        r=self.cli("native-hook",data=self.event())
+        self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+        self.assertEqual(json.loads(r.stdout),{})
+        self.assertNoStore()
+        self.assertFalse((self.config_path.parent/"cache"/"facts"/"s1.enabled").exists())
+
     def test_native_invalid_config_warns_without_legacy_policy(self):
         self.config_path.write_text("{bad")
         r=self.cli("native-hook",data=self.event())
