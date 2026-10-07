@@ -15,9 +15,12 @@
 #   whose target normalizes to the event's cwd is skipped.
 # - UserPromptSubmit (sync): with a pending flag and no <session_id>.reminded,
 #   creates .reminded and adds the record reminder once. Independently, every
-#   prompt that is a completed <task-notification> (a subagent result) adds a
-#   result-record reminder, without reading or touching the flags. Both arrive
-#   as one additionalContext; otherwise {}. `record` deletes all three flags.
+#   prompt that is a subagent result adds a result-record reminder, without
+#   reading or touching the flags: a [Subagent hand-back] agent-message, or an
+#   agent's completed <task-notification> that does not point at a
+#   SubagentHandback delivery (background-command notifications never count).
+#   Both arrive as one additionalContext; otherwise {}. `record` deletes all
+#   three flags.
 set -uo pipefail
 config_file="${PROVOST_CONFIG:-${HOME}/.claude/provost/config.json}"
 config=""
@@ -83,14 +86,28 @@ if [[ "$event" == UserPromptSubmit && "$session_id" =~ ^[A-Za-z0-9-]+$ ]]; then
                 msg="Handoff: since the last record this session edited repo files or dispatched a writer subagent. Record the decisions behind them now (status, then record); facts are captured automatically."
             fi
         fi
-        # A finished subagent's result arrives as a prompt that starts with
-        # <task-notification> (< and > possibly \u-escaped); its first <status> decides.
-        # The prompt is read from the whole input: its text may contain "tool_input":.
-        lt='(<|\\u003[cC])' gt='(>|\\u003[eE])'
-        note_re="^([[:space:]]|\\\\[nrt])*${lt}task-notification${gt}"
+        # A subagent's result arrives as a prompt that starts with its hand-back
+        # message (optionally behind the "Another Claude session" wrapper), or as a
+        # <task-notification> for an agent ("<summary>Agent ...", first <status>
+        # completed) that does not just point at a SubagentHandback delivery.
+        # < and > may be \u-escaped. The prompt is read from the whole input: its
+        # text may contain "tool_input":.
+        lt='(<|\\u003[cC])' gt='(>|\\u003[eE])' ws='([[:space:]]|\\[nrt])*'
+        hand_re='^'"$ws"'(Another Claude session sent a message:'"$ws"')?'"$lt"'agent-message from=\\"([^"\\]|\\[^"])*\\"'"$gt$ws"'\[Subagent hand-back\]'
+        note_re='^'"$ws$lt"'task-notification'"$gt"
         status_re="${lt}status${gt}([A-Za-z_-]*)${lt}"
-        if get "$input" prompt && [[ "$val" =~ $note_re ]] && [[ "$val" =~ $status_re ]] \
-                && [[ "${BASH_REMATCH[3]}" == completed ]]; then
+        summary_re="${lt}summary${gt}(Agent )?"
+        result=false
+        if get "$input" prompt; then
+            if [[ "$val" =~ $hand_re ]]; then
+                result=true
+            elif [[ "$val" =~ $note_re && "$val" != *SubagentHandback* ]] \
+                    && [[ "$val" =~ $status_re && "${BASH_REMATCH[3]}" == completed ]] \
+                    && [[ "$val" =~ $summary_re && -n "${BASH_REMATCH[3]}" ]]; then
+                result=true
+            fi
+        fi
+        if [[ "$result" == true ]]; then
             if [[ -n "$msg" ]]; then
                 msg+=" A subagent result also just arrived: if it changes the work state, record the result milestone too."
             else

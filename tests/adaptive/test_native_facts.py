@@ -358,52 +358,81 @@ class NativeFactsTests(FixtureCase):
         self.assertEqual(self.prompt(), {})
         self.assertFalse(self.facts_dir.exists())
 
-    def notification(self, status="completed"):
-        return ("<task-notification>\n<task-id>a1</task-id>\n<status>" + status + "</status>\n"
-                "<summary>Agent done</summary>\n<result>see \"tool_input\": x</result>\n</task-notification>")
+    def handback(self, wrapper=True, tag="[Subagent hand-back]"):
+        text = '<agent-message from="a1b2c3">\n' + tag + ' Done; see "tool_input": x\n</agent-message>'
+        return "Another Claude session sent a message:\n" + text if wrapper else text
 
-    def test_completed_result_notification_reminds_every_time(self):
-        for text in (self.notification(), "\n  " + self.notification()):
-            out = self.prompt(text=text)["hookSpecificOutput"]
-            self.assertEqual(out["hookEventName"], "UserPromptSubmit")
-            self.assertTrue(out["additionalContext"].startswith("Handoff: a subagent result just arrived"))
-            self.assertIn("record the result milestone", out["additionalContext"])
+    def notification(self, status="completed", summary='Agent "fix it" completed',
+                     result="<status>failed</status> in the log"):
+        return ("<task-notification>\n<task-id>a1</task-id>\n<status>" + status + "</status>\n"
+                "<summary>" + summary + "</summary>\n<result>" + result + "</result>\n</task-notification>")
+
+    def assertResultReminder(self, text):
+        out = self.prompt(text=text)["hookSpecificOutput"]
+        self.assertEqual(out["hookEventName"], "UserPromptSubmit")
+        self.assertTrue(out["additionalContext"].startswith("Handoff: a subagent result just arrived"), text[:40])
+        self.assertIn("record the result milestone", out["additionalContext"])
+
+    def test_handback_message_reminds_every_time(self):
+        for text in (self.handback(), self.handback(), self.handback(wrapper=False), "\n  " + self.handback()):
+            self.assertResultReminder(text)
         self.assertEqual(self.flags(), [])  # the result reminder neither needs nor sets flags
 
-    def test_escaped_result_notification_reminds(self):
-        stdin = json.dumps({"session_id": SESSION, "hook_event_name": "UserPromptSubmit",
-                            "prompt": self.notification()}).replace("<", "\\u003c").replace(">", "\\u003e")
-        result = self.run_bash(HOOK, stdin=stdin)
-        self.assertEqual((result.returncode, result.stderr), (0, ""))
-        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
-        self.assertTrue(context.startswith("Handoff: a subagent result just arrived"))
+    def test_escaped_results_remind(self):
+        for text in (self.handback(), self.notification()):
+            stdin = json.dumps({"session_id": SESSION, "hook_event_name": "UserPromptSubmit",
+                                "prompt": text}).replace("<", "\\u003c").replace(">", "\\u003e")
+            result = self.run_bash(HOOK, stdin=stdin)
+            self.assertEqual((result.returncode, result.stderr), (0, ""))
+            context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+            self.assertTrue(context.startswith("Handoff: a subagent result just arrived"), text[:20])
 
-    def test_other_statuses_and_mentions_do_not_remind(self):
-        for text in (self.notification("failed"), self.notification("killed"),
+    def test_other_messages_and_mentions_do_not_remind(self):
+        for text in (self.handback(tag="Can you check the build?"), "please explain " + self.handback(),
+                     "x\n" + self.handback(wrapper=False),
+                     "Another Claude session sent a message:\nhi [Subagent hand-back]"):
+            self.assertEqual(self.prompt(text=text), {}, text[:40])
+        self.assertEqual(self.flags(), [])
+
+    def test_agent_notification_without_handback_reminds(self):
+        # The first <status> decides: a later failed status inside the result does not.
+        for text in (self.notification(), "\n" + self.notification()):
+            self.assertResultReminder(text)
+
+    def test_other_notifications_do_not_remind(self):
+        pointer = "This agent's report was delivered to you as a message from \"a1b2\" (its SubagentHandback call)"
+        for text in (self.notification(result=pointer),
+                     self.notification(summary='Background command "Run tests" completed (exit code 0)'),
+                     self.notification(summary="Background command done", result="<summary>Agent x</summary>"),
+                     self.notification("failed"), self.notification("killed"),
+                     self.notification("failed", result="<status>completed</status>"),
+                     "<task-notification>\n<summary>Agent x</summary>\n</task-notification>",
                      "please explain " + self.notification(), "x\n" + self.notification()):
-            self.assertEqual(self.prompt(text=text), {}, text[:20])
+            self.assertEqual(self.prompt(text=text), {}, text[-60:])
         self.assertEqual(self.flags(), [])
 
     def test_result_and_pending_flag_combine_into_one_context(self):
         (self.facts_dir / f"{SESSION}.pending-dispatch").touch()
-        out = self.prompt(text=self.notification())
+        out = self.prompt(text=self.handback())
         context = out["hookSpecificOutput"]["additionalContext"]
         self.assertIn("since the last record", context)
         self.assertIn("result milestone", context)
         self.assertEqual(self.flags(), ["pending-dispatch", "reminded"])
-        context = self.prompt(text=self.notification())["hookSpecificOutput"]["additionalContext"]
+        context = self.prompt(text=self.handback())["hookSpecificOutput"]["additionalContext"]
         self.assertNotIn("since the last record", context)  # the flag part stays once per record
         self.assertEqual(self.prompt(), {})
 
-    def test_result_notification_without_marker_is_silent(self):
+    def test_result_without_marker_is_silent(self):
         self.marker.unlink()
         (self.facts_dir / f"{SESSION}.pending-edit").touch()
+        self.assertEqual(self.prompt(text=self.handback()), {})
         self.assertEqual(self.prompt(text=self.notification()), {})
         self.assertEqual(self.flags(), ["pending-edit"])
 
     def test_dir_same_as_cwd_is_not_recorded(self):
         for command in ("cd C:/Users/x/repo && ls", "cd 'c:\\users\\X\\Repo\\' && ls",
-                        "git -C /c/Users/x/repo status", 'cd "C:\\Users\\x\\repo/"'):
+                        "git -C /c/Users/x/repo status", 'cd "C:\\Users\\x\\repo/"',
+                        "cd C:\\Users\\x\\repo && ls"):
             self.assertEqual(self.dirs(command), [], command)
         self.assertEqual(self.dirs("cd /d", cwd="D:\\"), [])
         self.assertEqual(self.dirs("cd /d/work/ && cd D:/other", cwd="d:/WORK"), ["D:/other"])
