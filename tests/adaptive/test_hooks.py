@@ -220,7 +220,8 @@ class SessionStartBudgetTests(FixtureCase):
         for files, kept_out, line in (
                 (42, 8, "- 40 more not listed: 32 in %s, 8 older not kept"),
                 (3, 5, "- 5 more not listed: older, not kept"),
-                (42, 0, "- 32 more not listed; full list: %s")):
+                (42, 0, "- 32 more not listed; full list: %s"),
+                (0, 6, "Edited repo files: 6 older not kept")):
             with self.subTest(files=files, omitted=kept_out):
                 path = self.seed_facts(files=files)
                 self.reseal(path, files_omitted=kept_out)

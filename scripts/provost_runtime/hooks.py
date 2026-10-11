@@ -242,11 +242,11 @@ def _facts_variants(data, path):
     note = _capture_note(info)
     summary = ["\n".join(lines + [note] if note else lines),
                "Session facts omitted for size: " + info["path"] + ("\n" + note if note else "")]
-    if not files:
-        return summary, []
     # files_omitted: oldest files the facts size cap dropped; they are in neither list nor facts.json.
-    listed = ["Edited repo files, most recent first:"] + ["- " + f for f in files[:RECOVERY_FILES]]
     more, dropped = max(0, len(files) - RECOVERY_FILES), info["files_omitted"]
+    if not files:
+        return summary, (["Edited repo files: %d older not kept" % dropped] if dropped else [])
+    listed = ["Edited repo files, most recent first:"] + ["- " + f for f in files[:RECOVERY_FILES]]
     if more and dropped:
         listed.append("- %d more not listed: %d in %s, %d older not kept" % (more + dropped, more, info["path"], dropped))
     elif more:

@@ -7,12 +7,17 @@ SESSION = "5d1c-ab12"
 CWD = "C:\\Users\\x\\repo"
 
 
-def event(tool, tool_input, *, session=SESSION, agent_type=None, name="PostToolUse", cwd=CWD):
-    """A PostToolUse payload with the key order measured in Claude Code 2.1.291."""
+def event(tool, tool_input, *, session=SESSION, agent_type=None, agent_id="a1", name="PostToolUse", cwd=CWD):
+    """A PostToolUse payload with the key order measured in Claude Code 2.1.291.
+
+    agent_type gives a subagent header (with agent_id); agent_id=None keeps agent_type alone,
+    the main-session header of a background-job session (agent_type "claude")."""
     data = {"session_id": session, "transcript_path": "C:\\Users\\x\\t.jsonl", "cwd": cwd,
             "prompt_id": "p1", "permission_mode": "default"}
-    if agent_type:
-        data.update(agent_id="a1", agent_type=agent_type)
+    if agent_type and agent_id:
+        data.update(agent_id=agent_id, agent_type=agent_type)
+    elif agent_type:
+        data.update(agent_type=agent_type)
     data.update(effort={"level": "high"}, hook_event_name=name, tool_name=tool,
                 tool_input=tool_input, tool_response={"filePath": "ignored", "success": True},
                 tool_use_id="t1")
@@ -118,6 +123,14 @@ class NativeFactsTests(FixtureCase):
                                               "run_in_background": flag}))
             data["tool_response"] = response
             self.assertIs(self.capture(json.dumps(data, ensure_ascii=False))[-1]["bg"], expected, flag)
+
+    def test_background_flag_ignores_prompt_and_response_text(self):
+        data = json.loads(event("Agent", {"subagent_type": "Explore",
+                                          "description": 'say "run_in_background": "true"',
+                                          "prompt": 'Use "run_in_background": "true" and "run_in_background": true',
+                                          "run_in_background": "false"}))
+        data["tool_response"] = {"isAsync": True, "run_in_background": True, "prompt": '"run_in_background": "true"'}
+        self.assertIs(self.capture(json.dumps(data))[-1]["bg"], False)
 
     def test_agent_with_unsafe_role_writes_nothing(self):
         for role in ('bad"role', "two words", "back\\slash", ""):
@@ -295,6 +308,19 @@ class NativeFactsTests(FixtureCase):
         self.assertEqual(self.flags(), [])
         self.assertEqual(len(self.lines()), 2)
 
+    def test_agent_id_alone_decides_main_session(self):
+        # Background-job sessions send agent_type "claude" on main-session events, without agent_id.
+        self.capture(event("Edit", {"file_path": "C:\\Users\\x\\repo\\a.py"}, agent_type="claude", agent_id=None))
+        self.assertEqual(self.flags(), ["pending-edit"])
+        self.assertEqual(self.lines()[-1]["agent"], "")
+        (self.facts_dir / f"{SESSION}.pending-edit").unlink()
+        self.capture(event("Edit", {"file_path": "C:\\Users\\x\\repo\\b.py"}, agent_type="claude"))
+        self.assertEqual(self.lines()[-1]["agent"], "claude")  # with agent_id it is a subagent
+        data = {"agent_id": "a2", **json.loads(event("Write", {"file_path": "/repo/c.py"}))}
+        self.capture(json.dumps(data))
+        self.assertEqual(self.lines()[-1]["agent"], "")  # agent_id without agent_type
+        self.assertEqual(self.flags(), [])
+
     def test_outside_repo_edits_do_not_set_pending_edit(self):
         from provost_runtime import facts
         outside = ["C:\\Users\\x\\.claude\\jobs\\j1\\brief.md", "C:/Users/x/.claude/jobs/j1/a.md",
@@ -432,6 +458,9 @@ class NativeFactsTests(FixtureCase):
         interim = ("This agent has not reported yet: it is waiting on its own background work and will deliver "
                    "its report through SubagentHandback when that finishes.")
         self.assertEqual(self.prompt(text=self.notification(result=interim)), {})
+
+    def test_result_saying_through_handback_reminds(self):
+        self.assertResultReminder(self.notification(result="The fix was sent through SubagentHandback earlier."))
 
     def test_other_notifications_do_not_remind(self):
         pointer = "This agent's report was delivered to you as a message from \"a1b2\" (its SubagentHandback call)"
