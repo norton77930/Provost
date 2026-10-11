@@ -291,7 +291,8 @@ hook, and for `UserPromptSubmit` as a sync hook.
   touches a flag in the same directory: `<session_id>.pending-edit` when the main
   session (no `agent_id` in the input; background-job sessions also send
   `agent_type: "claude"` on main-session events, so `agent_type` alone does not
-  decide) edits a file with Edit, Write
+  decide; that every subagent event carries `agent_id` was probed once, on Claude
+  Code 2.1.291, so re-probe after an upgrade) edits a file with Edit, Write
   or NotebookEdit outside the scratch locations (`/.claude/jobs/`,
   `/.claude/projects/`, `AppData/Local/Temp`, `/tmp/`), and
   `<session_id>.pending-dispatch` when a writer subagent is dispatched (default
