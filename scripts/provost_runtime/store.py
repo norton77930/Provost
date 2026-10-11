@@ -791,6 +791,123 @@ def _expired_leftover(home, directory, cutoff, repo_key):
     return _is_expired(_scan(home, directory), cutoff, repo_key) and not _lock_held(home, directory)
 
 
+# Keys a snapshot adds to the record it copies (see snapshot()); dropping them and
+# resealing with kind "record" restores that record exactly.
+SNAPSHOT_KEYS = ("checksum", "snapshot_id", "captured_at", "parent_snapshot")
+
+
+def _when(value):
+    """Parsed timestamp (UTC when naive); StoreError CORRUPT_RECORD when unparseable."""
+    try:
+        when = datetime.fromisoformat(value)
+    except (TypeError, ValueError) as exc:
+        raise StoreError("CORRUPT_RECORD") from exc
+    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+
+
+def _archive_plan(home, ws, directory, name):
+    """(newest record per work_id, skipped files) of the session stored in directory under digest name.
+
+    Candidates are its valid records and the records its valid snapshots copied (a
+    snapshot can outlive its record's trim); a records/ file wins over a snapshot copy
+    of the same revision. Newest is the later recorded_at; on a tie the record further
+    down the parent_record chain, and only when the chain cannot decide the larger
+    revision. Unreadable, checksum-invalid or foreign files are skipped and returned
+    as {"file", "reason"}; linked entries raise LINKED_STORAGE.
+    """
+    candidates, skipped, parents = [], [], {}
+    for kind in CHAINS:
+        collection = directory / CHAINS[kind]
+        guard(home, collection)
+        if not collection.is_dir():
+            continue
+        for path in sorted(collection.glob("*.json")):
+            guard(home, path)
+            if not ID.fullmatch(path.stem):
+                continue
+            try:
+                raw = _load(path)
+                if raw is None:
+                    raise StoreError("CORRUPT_RECORD")
+                session = raw.get("session_id")
+                if not isinstance(session, str) or digest(session) != name:
+                    raise StoreError("RECORD_IDENTITY_MISMATCH")
+                data = _read(ws, path, session, kind)
+                if kind == "snapshot":
+                    data = _seal({k: v for k, v in data.items() if k not in SNAPSHOT_KEYS} | {"kind": "record"})
+                if not isinstance(data.get("revision"), str) or not ID.fullmatch(data["revision"]):
+                    raise StoreError("RECORD_IDENTITY_MISMATCH")
+                when = _when(data.get("recorded_at"))
+            except StoreError as exc:
+                skipped.append({"file": CHAINS[kind] + "/" + path.name, "reason": str(exc)})
+                continue
+            if data["revision"] in parents:
+                continue
+            parents[data["revision"]] = data.get("parent_record")
+            candidates.append((when, data))
+
+    def descends(revision, ancestor):
+        visited = set()
+        while revision is not None and revision not in visited:
+            visited.add(revision)
+            revision = parents.get(revision)
+            if revision == ancestor:
+                return True
+        return False
+
+    newest = {}
+    for when, data in candidates:
+        work = data["payload"]["work_id"]
+        if work not in newest:
+            newest[work] = (when, data)
+            continue
+        best_when, best = newest[work]
+        if when != best_when:
+            newer = when > best_when
+        elif descends(data["revision"], best["revision"]):
+            newer = True
+        elif descends(best["revision"], data["revision"]):
+            newer = False
+        else:
+            newer = data["revision"] > best["revision"]
+        if newer:
+            newest[work] = (when, data)
+    return {work: data for work, (_, data) in newest.items()}, skipped
+
+
+def _archive_path(archive, work_id):
+    return archive / (hashlib.sha256(work_id.encode("utf-8")).hexdigest()[:32] + ".json")
+
+
+def _archive(home, ws, archive, plan):
+    """Under the archive lock, write each planned record unless the archive holds one at least as new.
+
+    An existing archive file that is not a valid record of this work_id raises
+    CORRUPT_ARCHIVE (one of another repo FOREIGN_REPO): it is never overwritten.
+    """
+    if not plan:
+        return
+    with _lock(ws, archive):
+        for work, data in sorted(plan.items()):
+            path = _archive_path(archive, work)
+            guard(home, path)
+            if path.exists():
+                existing = _load(path) or {}
+                body = {k: v for k, v in existing.items() if k != "checksum"}
+                try:
+                    stored = _when(existing.get("recorded_at"))
+                except StoreError as exc:
+                    raise StoreError("CORRUPT_ARCHIVE") from exc
+                if (existing.get("checksum") != hashlib.sha256(encoded(body)).hexdigest()
+                        or not isinstance(existing.get("payload"), dict) or existing["payload"].get("work_id") != work):
+                    raise StoreError("CORRUPT_ARCHIVE")
+                if existing.get("workspace_id") != ws.repo_key:
+                    raise StoreError("FOREIGN_REPO")
+                if stored >= _when(data["recorded_at"]):
+                    continue
+            atomic_write(home, path, data)
+
+
 def _stored_sessions(home):
     """Session digests with a dir (or .pruning- leftover) anywhere in the current store, any repo."""
     found, repos = set(), home / "v2" / "repos"
@@ -880,6 +997,10 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
     before session dirs, so a leftover is cleared before its own session is moved
     aside again. The kept session's own leftover is listed as kept, never reclaimed.
     Only the current store is pruned; legacy stores are never touched.
+    Each expired session (and reclaimable leftover) lists under `archive` the work_ids
+    of its newest valid record per work_id (`archive_skipped` names unusable files);
+    under apply they are written to the repo-level `archive/` (newest recorded_at
+    wins) before the dir is moved aside, and a failed archive keeps the dir.
     With facts_cache (the native-facts cache dir), each listed entry whose session id is
     known names that session's existing cache files (`facts_cache`: spool, claimed spool
     leftovers, reminder flags, enablement marker); under apply they are deleted once the session itself is.
@@ -894,6 +1015,7 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
     expiry_days = expired_older_than_days or EXPIRY_DAYS
     ws = as_workspace(root)
     sessions = _base(ws) / "sessions"
+    archive = sessions.parent / "archive"
     home = handoff_home()
     guard(home, sessions)
     result = {"older_than_days": binding_days, "expired_older_than_days": expiry_days,
@@ -915,8 +1037,14 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
                 if state == "kept" and _expired_leftover(home, entry, expiry_cutoff, ws.repo_key):
                     state = "reclaimable"
                 item = {"staging_dir": entry.name, "state": state}
-                cached = _cache_of(home, entry, entry.name[len(".pruning-"):], facts_cache) if state == "reclaimable" else []
-                result["leftovers"].append(item | ({"facts_cache": [str(p) for p in cached]} if cached else {}))
+                name = entry.name[len(".pruning-"):]
+                cached = _cache_of(home, entry, name, facts_cache) if state == "reclaimable" else []
+                plan, unusable = _archive_plan(home, ws, entry, name) if state == "reclaimable" else ({}, [])
+                result["leftovers"].append(item | ({"archive": sorted(plan)} if plan else {})
+                                           | ({"archive_skipped": unusable} if unusable else {})
+                                           | ({"facts_cache": [str(p) for p in cached]} if cached else {}))
+                if apply and state == "reclaimable":
+                    _archive(home, ws, archive, plan)  # raises, keeping the leftover, unless archived
                 if apply and state == "reclaimable" and _reclaim(home, entry, cutoff, expiry_cutoff, ws.repo_key):
                     result["reclaimed"] += 1
                     _drop_cache(result, entry.name, cached)
@@ -947,10 +1075,14 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
                     result["skipped"].append({"entry": entry.name, "reason": "STORE_BUSY"})
                     continue
                 cached = _cache_of(home, entry, entry.name, facts_cache)
+                plan, unusable = _archive_plan(home, ws, entry, entry.name)
                 result["expired"].append({
                     "session_dir": entry.name, "records": scan.records, "snapshots": scan.snapshots,
                     "newest": datetime.fromtimestamp(scan.newest, timezone.utc).isoformat(),
+                    "archive": sorted(plan), **({"archive_skipped": unusable} if unusable else {}),
                     **({"facts_cache": [str(p) for p in cached]} if cached else {})})
+                if apply:
+                    _archive(home, ws, archive, plan)  # raises, keeping the session, unless archived
                 if apply and _remove_expired(home, entry, staging, expiry_cutoff, ws.repo_key):
                     result["expired_removed"] += 1
                     _drop_cache(result, entry.name, cached)

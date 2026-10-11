@@ -134,6 +134,46 @@ After REVISION_CONFLICT rerun status and reconcile. Never force an overwrite.
 Record approved plan, dispatch, results and changed decisions/blockers. Do not
 record after every tool call. Main owns records; workers report observations.
 
+## Search past decisions
+
+```bash
+bash "<runtime>/hooks/runtime" search --workspace "<root>" --query "<terms>" \
+  [--all-repos] [--since YYYY-MM-DD] [--limit N]
+bash "<runtime>/hooks/runtime" search --workspace "<root>" --show "<ref>" [--all-repos]
+```
+
+Finds why something was decided. Read-only keyword search over what the store
+already holds: no model call, no index, no daemon, and nothing is created or written
+(no files, locks or directories). The scope is the repo of `--workspace`; `--all-repos`
+scans every repo dir under the store home. Like `list`, it needs handoff enabled for
+the workspace (`HANDOFF_DISABLED` otherwise).
+
+The corpus is each session's newest valid record (a session's decision list is
+cumulative, so older records add nothing), every valid snapshot, and every valid file
+in `archive/`. Unreadable, checksum-invalid or foreign files are skipped and counted
+under `skipped`, never fatal. Searched items are each decision, each blocker, `next`
+and each evidence `claim`. An item matches when every whitespace-separated query
+term (case-insensitive substring) appears in the item text or in its record's
+`work_id` or `phase`. Identical (`work_id`, `field`, text) hits are reported once, for
+the newest record. Results rank by how often the terms occur in the item text, then by
+`recorded_at`, newest first. `--since` keeps records recorded on or after that UTC
+date; `--limit` defaults to 10 and must be 1 to 50 (`INVALID_LIMIT`); `truncated`
+counts the matches beyond it.
+
+Output: `query`, `repos_scanned`, `results`, `truncated`, `skipped`. Each result has
+`recorded_at`, `worktree_path`, `work_id`, `phase`, `field` (`decision`, `blocker`,
+`next` or `evidence`), `text` (at most 160 characters), `source` (`record`,
+`snapshot` or `archive`) and `ref`. `--show <ref>` returns that one record's full
+`payload` with `ref`, `source`, `recorded_at`, `worktree_path`, `work_id` and `phase`;
+use it only for a result worth reading in full. A `ref` is opaque, valid while its
+file exists (the store trims old records), and only resolves inside the scope of the
+call (`REF_NOT_FOUND` otherwise). Other errors: `QUERY_REQUIRED`, `INVALID_SINCE`,
+`INVALID_REF`, `REF_AMBIGUOUS`.
+
+Secret-like strings (GitHub tokens, `github_pat_` tokens, `sk-` keys, AWS access key
+ids and private-key headers) are replaced by `[REDACTED]` in all output. Records
+should not hold credentials in the first place; this is a backstop, not a scanner.
+
 ## Explicit save and resume
 
 ```bash
@@ -250,6 +290,29 @@ dir whose lock is held (`STORE_BUSY`), a dir with unexpected content
 (`UNEXPECTED_CONTENT`), and a dir whose stored `workspace_id` belongs to another
 repo (`FOREIGN_REPO`). Nothing is deleted automatically, and legacy `.provost`
 stores are never pruned.
+
+Decisions outlive expiry. Before an expired session (or a reclaimable `.pruning-`
+leftover) is moved aside or deleted, `--apply` preserves its newest record for each
+`payload.work_id` in the repo-level archive `<store home>/v2/repos/<repo dir>/archive/`,
+beside `sessions/`. Each work_id has one file,
+`sha256(work_id as UTF-8)` hex, first 32 characters, plus `.json`, holding that
+record exactly as stored in `records/` (same schema, checksum intact, no wrapper).
+Candidates are the session's checksum-valid records plus the records its valid
+snapshots copied, so a record already trimmed from `records/` still counts; per
+work_id the newest `recorded_at` wins. The newest also wins across sessions: an
+archive file is replaced only by a strictly newer record, never by an older or equal
+one. The dry run writes nothing and lists the work_ids under `archive` on each
+expired entry (on leftovers when non-empty); unreadable, checksum-invalid or
+mismatched records are skipped and named under `archive_skipped` (`file`, `reason`)
+without blocking removal. If archiving fails the session is kept: a guard refusal,
+busy archive lock (`STORE_BUSY`), write failure (`WRITE_FAILED`), an existing
+archive file that is not a valid record of that work_id (`CORRUPT_ARCHIVE`, never
+overwritten) or one of another repo (`FOREIGN_REPO`) is listed in `skipped`; an OS
+error is listed in `errors` with `left_at: null`. Archiving takes the archive lock,
+which refuses a store home inside a repo that does not ignore it: there, an expired
+session or leftover with archivable records is listed in `skipped` as
+`STORE_INSIDE_REPO` (or `GIT_UNREADABLE` when Git cannot answer) and kept, while one
+with nothing archivable is still removed.
 
 Known limits: `horizon.json` carries no checksum, so tampering with it can hide or
 remove records; a reader that overlaps a trim can see a transient

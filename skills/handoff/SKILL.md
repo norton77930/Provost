@@ -1,7 +1,7 @@
 ---
 name: handoff
 description: Use when the user requests a Provost handoff or explicitly asks to continue previously saved work.
-argument-hint: "[resume <snapshot-id>]"
+argument-hint: "[resume <snapshot-id> | search <terms>]"
 disable-model-invocation: true
 ---
 
@@ -50,6 +50,17 @@ A Python invocation is also documented in the pilot guide.
 6. Reconcile completed, cancelled or superseded items and continue approved scope.
    Resolve factual gaps yourself; ask for product/authorization decisions or when
    duplicate execution remains possible.
+
+## Search
+
+`/handoff search <terms>`: find why something was decided in earlier sessions.
+
+1. Run `search --workspace "<root>" --query "<terms>"`; add `--all-repos` only
+   when the user asks to look beyond this repo, `--since YYYY-MM-DD` to narrow.
+2. Show the compact results (time, work, field, text) in the returned
+   order, and mention `truncated` or `skipped` when nonzero.
+3. Only for the one result the user picks, run `search --workspace "<root>" --show "<ref>"`
+   and read its payload. Search is read-only and does not resume or adopt anything.
 
 Sources may be local Markdown, GitHub or GitLab. Preserve their native identities
 and workflow gates. Do not archive, sync, close issues, create worktrees or commit

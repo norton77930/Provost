@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import facts, legacy
+from . import facts, legacy, search
 from .config import ConfigError, config_path, handoff_home, load_config, resolve_mode
 from .hooks import (bind, binding, cursor, handle_event, last_binding_at, recovery_context,
                     resolve_transcript, workspace_root)
@@ -71,7 +71,7 @@ def main(argv=None):
         return 0
     try:
         parser = Parser()
-        parser.add_argument("command", choices=["doctor", "record", "snapshot", "list", "resume", "status", "changes", "prune"])
+        parser.add_argument("command", choices=["doctor", "record", "snapshot", "list", "resume", "status", "changes", "prune", "search"])
         parser.add_argument("--workspace", required=True)
         parser.add_argument("--session")
         parser.add_argument("--expected")
@@ -82,6 +82,12 @@ def main(argv=None):
         parser.add_argument("--older-than-days", type=int, default=None)
         parser.add_argument("--expired-older-than-days", type=int, default=None)
         parser.add_argument("--apply", action="store_true")
+        # search: keywords, optional date floor/limit/ref (validated in search.py), and scope.
+        parser.add_argument("--query")
+        parser.add_argument("--since")
+        parser.add_argument("--limit")
+        parser.add_argument("--show")
+        parser.add_argument("--all-repos", action="store_true")
         parser.add_argument("--legacy", action="store_true")
         options = parser.parse_args(args)
         root = workspace_root(options.workspace)
@@ -111,6 +117,12 @@ def main(argv=None):
                 raise StoreError("HANDOFF_DISABLED")
             if options.command == "list":
                 result = legacy.list_snapshots(root) if options.legacy else list_snapshots(root)
+            elif options.command == "search":
+                if options.show is not None:
+                    result = search.show(root, options.show, all_repos=options.all_repos)
+                else:
+                    result = search.find(root, options.query, all_repos=options.all_repos,
+                                         since=options.since, limit=options.limit)
             elif options.command == "prune":
                 result = prune(root, older_than_days=options.older_than_days,
                                expired_older_than_days=options.expired_older_than_days,
