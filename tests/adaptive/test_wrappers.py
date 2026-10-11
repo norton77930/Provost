@@ -72,7 +72,7 @@ class WrapperTests(FixtureCase):
         missing.mkdir()
         for name in ("python3", "python", "py"):
             candidate = missing / name
-            candidate.write_text("#!/usr/bin/env bash\nexit 127\n", encoding="utf-8")
+            candidate.write_text("#!/usr/bin/env bash\nexit 127\n", encoding="utf-8", newline="\n")
             candidate.chmod(0o755)
         # Git Bash uses a colon-separated path internally; MSYS converts the
         # inherited native Windows PATH before this command.
@@ -83,6 +83,7 @@ class WrapperTests(FixtureCase):
                                     capture_output=True, text=True, encoding="utf-8", env=env, timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("unavailable", json.loads(result.stdout)[field])
+            self.assertIn("requires Python 3.11+", result.stderr)  # failed for the intended reason
 
 
 class InterpreterCacheTests(FixtureCase):
@@ -139,6 +140,46 @@ class InterpreterCacheTests(FixtureCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertTrue(self.cache_file.read_text(encoding="utf-8").strip().endswith("/bin/python3"))
                 self.assertEqual(len(self.probes()), 1)
+
+    def test_interpreter_inside_cwd_is_never_cached_or_reused(self):
+        # A project venv on PATH must not be pinned for every other repo.
+        project = self.root / "project"
+        venv_log = self.root / "venv.log"
+        venv = self.fake_interpreter(project / ".venv" / "bin", "python3", venv_log)
+        result = self.run_bash(REPO / "hooks" / "runtime", "status", path_dirs=[venv.parent], cwd=project)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.probes(venv_log)), 1)
+        self.assertFalse(self.cache_file.exists())
+        # A cache entry inside the project (as an older runtime wrote it) is probed past, not reused.
+        self.fake_interpreter(self.bin, "python3", self.log)
+        self.cache_file.parent.mkdir(parents=True)
+        bash_spelling = (venv.as_posix() if os.name != "nt" else subprocess.run(
+            [BASH, "-c", 'cygpath -u "$1"', "probe", str(venv)], capture_output=True, text=True,
+            encoding="utf-8", timeout=60).stdout.strip())
+        self.cache_file.write_text(bash_spelling + "\n", encoding="utf-8")
+        venv_log.unlink()
+        result = self.runtime("status", cwd=project)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(venv_log), [])
+        self.assertEqual(len(self.probes()), 1)
+        cached = self.cache_file.read_text(encoding="utf-8").strip()
+        self.assertTrue(cached.endswith("/bin/python3") and ".venv" not in cached, cached)
+
+    def test_inside_cwd_check_matches_whole_directories_only(self):
+        # PWD is set by hand: the helper is a pure string check (no spawn on the cached path).
+        cases = [("/w/proj", "/w/proj/.venv/bin/python3", True), ("/w/proj", "/w/proj2/bin/python3", False),
+                 ("/w/proj", "/w/bin/python3", False), ("/", "/usr/bin/python3", False)]
+        if os.name == "nt":  # Git Bash: drive spelling and case-insensitivity
+            cases += [("/c/Work/proj", "C:/work/PROJ/.venv/Scripts/python.exe", True),
+                      ("/c/Work/proj", "C:\\Work\\proj\\venv\\python.exe", True),
+                      ("/c/Work/proj", "D:/Work/proj/python.exe", False)]
+        script = ('source "$1"; shift; while (( $# )); do PWD="$1"; '
+                  'if _provost_in_cwd "$2"; then echo 1; else echo 0; fi; shift 2; done')
+        args = [part for pwd, path, _ in cases for part in (pwd, path)]
+        result = subprocess.run([BASH, "-c", script, "probe", (REPO / "hooks" / "_python.sh").as_posix(), *args],
+                                capture_output=True, text=True, encoding="utf-8", timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split(), ["1" if inside else "0" for *_, inside in cases])
 
     def test_provost_python_overrides_cache_and_probe(self):
         override_log = self.root / "override.log"

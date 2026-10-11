@@ -9,6 +9,9 @@
 #   2. the cached interpreter path in ${PROVOST_HOME:-~/.claude/provost}/cache/python
 #   3. python3, python, then py -3, each version-probed; the first python3/python
 #      that qualifies is written to the cache (best effort).
+# An interpreter inside the current working directory tree (a project venv on
+# PATH) is used for that run only: never cached, and a cached one is skipped,
+# so one repo's venv is not pinned for every other repo. Pure string checks.
 
 # Directory of this file (== hooks/) and the scripts/ module root, derived with
 # parameter expansion only. Handles C:/..., /c/... and relative invocation.
@@ -51,6 +54,21 @@ unset _provost_here _provost_module_root
 
 PROVOST_PY=()
 
+# True when $1 lies inside the current working directory tree. No spawn: compares
+# against $PWD and, under Git Bash, its drive form (/c/x == C:/x, case-insensitive).
+_provost_in_cwd() {
+    local path="${1//\\//}" dir="${PWD%/}" native="" restore="" rc=1
+    if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
+        [[ "$dir" =~ ^/([A-Za-z])(/.*)?$ ]] && native="${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"
+        shopt -q nocasematch || { shopt -s nocasematch; restore=1; }
+    fi
+    if [[ -n "$dir" && "$path" == "$dir"/* ]] || [[ -n "$native" && "$path" == "$native"/* ]]; then
+        rc=0
+    fi
+    [[ -z "$restore" ]] || shopt -u nocasematch
+    return "$rc"
+}
+
 provost_find_python() {
     PROVOST_PY=()
     local cache_file="${PROVOST_HOME:-${HOME:-}/.claude/provost}/cache/python"
@@ -62,7 +80,7 @@ provost_find_python() {
     if [[ -r "$cache_file" ]]; then
         IFS= read -r cached < "$cache_file" 2>/dev/null || true
         cached="${cached%$'\r'}"
-        if [[ -n "$cached" && -f "$cached" && -x "$cached" ]]; then
+        if [[ -n "$cached" && -f "$cached" && -x "$cached" ]] && ! _provost_in_cwd "$cached"; then
             PROVOST_PY=("$cached")
             return 0
         fi
@@ -72,7 +90,9 @@ provost_find_python() {
         [[ -n "$resolved" ]] || continue
         if "$resolved" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
             PROVOST_PY=("$resolved")
-            { mkdir -p "${cache_file%/*}" && printf '%s\n' "$resolved" > "$cache_file"; } 2>/dev/null || true
+            if ! _provost_in_cwd "$resolved"; then
+                { mkdir -p "${cache_file%/*}" && printf '%s\n' "$resolved" > "$cache_file"; } 2>/dev/null || true
+            fi
             return 0
         fi
     done

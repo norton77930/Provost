@@ -171,7 +171,12 @@ def main(argv=None):
                     if options.expected is None or not options.request_id:
                         raise StoreError("EXPECTED_REVISION_AND_REQUEST_REQUIRED")
                     if options.input is None:
-                        raw = sys.stdin.read(32769)
+                        # UTF-8 regardless of the console/locale encoding; size checked before decoding
+                        # so a cut multi-byte character still reports PAYLOAD_TOO_LARGE.
+                        data = sys.stdin.buffer.read(32769)
+                        if len(data) > 32768:
+                            raise StoreError("PAYLOAD_TOO_LARGE")
+                        raw = data.decode("utf-8")
                     else:
                         with open(options.input, encoding="utf-8", newline="") as handle:
                             raw = handle.read(32769)

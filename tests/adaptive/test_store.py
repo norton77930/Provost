@@ -82,6 +82,24 @@ class StoreTests(FixtureCase):
             record(self.root, "s1", self.payload(), None, "r")
         self.assertEqual(list(outside.iterdir()), [])
 
+    def test_guard_refuses_parent_traversal(self):
+        from provost_runtime.store import guard
+        for path in (self.store_home / ".." / "x", self.store_home / "a" / ".." / ".." / "x",
+                     self.store_home / "a" / ".." / "b"):
+            with self.subTest(str(path)), self.assertRaises(StoreError):
+                guard(self.store_home, path)
+        guard(self.store_home, self.store_home / "a" / "b.json")
+
+    def test_failed_temp_cleanup_does_not_mask_write_failure(self):
+        from provost_runtime.store import atomic_write
+        target = self.store_home / "x" / "data.json"
+        with mock.patch("provost_runtime.store.os.replace", side_effect=OSError("replace")), \
+                mock.patch.object(Path, "unlink", side_effect=OSError("unlink")):
+            with self.assertRaises(StoreError) as caught:
+                atomic_write(self.store_home, target, {"a": 1})
+        self.assertEqual(str(caught.exception), "WRITE_FAILED")
+        self.assertFalse(target.exists())
+
     def test_git_checkout_needs_no_exclusion_and_stays_clean(self):
         self.isolate_user_git_config()
         self.git("init", "-q")

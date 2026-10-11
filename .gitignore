@@ -11,6 +11,7 @@ Thumbs.db
 .claude/projects/
 .claude/todos/
 .claude/shell-snapshots/
+.claude/worktrees/
 
 # Legacy in-repo handoff store (read-only bridge); holds session IDs and local paths
 .provost/

@@ -31,10 +31,14 @@ bash "<plugin-root>/hooks/runtime" doctor --workspace "<root>"
 bash "<plugin-root>/hooks/runtime" list --workspace "<root>"
 ```
 
-Alternatively set PYTHONPATH to the plugin scripts directory for that process and
-use python -m provost_runtime.cli. Do not replace persistent environment settings.
-Doctor reports selected mode, Python support, storage readiness and host_verified=false.
-It does not diagnose project policy conflicts or prove interactive host support.
+Prefer the hooks/runtime wrapper: it resolves Python 3.11+ and sets PYTHONPATH,
+PYTHONSAFEPATH=1 and PYTHONUTF8=1 for the call. Calling python -m provost_runtime.cli
+directly also needs those three set for that process, otherwise modules in the
+current directory can shadow the runtime and non-ASCII text depends on the locale.
+Do not replace persistent environment settings.
+Doctor reports selected mode, Python support, storage readiness and host_verified,
+which is true once a SessionStart binding exists for this workspace (last_binding_at
+shows when). It does not diagnose project policy conflicts.
 
 At meaningful milestones, main writes compact state to a payload file and records
 it with one plain command (worktree guards refuse heredocs and line continuations):

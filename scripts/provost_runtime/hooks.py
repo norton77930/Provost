@@ -115,7 +115,11 @@ def bind(root, session, event):
 def _legacy(source):
     if source not in ("startup", "clear", "compact"):
         return {}
-    return _context((PLUGIN / "orchestration.md").read_text(encoding="utf-8"))
+    try:
+        policy = (PLUGIN / "orchestration.md").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):  # the fallback itself must never raise
+        return {}
+    return _context(policy)
 
 
 def _context(text):
@@ -449,7 +453,9 @@ def handle_event(event, config_path, *, native=False):
                     + "\nWriter limits: normal=" + str(cfg["max_writers"]) + ", burst=" + str(cfg["burst_writers"])
                     + "\nHandoff: " + ("enabled" if enabled else "disabled; do not record or snapshot")
                     + "\nSource guides: " + str(PLUGIN / "docs/compatibility")
-                    + "\nUse doctor/list/record/snapshot/resume through the runtime; record reads JSON from --input <payload-file>.")
+                    + "\nUse doctor/status/record/snapshot/list/resume/changes/search/prune through the runtime."
+                    + " Start a save with status (read-only: expected revision and a complete template);"
+                    + " record reads JSON from --input <payload-file>.")
             if native and enabled:
                 info += ("\nOperations guide: " + str(PLUGIN / "docs/native-handoff.md")
                          + "\nUse Bash: bash <quoted-runtime-path> status --workspace <quoted-workspace> --session <quoted-session>."

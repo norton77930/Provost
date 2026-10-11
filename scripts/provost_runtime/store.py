@@ -105,6 +105,8 @@ def guard(root, path):
         parts = path.relative_to(root).parts
     except ValueError as exc:
         raise StoreError("OUTSIDE_WORKSPACE") from exc
+    if ".." in parts:  # relative_to is lexical: root/../x would pass
+        raise StoreError("OUTSIDE_WORKSPACE")
     node = root
     for part in parts:
         node = node / part
@@ -221,8 +223,11 @@ def atomic_write(base, path, data):
     except OSError as exc:
         raise StoreError("WRITE_FAILED") from exc
     finally:
-        if temp is not None and temp.exists():
-            temp.unlink()
+        if temp is not None:
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError:
+                pass  # best effort: never mask the write result or its error
 
 
 @contextmanager

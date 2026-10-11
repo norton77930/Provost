@@ -9,11 +9,12 @@ from provost_runtime.hooks import bind
 
 
 class CliTests(FixtureCase):
-    def run_cli(self, *args, data=None, scripts=None):
+    def run_cli(self, *args, data=None, scripts=None, env=None, stdin=None):
         env = dict(os.environ, PYTHONPATH=str(scripts or REPO / "scripts"),
-                   PROVOST_CONFIG=str(self.config_path), PYTHONDONTWRITEBYTECODE="1")
+                   PROVOST_CONFIG=str(self.config_path), PYTHONDONTWRITEBYTECODE="1", **(env or {}))
         return subprocess.run([sys.executable, "-m", "provost_runtime.cli", *args],
-                              input=json.dumps(data) if data is not None else "", capture_output=True,
+                              input=stdin if stdin is not None else json.dumps(data) if data is not None else "",
+                              capture_output=True,
                               text=True, encoding="utf-8", env=env, timeout=30)
 
     def test_doctor_is_read_only_and_reports_selected_mode(self):
@@ -115,6 +116,15 @@ class CliTests(FixtureCase):
                 target.write_text(content, encoding="utf-8")
             result = self.run_cli(*args, "--request-id", "r3", "--input", str(target))
             self.assertEqual(json.loads(result.stdout), {"error": "INPUT_OR_IO_ERROR"}, name)
+
+    def test_record_reads_stdin_as_utf8_regardless_of_locale(self):
+        bind(self.root, "s1", {})
+        # Simulate a non-UTF-8 console: stdin's text encoding must not decide the payload.
+        result = self.run_cli("record", "--workspace", str(self.root), "--session", "s1", "--expected", "null",
+                              "--request-id", "r1", stdin=json.dumps(self.payload("é 中文 ✓"), ensure_ascii=False),
+                              env={"PYTHONIOENCODING": "latin-1", "PYTHONUTF8": "0"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout)["payload"]["next"], "é 中文 ✓")
 
     def copy_runtime(self, name, newline=None):
         root = self.root / name

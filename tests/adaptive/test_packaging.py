@@ -16,6 +16,8 @@ class PackagingTests(unittest.TestCase):
     def test_hook_contract(self):
         hooks = json.loads((REPO / "hooks/hooks.json").read_text())["hooks"]
         self.assertEqual(set(hooks), {"SessionStart", "PreCompact", "PostCompact"})
-        for name in ("PreCompact", "PostCompact"):
-            self.assertFalse(hooks[name][0]["hooks"][0]["async"])
-            self.assertEqual(hooks[name][0]["hooks"][0]["timeout"], 30)
+        for name in ("SessionStart", "PreCompact", "PostCompact"):
+            hook = hooks[name][0]["hooks"][0]
+            self.assertFalse(hook["async"])
+            self.assertEqual(hook["timeout"], 30)
+            self.assertTrue(hook["command"].startswith('bash "${CLAUDE_PLUGIN_ROOT}/hooks/'), hook["command"])

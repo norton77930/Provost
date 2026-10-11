@@ -125,6 +125,16 @@ class HookTests(FixtureCase):
         self.assertIn("collaborator tier", self.context(output))
         self.assertNoStore()
 
+    def test_legacy_fallback_without_policy_file_is_fail_soft(self):
+        from provost_runtime import hooks
+        with mock.patch.object(hooks, "PLUGIN", self.root / "no-plugin"):
+            self.config_path.write_text("{broken")
+            output = handle_event(self.event("SessionStart", "startup"), self.config_path)
+            self.assertIn("unavailable", output["systemMessage"])
+            self.assertEqual(self.context(output), "")
+            self.config_path.unlink()
+            self.assertEqual(handle_event(self.event("SessionStart", "startup"), self.config_path), {})
+
     def test_context_size_is_bounded_and_payload_is_not_silently_lost(self):
         record(self.root, "s1", self.payload("details " * 2000), None, "r")
         output = handle_event(self.event("SessionStart", "compact"), self.config_path)

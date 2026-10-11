@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # SessionStart hook for the Provost plugin.
 #
-# Injects the Tier 1 orchestration policy into the session so that installing
-# the plugin is enough. Without this the policy has to be merged into the host
-# project's CLAUDE.md by hand, which was the largest install-time step.
-#
-# Tier 2 hooks are deliberately not registered here: they are opt-in and
-# require a governed workspace and the PROVOST_* environment.
+# With a personal config (PROVOST_CONFIG or ~/.claude/provost/config.json) the
+# event goes to the adaptive runtime (hooks/runtime hook), which injects the
+# adaptive policy and handoff context, or the legacy policy for workspaces not
+# opted in. Without a config, or when the runtime fails, it injects the Tier 1
+# orchestration.md policy itself (startup/clear/compact only; resume and fork get
+# nothing), adding a warning when the runtime was unavailable.
 
 set -euo pipefail
 

@@ -6,9 +6,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/session-start\"",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start\"",
             "shell": "bash",
-            "async": false
+            "async": false,
+            "timeout": 30
           }
         ]
       }

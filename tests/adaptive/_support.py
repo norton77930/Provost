@@ -10,7 +10,9 @@ from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "scripts"))
-BASH = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash")
+# PROVOST_TEST_BASH picks another bash (e.g. a non-default Git for Windows install).
+BASH = (os.environ.get("PROVOST_TEST_BASH")
+        or ("C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash")))
 
 
 class FixtureCase(unittest.TestCase):

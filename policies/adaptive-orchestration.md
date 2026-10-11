@@ -81,4 +81,5 @@ evidence and replacement references. Revalidate only evidence affected by change
 Saving failures do not block compaction. Preserve previous complete snapshots,
 report the failure through available channels and mark recovered observations
 as needing verification. Checkpoints can lag semantic decisions; never promise
-zero loss. History is local, ignored by Git, not a source-code backup.
+zero loss. History is local, stored outside the repository under
+~/.claude/provost/handoffs (or PROVOST_HANDOFF_HOME), and is not a source-code backup.
