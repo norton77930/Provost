@@ -33,6 +33,7 @@ CHECKSUM_BYTES = len(',"checksum":""') + 64  # what _seal adds to the encoded bo
 GIT_TIMEOUT = 3
 GIT_BUDGET = 12
 RENAME_ATTEMPTS = 5
+GIT_FIELDS = ("branch", "dirty", "dirty_total", "commits")  # repo entry fields read from git
 
 
 def _iso(ts):
@@ -186,8 +187,9 @@ def gather(previous, events, invalid, finder):
     first/last touch, dispatches, worktrees and the running counters.
     """
     files = {_key(f["path"]): dict(f, agents=list(f["agents"])) for f in previous.get("files", [])}
-    repos = {_key(r["root"]): {"root": r["root"], "first_touched_at": r["first_touched_at"],
-                               "last_touched_at": r["last_touched_at"]} for r in previous.get("repos", [])}
+    # Git facts are carried too: a git step that fails in this fold keeps the previous value.
+    repos = {_key(r["root"]): {k: r[k] for k in ("root", "first_touched_at", "last_touched_at", *GIT_FIELDS) if k in r}
+             for r in previous.get("repos", [])}
     state = {"files": files, "repos": repos, "agents": list(previous.get("agents", [])),
              "worktrees": list(previous.get("worktrees", [])),
              "outside_repo_count": previous.get("outside_repo_count", 0),
@@ -235,11 +237,14 @@ def gather(previous, events, invalid, finder):
 
 def _inspect(git, repo):
     """Current git facts of one repo; each failed step leaves a code and the rest still run.
-    Returns (entry, newest commit epoch or None)."""
+    A failed step keeps the value the previous fold stored (branch, dirty/dirty_total or commits),
+    else the empty one. Returns (entry, newest commit epoch or None, the dirty list read in this
+    fold or [] when git status failed: a kept list never dates a change)."""
     root = repo["root"]
-    entry = {"root": root, "branch": None, "first_touched_at": repo["first_touched_at"],
-             "last_touched_at": repo["last_touched_at"], "dirty": [], "dirty_total": 0, "commits": [], "error": None}
-    newest = None
+    entry = {"root": root, "branch": repo.get("branch"), "first_touched_at": repo["first_touched_at"],
+             "last_touched_at": repo["last_touched_at"], "dirty": list(repo.get("dirty", [])),
+             "dirty_total": repo.get("dirty_total", 0), "commits": list(repo.get("commits", [])), "error": None}
+    newest, fresh = None, []
     try:
         entry["branch"] = git(root, "rev-parse", "--abbrev-ref", "HEAD").strip() or None
     except _GitError as exc:
@@ -253,34 +258,38 @@ def _inspect(git, repo):
             dirty.append({"status": token[:2], "path": token[3:]})
             if token[0] in "RC":
                 next(tokens, None)  # -z puts a rename's source path in its own field
-        entry["dirty"], entry["dirty_total"] = dirty[:MAX_DIRTY], len(dirty)
+        fresh = dirty[:MAX_DIRTY]
+        entry["dirty"], entry["dirty_total"] = fresh, len(dirty)
     except _GitError as exc:
         entry["error"] = entry["error"] or str(exc)
     try:
         since = "--since=@%d" % _epoch(repo["first_touched_at"])
+        commits = []
         for line in git(root, "log", since, "-n", str(MAX_COMMITS), "--format=%h%x1f%ct%x1f%s").splitlines():
             parts = line.split("\x1f", 2)
             if len(parts) != 3:
                 continue
-            entry["commits"].append({"hash": parts[0], "subject": parts[2][:SUBJECT_CHARS]})
-            if parts[1].isdigit():
-                newest = max(newest or 0, int(parts[1]))
+            when = int(parts[1]) if parts[1].isdigit() else None
+            commits.append({"hash": parts[0], "subject": parts[2][:SUBJECT_CHARS], "ts": when})
+            if when is not None:
+                newest = max(newest or 0, when)
+        entry["commits"] = commits
     except _GitError as exc:
         entry["error"] = entry["error"] or str(exc)
-    return entry, newest
+    return entry, newest, fresh
 
 
-def _dirty_mtimes(entry, now):
+def _dirty_mtimes(root, dirty, now):
     """mtimes of the (capped) tracked dirty paths that still exist, each clamped to now: a script
     edit the hook never saw still dates the change, an old uncommitted file does not look new, and
     a future mtime cannot keep a record stale. Untracked (??) entries stay listed but never date a
     change: logs and build output appear there without being session work."""
     found = []
-    for item in entry["dirty"]:
+    for item in dirty:
         if item["status"] == "??":
             continue
         try:
-            found.append(min(os.stat(Path(entry["root"]) / item["path"]).st_mtime, now))
+            found.append(min(os.stat(Path(root) / item["path"]).st_mtime, now))
         except (OSError, ValueError):
             continue  # deleted or unreadable
     return found
@@ -291,11 +300,11 @@ def summarize(ws, session, state, git, now):
     ranked = sorted(state["repos"].values(), key=lambda r: r["last_touched_at"], reverse=True)
     repos, changes = [], []
     for repo in ranked[:MAX_REPOS]:
-        entry, newest = _inspect(git, repo)
+        entry, newest, fresh = _inspect(git, repo)
         repos.append(entry)
         if newest is not None:
             changes.append(newest)
-        changes.extend(_dirty_mtimes(entry, now))
+        changes.extend(_dirty_mtimes(entry["root"], fresh, now))
     files = sorted(state["files"].values(), key=lambda f: (f["last_ts"], f["path"]))
     if files:
         changes.append(files[-1]["last_ts"])
@@ -375,6 +384,32 @@ def recent_files(data, limit=None):
     """Repo file paths of the stored facts, most recently edited first."""
     files = sorted(data.get("files", []), key=lambda f: (f["last_ts"], f["path"]), reverse=True)
     return [f["path"] for f in files][:limit]
+
+
+def since(data, after):
+    """Activity of the stored facts after epoch `after` (None: no record, so all of it).
+
+    Returns dispatches (oldest first), per-repo commits (git order, newest first), the count
+    of commits without a time (facts written before commit times were kept) and the newest
+    captured activity: last_change_at or the newest dispatch, whichever is later.
+    """
+    def later(ts):
+        return after is None or (type(ts) is int and ts > after)
+
+    agents = sorted(data.get("agents", []), key=lambda a: a["ts"])
+    dispatches = [a for a in agents if later(a["ts"])]
+    repos, undated = [], 0
+    for repo in data.get("repos", [])[:MAX_REPOS]:
+        commits = [c for c in repo["commits"] if later(c.get("ts"))]
+        if after is not None:
+            undated += sum(1 for c in repo["commits"] if type(c.get("ts")) is not int)
+        if commits:
+            repos.append({"root": repo["root"], "commits": commits})
+    stamps = [a["ts"] for a in agents if type(a["ts"]) is int]
+    if data.get("last_change_at"):
+        stamps.append(_epoch(data["last_change_at"]))
+    return {"dispatches": dispatches, "repos": repos, "commits": sum(len(r["commits"]) for r in repos),
+            "undated": undated, "latest": max(stamps) if stamps else None}
 
 
 def _unread(path, recorded):
@@ -482,8 +517,9 @@ def fold(config_path, root, session, *, now=None):
     """Merge the session's spool into facts.json, refresh git facts, then truncate the spool.
 
     Store problems raise StoreError; git problems only mark the repo entry.
-    Assumes a single folder per session: only PreCompact folds (changes() is read-only), and
-    Claude Code does not run two compactions of one session at once. The facts.json write is
+    Assumes a single folder per session: only PreCompact and the SessionStart(compact) that
+    follows it fold (changes() is read-only); Claude Code runs them one after the other and
+    never two compactions of one session at once. The facts.json write is
     locked, but the spool claim/release is not, so concurrent folds of one session could merge
     a claimed spool file twice.
     """

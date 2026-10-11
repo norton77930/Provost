@@ -186,6 +186,36 @@ class FoldTests(FactsCase):
         self.assertEqual(len(data["files"]), 1)
         self.assertEqual(self.stored(repo), data)
 
+    def test_git_failure_keeps_the_previous_git_facts_of_a_repo(self):
+        repo = self.repo("a")
+        self.write(self.dir_event(repo, self.now - 500, repo))
+        self.commit(repo, "during session", self.now - 100, "x.py")
+        (repo / "x.py").write_text("edited", encoding="utf-8")
+        first = self.repo_entry(self.fold(repo), repo)
+        self.assertEqual(([c["subject"] for c in first["commits"]], first["dirty_total"]), (["during session"], 1))
+        self.assertIsNotNone(first["branch"])
+        self.write(self.dir_event(repo, self.now - 50, repo))
+        run = mock.Mock(side_effect=subprocess.TimeoutExpired("git", 3))
+        with mock.patch.object(facts, "subprocess", mock.Mock(run=run, TimeoutExpired=subprocess.TimeoutExpired)):
+            again = self.repo_entry(self.fold(repo), repo)
+        self.assertTrue(run.called)
+        self.assertEqual({k: again[k] for k in ("branch", "dirty", "dirty_total", "commits")},
+                         {k: first[k] for k in ("branch", "dirty", "dirty_total", "commits")})
+        self.assertEqual(again["error"], "GIT_TIMEOUT")
+        self.assertEqual(again["last_touched_at"], facts._iso(self.now - 50))
+        fresh = self.repo_entry(self.fold(repo), repo)  # git answers again: current facts, error cleared
+        self.assertIsNone(fresh["error"])
+        self.assertEqual(fresh["commits"], first["commits"])
+
+    def test_git_failure_without_previous_entry_leaves_empty_git_facts(self):
+        repo = self.repo("a")
+        self.write(self.edit(repo / "x.py", self.now - 9, repo))
+        run = mock.Mock(side_effect=subprocess.TimeoutExpired("git", 3))
+        with mock.patch.object(facts, "subprocess", mock.Mock(run=run, TimeoutExpired=subprocess.TimeoutExpired)):
+            entry = self.repo_entry(self.fold(repo), repo)
+        self.assertEqual({k: entry[k] for k in ("branch", "dirty", "dirty_total", "commits", "error")},
+                         {"branch": None, "dirty": [], "dirty_total": 0, "commits": [], "error": "GIT_TIMEOUT"})
+
     def test_spent_git_budget_spawns_nothing(self):
         repo = self.repo("a")
         self.write(self.edit(repo / "x.py", self.now - 9, repo))
@@ -499,3 +529,66 @@ class ChangesTests(FactsCase):
         data = json.loads(out.getvalue())
         self.assertEqual([Path(f["path"]).name for f in data["facts"]["files"]], ["x.py"])
         self.assertTrue(self.spool().exists())
+
+
+class RecoveryRefoldTests(FactsCase):
+    """SessionStart(compact) folds the spool again, so activity after PreCompact reaches the recovery text."""
+
+    def setUp(self):
+        super().setUp()
+        self.enable_facts(SESSION)
+
+    def handle(self, name, source=None):
+        from provost_runtime.hooks import handle_event
+        event = {"session_id": SESSION, "cwd": str(self.root), "hook_event_name": name}
+        if source:
+            event["source"] = source
+        return handle_event(event, self.config_path, native=True)
+
+    def compact(self):
+        output = self.handle("SessionStart", "compact")
+        return output, output["hookSpecificOutput"]["additionalContext"]
+
+    def test_dispatch_and_commit_after_precompact_appear_in_recovery(self):
+        from provost_runtime.store import record
+        repo = self.repo("app")
+        record(self.root, SESSION, self.payload(), None, "r1")
+        self.write(self.agent("implementer", self.now + 30, repo))
+        self.handle("PreCompact")
+        self.write(self.agent("code-reviewer", self.now + 90, repo))  # between PreCompact and the boundary
+        self.commit(repo, "late fix", self.now + 120)
+        output, text = self.compact()
+        self.assertIn("2 dispatches / 1 commits after it.", text)
+        self.assertIn("code-reviewer: do code-reviewer", text)
+        self.assertIn("late fix", text)
+        self.assertEqual([a["role"] for a in self.stored(self.root)["agents"]], ["implementer", "code-reviewer"])
+        self.assertEqual([c["ts"] for c in self.repo_entry(self.stored(self.root), repo)["commits"]], [self.now + 120])
+        self.assertFalse(self.spool().exists())
+        self.assertNotIn("systemMessage", output)
+
+    def test_failed_refold_falls_back_to_the_precompact_facts_silently(self):
+        from provost_runtime.store import StoreError, record
+        repo = self.repo("app")
+        record(self.root, SESSION, self.payload(), None, "r1")
+        self.write(self.agent("implementer", self.now + 30, repo))
+        self.handle("PreCompact")
+        self.write(self.agent("code-reviewer", self.now + 90, repo))
+        for error in (StoreError("STORE_BUSY"), RuntimeError("boom")):
+            with self.subTest(error=error), mock.patch.object(facts, "fold", side_effect=error) as fold:
+                output, text = self.compact()
+                fold.assert_called_once()
+                self.assertIn("1 dispatches / 0 commits after it.", text)
+                self.assertIn("implementer: do implementer", text)
+                self.assertNotIn("code-reviewer", text)
+                self.assertNotIn("systemMessage", output)
+                self.assertNotIn("STORE_BUSY", text)
+                self.assertNotIn("FACTS_FAILED", text)
+                self.assertNotIn("Checkpoint unavailable", text)
+
+    def test_resume_and_unmarked_sessions_do_not_refold(self):
+        self.write(self.agent("implementer", self.now + 30, self.root))
+        with mock.patch.object(facts, "fold") as fold:
+            self.handle("SessionStart", "resume")
+            self.enable_facts(SESSION).unlink()
+            self.compact()  # the marker this SessionStart creates does not count
+        fold.assert_not_called()

@@ -86,6 +86,16 @@ class HookTests(FixtureCase):
                          "Provost: previous handoff save failed; verify any older checkpoint before continuing.")
         self.assertNotIn("facts.json", self.context(output))
 
+    def test_compact_of_a_never_recorded_session_is_not_called_a_failed_save(self):
+        handle_event(self.event("PreCompact"), self.config_path)  # NO_CHECKPOINT: nothing ever recorded
+        never = ("No handoff checkpoint: this session has not recorded yet; continue from the compact "
+                 "summary and record a milestone now.")
+        for source in ("compact", "resume"):
+            output = handle_event(self.event("SessionStart", source), self.config_path)
+            self.assertEqual(output["systemMessage"], "Provost: " + never)
+            self.assertIn("Save status: " + never, self.context(output))
+            self.assertNotIn("save failed", json.dumps(output))
+
     def test_disabled_events_have_no_workspace_writes(self):
         self.config_path.unlink()
         before = list(self.root.iterdir())
@@ -176,12 +186,98 @@ class SessionStartBudgetTests(FixtureCase):
 
     def test_file_list_is_dropped_first(self):
         record(self.root, "s1", self.payload("small next"), None, "r")
-        path = self.seed_facts(files=300, name_chars=40)
+        path = self.seed_facts(files=300, name_chars=700)  # even ten such names overflow the budget
         text = self.start()
         self.assertNotIn("f0299", text)
         self.assertIn("full list: " + str(path), text)
         self.assertIn("Observed payload: ", text)
         self.assertIn("small next", text)
+
+    def test_edited_file_list_is_capped_with_the_omitted_count(self):
+        record(self.root, "s1", self.payload("small next"), None, "r")
+        path = self.seed_facts(files=42)
+        text = self.start()
+        listed = [line for line in text.splitlines() if line.startswith("- C:/repo/f")]
+        self.assertEqual(len(listed), 10)
+        self.assertIn("f0041", listed[0])
+        self.assertIn("f0032", listed[-1])
+        self.assertNotIn("f0031", text)
+        self.assertIn("- 32 more not listed; full list: " + str(path), text)
+
+    def reseal(self, path, **changes):
+        from provost_runtime.config import handoff_home
+        from provost_runtime.store import _seal, atomic_write
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data.pop("checksum")
+        atomic_write(handoff_home(), path, _seal(dict(data, **changes)))
+
+    def activity(self, recorded, agents=(), commits=(), last_change=None):
+        """facts.json whose dispatches and repo commits are dated relative to the record time."""
+        from datetime import datetime, timezone
+        path = self.seed_facts(files=3, repos=1, agents=0)
+        repo = json.loads(path.read_text(encoding="utf-8"))["repos"][0]
+        iso = (lambda ts: datetime.fromtimestamp(ts, timezone.utc).isoformat())
+        self.reseal(path, agents=[{"role": role, "desc": desc, "bg": False, "ts": recorded + delta}
+                                  for role, desc, delta in agents],
+                    repos=[dict(repo, commits=[{"hash": h, "subject": s, "ts": recorded + delta}
+                                               for h, s, delta in commits])],
+                    last_change_at=None if last_change is None else iso(recorded + last_change))
+        return path
+
+    def recorded_epoch(self):
+        from datetime import datetime
+        from provost_runtime.store import current
+        return int(datetime.fromisoformat(current(self.root, "s1")["recorded_at"]).timestamp())
+
+    def test_compact_reports_activity_since_the_last_record(self):
+        record(self.root, "s1", self.payload("small next"), None, "r")
+        recorded = self.recorded_epoch()
+        self.activity(recorded, agents=[("implementer-sonnet", "early slice", -600),
+                                        ("implementer", "build parser", 300),
+                                        ("code-reviewer", "review parser", 1530)],
+                      commits=[("new1234", "feat: parser", 900), ("old1234", "chore: before", -900)],
+                      last_change=1000)
+        text = self.start()
+        self.assertIn("Since the last record", text)
+        self.assertIn("Checkpoint is 25 min older than the latest captured activity; "
+                      "2 dispatches / 1 commits after it.", text)
+        self.assertIn("implementer: build parser", text)
+        self.assertIn("code-reviewer: review parser", text)
+        self.assertIn("new1234 feat: parser", text)
+        self.assertNotIn("early slice", text)
+        self.assertNotIn("old1234", text)
+        order = [text.index(marker) for marker in ("Session facts", "small next", "Since the last record", "f0002")]
+        self.assertEqual(order, sorted(order))
+
+    def test_current_checkpoint_reports_no_later_activity(self):
+        record(self.root, "s1", self.payload("small next"), None, "r")
+        recorded = self.recorded_epoch()
+        self.activity(recorded, agents=[("implementer", "before", -60)], commits=[("old1234", "x", -30)],
+                      last_change=-30)
+        self.assertIn("Checkpoint is not older than the latest captured activity; 0 dispatches / 0 commits after it.",
+                      self.start())
+
+    def test_compact_without_a_record_says_all_activity_is_unrecorded(self):
+        self.activity(1_800_000_000, agents=[("implementer", "build parser", 0), ("Explore", "map seams", 60)],
+                      commits=[("new1234", "feat: parser", 30)])
+        text = self.start()
+        self.assertIn("Since the last record: no decision record in this session yet; "
+                      "2 dispatches / 1 commits captured, none recorded.", text)
+        self.assertIn("Explore: map seams", text)
+        self.assertIn("new1234 feat: parser", text)
+
+    def test_activity_lists_are_capped_and_stay_within_budget(self):
+        payload = self.payload("n" * 3000)
+        payload["decisions"] = ["d" * 900] * 30
+        record(self.root, "s1", payload, None, "r")
+        recorded = self.recorded_epoch()
+        self.activity(recorded, agents=[("implementer", "slice %03d %s" % (i, "x" * 110), 10 + i) for i in range(300)],
+                      commits=[("h%05d" % i, "subject %d %s" % (i, "s" * 70), 10 + i) for i in range(20)],
+                      last_change=400)
+        text = self.start()
+        self.assertIn("300 dispatches / 20 commits after it.", text)
+        self.assertNotIn("slice 294", text)
+        self.assertLessEqual(len(text), 8000)
 
     def test_record_shrinks_to_digest_then_to_its_path(self):
         payload = self.payload("keep next")

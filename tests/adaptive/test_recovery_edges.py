@@ -35,7 +35,7 @@ class RecoveryEdges(FixtureCase):
         child.mkdir()
         event = {"hook_event_name": "PreCompact", "cwd": str(child), "session_id": "s"}
         with mock.patch("provost_runtime.hooks.workspace_root", return_value=store.locate(self.root)), \
-                mock.patch("provost_runtime.facts.fold", side_effect=store.StoreError("WRITE_FAILED")):
+                mock.patch("provost_runtime.hooks.snapshot", side_effect=store.StoreError("WRITE_FAILED")):
             handle_event(event, self.config_path)
         result = handle_event({"hook_event_name": "SessionStart", "cwd": str(self.root),
                                "session_id": "s", "source": "resume"}, self.config_path)

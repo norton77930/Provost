@@ -13,8 +13,14 @@ PLUGIN = Path(__file__).resolve().parents[2]
 RECOVERY_PAYLOAD_LIMIT = 4500     # inline the payload in full up to this size; digest is capped to it too
 RECOVERY_ASSIGNMENT_LIMIT = 300   # per-assignment JSON cap inside the digest
 SESSION_START_BUDGET = 8000       # Claude Code swaps a larger additionalContext for a 2 KB preview
+RECOVERY_FILES = 10               # edited files listed after compaction; the rest are counted
+RECOVERY_DISPATCHES = 5           # newest dispatches listed since the last record
+RECOVERY_COMMITS = 3              # newest commits listed per repo since the last record
+RECOVERY_LINE_LIMIT = 300         # per-repo commit line cap
 PARTIAL_STATUS = ("Save status: the last compaction saved facts only. Before continuing, write a decision record "
                   "from the compaction summary: run status (it prefills facts and template.sources), then record.")
+NEVER_RECORDED = ("No handoff checkpoint: this session has not recorded yet; continue from the compact summary "
+                  "and record a milestone now.")
 
 
 def workspace_root(cwd):
@@ -156,7 +162,7 @@ def _payload_text(payload):
 
 
 def _recovery(root, session):
-    """(header, payload, checkpoint path) of the newest checkpoint, or (message, None, None) without one."""
+    """(header, payload, checkpoint path, checkpoint) of the newest checkpoint, or (message, None, None, None)."""
     # The latest milestone may be newer than the last compaction snapshot.
     root = as_workspace(root)
     data = current(root, session)
@@ -167,7 +173,7 @@ def _recovery(root, session):
         # Only a session with nothing in the new store may read the old per-repo store.
         found = legacy.checkpoint(root, session)
         if found is None:
-            return "No checkpoint for this session. Verify current sources before continuing.", None, None
+            return "No checkpoint for this session. Verify current sources before continuing.", None, None, None
         data, path = found
         source = "Checkpoint source: legacy store (read-only); the first record starts a fresh chain in the new store.\n"
     else:
@@ -180,32 +186,47 @@ def _recovery(root, session):
             + "\nTranscript cursor: " + ("available (not a freshness guarantee)" if data.get("transcript_cursor") else "unavailable; gaps must be checked")
             + "\nRead this JSON file for the complete checkpoint.\n"
             + "If any assignment is not marked completed, verify that worker's actual state before dispatching; "
-            + "read the checkpoint file for full details.\n"), data["payload"], path
+            + "read the checkpoint file for full details.\n"), data["payload"], path, data
+
+
+def _never_recorded(root, session):
+    """True when the session has no record, snapshot or legacy checkpoint; unreadable counts as False."""
+    try:
+        return current(root, session) is None and latest(root, session) is None and legacy.checkpoint(root, session) is None
+    except (StoreError, OSError):
+        return False
 
 
 def recovery_context(root, session):
-    header, payload, _ = _recovery(root, session)
+    header, payload, _, _ = _recovery(root, session)
     return header if payload is None else header + _payload_text(payload)
 
 
-def _recovery_variants(root, session):
+def _checkpoint_variants(header, payload, path):
     """Checkpoint section, richest first: payload (its digest when large), digest, path only."""
-    header, payload, path = _recovery(root, session)
     if payload is None:
         return [header]
     return [header + _payload_text(payload), header + _digest_text(payload),
             header + "Payload omitted for size; full checkpoint: " + str(path)]
 
 
-def _facts_variants(root, session):
-    """(facts summary variants, edited file list variants); both empty without a verified facts.json."""
+def _stored_facts(root, session):
+    """(verified facts.json body, its path), or (None, None) when absent or unreadable."""
     try:
         data, path = facts.stored(root, session)
-        if data is None:
-            return [], []
+        return (data, path) if data is not None else (None, None)
+    except (StoreError, OSError):
+        return None, None
+
+
+def _facts_variants(data, path):
+    """(facts summary variants, edited file list variants); both empty without a verified facts.json."""
+    if data is None:
+        return [], []
+    try:
         info = facts.summary(data, path)
         files = facts.recent_files(data)
-    except (StoreError, OSError, KeyError, TypeError, AttributeError, ValueError):
+    except (KeyError, TypeError, AttributeError, ValueError):
         return [], []
     lines = ["Session facts (hook observations; git decides current state): " + info["path"]]
     for repo in info["repos"]:
@@ -223,13 +244,56 @@ def _facts_variants(root, session):
                "Session facts omitted for size: " + info["path"] + ("\n" + note if note else "")]
     if not files:
         return summary, []
-    return summary, ["\n".join(["Edited repo files, most recent first:"] + ["- " + f for f in files]),
-                     "Edited repo files omitted for size; full list: " + info["path"]]
+    listed = ["Edited repo files, most recent first:"] + ["- " + f for f in files[:RECOVERY_FILES]]
+    if len(files) > RECOVERY_FILES:
+        listed.append("- %d more not listed; full list: %s" % (len(files) - RECOVERY_FILES, info["path"]))
+    return summary, ["\n".join(listed), "Edited repo files omitted for size; full list: " + info["path"]]
+
+
+def _minutes(seconds):
+    return "less than 1 min" if seconds < 60 else "%d min" % (seconds // 60)
+
+
+def _since_variants(data, path, checkpoint):
+    """Activity captured after the checkpoint's recorded_at (all of it without a checkpoint):
+    the full section, then its headline only. Empty without facts or when unreadable."""
+    if data is None:
+        return []
+    try:
+        recorded = _utc(checkpoint["recorded_at"]).timestamp() if checkpoint is not None else None
+        found = facts.since(data, recorded)
+        counts = "%d dispatches / %d commits" % (len(found["dispatches"]), found["commits"])
+        if checkpoint is None:
+            head = ["Since the last record: no decision record in this session yet; %s captured, none recorded."
+                    % counts]
+        else:
+            latest = found["latest"]
+            stale = ("Checkpoint is %s older than the latest captured activity; " % _minutes(latest - recorded)
+                     if latest is not None and latest > recorded
+                     else "Checkpoint is not older than the latest captured activity; ")
+            head = ["Since the last record (recorded_at %s):" % checkpoint["recorded_at"],
+                    stale + counts + " after it."
+                    + (" %d commits have no time and are not counted." % found["undated"] if found["undated"] else "")]
+        lines = list(head)
+        shown = found["dispatches"][-RECOVERY_DISPATCHES:]
+        if len(found["dispatches"]) > len(shown):
+            lines.append("- %d earlier dispatches not listed" % (len(found["dispatches"]) - len(shown)))
+        lines += ["- dispatched " + (a["role"] + ": " + a["desc"] if a["desc"] else a["role"]) for a in shown]
+        for repo in found["repos"]:
+            commits = repo["commits"][:RECOVERY_COMMITS]
+            more = len(repo["commits"]) - len(commits)
+            lines.append(_clip("- %s: %d commits: %s%s" % (
+                repo["root"], len(repo["commits"]), "; ".join(c["hash"] + " " + c["subject"] for c in commits),
+                " (+%d more)" % more if more else ""), RECOVERY_LINE_LIMIT))
+    except (KeyError, TypeError, AttributeError, ValueError, OverflowError):
+        return []
+    return ["\n".join(lines), "\n".join(head + ["Details: " + str(path)])]
 
 
 def _capture_note(info):
-    """Collection anomaly line, else "". facts.json is written only by a PreCompact fold, which runs
-    only for a session with the enablement marker: zero events there means capture is not reaching
+    """Collection anomaly line, else "". facts.json is written only by the PreCompact fold (and the
+    SessionStart(compact) refold after it), which runs only for a session with the enablement
+    marker: zero events there means capture is not reaching
     the spool (hook not installed, not firing, or failing)."""
     events, errors = info.get("events_captured"), info.get("spool_errors") or 0
     if not errors and events != 0:
@@ -383,19 +447,28 @@ def handle_event(event, config_path, *, native=False):
             shortest = (short + "\nRuntime: " + runtime + "\nWorkspace: " + str(root.root) + "\nSession: " + session + "\n"
                         + ("Use Bash: bash <quoted-runtime-path> status --workspace <quoted-workspace> --session <quoted-session>."
                            if enabled else "Handoff: disabled; do not record or snapshot."))
-            # Display order: identity, save status, facts, checkpoint, edited files.
-            sections = [[policy + info, short + info, shortest], [], [], [], []]
+            # Display order: identity, save status, facts, checkpoint, activity since it, edited files.
+            sections = [[policy + info, short + info, shortest], [], [], [], [], []]
             status, warning, partial = [], "", False
             if enabled:
+                # Only a session PreCompact could fold for: the marker this SessionStart creates does not count.
+                refold = native and source == "compact" and facts_enabled(config_path, session)
                 if native:
                     _enable_facts(config_path, session)
                 try:
                     bind(root, session, event)
                     recovering = source in ("compact", "resume")
                     if recovering:
+                        if refold:
+                            # Auto compaction runs PreCompact minutes before the boundary: fold that gap in.
+                            # Never raises; on failure the PreCompact facts.json is rendered unchanged.
+                            fold_facts(config_path, root, session)
                         # Facts first: a corrupt checkpoint raises and must not drop them.
-                        sections[2], sections[4] = _facts_variants(root, session)
-                        sections[3] = _recovery_variants(root, session)
+                        stored, stored_path = _stored_facts(root, session)
+                        sections[2], sections[5] = _facts_variants(stored, stored_path)
+                        header, payload, path, checkpoint = _recovery(root, session)
+                        sections[3] = _checkpoint_variants(header, payload, path)
+                        sections[4] = _since_variants(stored, stored_path, checkpoint)
                     elif source in ("startup", "clear", "fork"):
                         status.append("New work context: do not load or start old work unless explicitly requested.")
                     else:
@@ -409,6 +482,9 @@ def handle_event(event, config_path, *, native=False):
                                 partial = True
                                 warning = ("Provost: last compaction saved facts only; write a decision record from the "
                                            "compaction summary before continuing (run status, then record).")
+                            elif (isinstance(saved, dict) and saved.get("error") == "NO_CHECKPOINT"
+                                  and _never_recorded(root, session)):
+                                warning = "Provost: " + NEVER_RECORDED
                             elif isinstance(saved, dict) and saved.get("error"):
                                 warning = "Provost: previous handoff save failed; verify any older checkpoint before continuing."
                         except (OSError, UnicodeError, json.JSONDecodeError):
@@ -420,8 +496,9 @@ def handle_event(event, config_path, *, native=False):
                     warning = notice(key, code, state_dir)["message"]
                     status.append("Checkpoint unavailable; verify current sources. Error: " + code)
             sections[1] = ["\n".join(status)] if status else []
-            # Edited files go first, then the checkpoint shrinks; a plugin policy yields before the checkpoint.
-            steps = (4, 3, 3, 2, 0, 0) if native else (4, 0, 3, 3, 2, 0)
+            # Edited files go first, then the checkpoint, then the activity since it; a plugin policy
+            # yields before the checkpoint.
+            steps = (5, 3, 3, 4, 2, 0, 0) if native else (5, 0, 3, 3, 4, 2, 0)
             return _context(_fit(sections, steps)) | _notification(warning, True)
         if not enabled:
             return {}

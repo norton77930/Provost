@@ -59,7 +59,8 @@ session startup/workspace configuration; do not fabricate binding files.
 
 `facts` holds `path` (the facts.json file), `updated_at`, `last_change_at`, `repos`
 (at most 5: `root`, `branch`, `dirty` listed/`dirty_total` uncommitted entries,
-`commits` made during the session, `error`), `repos_omitted`, `agents` (dispatch
+`commits` made during the session, `error`; in facts.json each commit keeps `hash`,
+`subject` and its commit time `ts`), `repos_omitted`, `agents` (dispatch
 count by role), `agents_omitted`, `files`/`files_omitted` (edited repo files kept
 or dropped by the size cap), `outside_repo_count`, and collection health:
 `events_captured` (valid hook events folded so far) and `spool_errors` (unreadable
@@ -162,10 +163,41 @@ uncommitted count, session commit count; a subagent count by role; edits outside
 repos; a `Facts capture:` line when spool lines were unreadable or the session
 compacted with zero captured events, which means capture may be failing; omitted
 without `facts.json`), the checkpoint (payload, or its digest when
-over 4,500 characters) and the edited repo files, most recent first. Over budget,
-whole items are replaced, never cut: the file list first (by the facts.json path),
-then the checkpoint payload (its digest, then only the checkpoint path), then the
-facts summary (by its path), and last the identity (paths and `status` usage only).
+over 4,500 characters), the activity since the last record, and the edited repo
+files, most recent first (at most 10, then `N more not listed` with the facts.json
+path). The activity section compares facts.json with the checkpoint's `recorded_at`:
+a staleness line (`Checkpoint is N min older than the latest captured activity; K
+dispatches / M commits after it.`, where the latest activity is `last_change_at` or
+the newest dispatch), the 5 newest later dispatches (role and description) and,
+per repo, the count and 3 newest later commits. Without a checkpoint it says so and
+counts all captured dispatches and commits as unrecorded; without `facts.json` it is
+omitted. Over budget, whole items are replaced, never cut: the file list first (by
+the facts.json path), then the checkpoint payload (its digest, then only the
+checkpoint path), then the activity section (its headline and the facts.json path),
+then the facts summary (by its path), and last the identity (paths and `status`
+usage only).
+
+The save status names a genuine failure as `previous handoff save failed; verify
+any older checkpoint`. When the last PreCompact found no record (`NO_CHECKPOINT`)
+and the session has no record, snapshot or legacy checkpoint at all, it says
+instead: `No handoff checkpoint: this session has not recorded yet; continue from
+the compact summary and record a milestone now.`
+
+SessionStart with source `compact` folds the facts spool again before rendering, so
+dispatches, edits and commits between PreCompact and the compaction boundary (auto
+compaction runs PreCompact minutes earlier) are included. It runs only on the native
+path for a session whose enablement marker existed before this SessionStart, uses
+the same git budget and facts.json lock as PreCompact, and is fail-soft: when it
+fails (for example `STORE_BUSY`) the facts.json PreCompact wrote is rendered, with
+no warning. Resume does not refold.
+
+On a git timeout or failure in any fold (PreCompact or this refold), each failed
+step for a repo (`rev-parse` for `branch`, `status` for `dirty`/`dirty_total`, `log`
+for `commits`) keeps the value the previous fold stored and the repo's `error` names
+the code (`GIT_TIMEOUT`, `GIT_FAILED`, `GIT_UNAVAILABLE`); steps that succeed are
+current, and the next fold where git answers clears `error`. A repo with no previous
+entry gets `branch` null, no dirty entries and no commits. Kept dirty entries never
+date a change; `last_change_at` keeps the previous value plus what this fold read.
 
 PreCompact folds the facts spool into facts.json and snapshots an existing record,
 without a model call. Without a record the save is partial ("decision record
