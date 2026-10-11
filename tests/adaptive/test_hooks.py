@@ -96,6 +96,17 @@ class HookTests(FixtureCase):
             self.assertIn("Save status: " + never, self.context(output))
             self.assertNotIn("save failed", json.dumps(output))
 
+    def test_unreadable_never_recorded_check_keeps_the_failed_save_wording(self):
+        from provost_runtime import hooks
+        handle_event(self.event("PreCompact"), self.config_path)  # NO_CHECKPOINT
+        # _recovery reads the legacy store first (None); the never-recorded check then cannot read it.
+        with mock.patch.object(hooks.legacy, "checkpoint", side_effect=[None, StoreError("BINDING_UNREADABLE")]) as read:
+            output = handle_event(self.event("SessionStart", "compact"), self.config_path)
+        self.assertEqual(read.call_count, 2)
+        self.assertEqual(output["systemMessage"],
+                         "Provost: previous handoff save failed; verify any older checkpoint before continuing.")
+        self.assertNotIn("has not recorded yet", json.dumps(output))
+
     def test_disabled_events_have_no_workspace_writes(self):
         self.config_path.unlink()
         before = list(self.root.iterdir())
@@ -204,6 +215,20 @@ class SessionStartBudgetTests(FixtureCase):
         self.assertNotIn("f0031", text)
         self.assertIn("- 32 more not listed; full list: " + str(path), text)
 
+    def test_omitted_count_includes_files_the_facts_did_not_keep(self):
+        record(self.root, "s1", self.payload("small next"), None, "r")
+        for files, kept_out, line in (
+                (42, 8, "- 40 more not listed: 32 in %s, 8 older not kept"),
+                (3, 5, "- 5 more not listed: older, not kept"),
+                (42, 0, "- 32 more not listed; full list: %s")):
+            with self.subTest(files=files, omitted=kept_out):
+                path = self.seed_facts(files=files)
+                self.reseal(path, files_omitted=kept_out)
+                self.assertIn(line.replace("%s", str(path)), self.start())
+        path = self.seed_facts(files=300, name_chars=700)
+        self.reseal(path, files_omitted=8)
+        self.assertIn("Edited repo files omitted for size; 300 in %s, 8 older not kept" % path, self.start())
+
     def reseal(self, path, **changes):
         from provost_runtime.config import handoff_home
         from provost_runtime.store import _seal, atomic_write
@@ -240,7 +265,7 @@ class SessionStartBudgetTests(FixtureCase):
         text = self.start()
         self.assertIn("Since the last record", text)
         self.assertIn("Checkpoint is 25 min older than the latest captured activity; "
-                      "2 dispatches / 1 commits after it.", text)
+                      "2 dispatches / 1 commit after it.", text)
         self.assertIn("implementer: build parser", text)
         self.assertIn("code-reviewer: review parser", text)
         self.assertIn("new1234 feat: parser", text)
@@ -262,7 +287,7 @@ class SessionStartBudgetTests(FixtureCase):
                       commits=[("new1234", "feat: parser", 30)])
         text = self.start()
         self.assertIn("Since the last record: no decision record in this session yet; "
-                      "2 dispatches / 1 commits captured, none recorded.", text)
+                      "2 dispatches / 1 commit captured, none recorded.", text)
         self.assertIn("Explore: map seams", text)
         self.assertIn("new1234 feat: parser", text)
 
@@ -278,6 +303,57 @@ class SessionStartBudgetTests(FixtureCase):
         self.assertIn("300 dispatches / 20 commits after it.", text)
         self.assertNotIn("slice 294", text)
         self.assertLessEqual(len(text), 8000)
+
+    def test_activity_shrinks_to_its_headline_before_the_checkpoint_loses_its_digest(self):
+        payload = self.payload("keep next")
+        payload.update(work_id="keep-work", blockers=["keep blocker"],
+                       decisions=["decision %d %s" % (i, "d" * 1400) for i in range(4)])  # digest ~4.3 KB
+        record(self.root, "s1", payload, None, "r")
+        recorded = self.recorded_epoch()
+        path = self.activity(recorded, agents=[("implementer", "slice %d %s" % (i, "x" * 110), 10 + i) for i in range(5)],
+                             commits=[("h%05d" % i, "subject %s" % ("s" * 90), 10 + i) for i in range(3)],
+                             last_change=400)
+        repo = json.loads(path.read_text(encoding="utf-8"))["repos"][0]
+        self.reseal(path, repos=[dict(repo, root=repo["root"] + str(k)) for k in range(3)])
+        # Sized so that either the activity details or the digest must go (the old order dropped the digest).
+        for native in (True, False):
+            with self.subTest(native=native):
+                text = self.start(native=native)
+                self.assertIn("Observed payload digest", text)
+                for kept in ("keep-work", "keep next", "keep blocker"):
+                    self.assertIn(kept, text)
+                self.assertIn("Checkpoint is 6 min older than the latest captured activity; "
+                              "5 dispatches / 9 commits after it.", text)
+                self.assertNotIn("slice 4", text)
+                self.assertNotIn("f0002", text)
+
+    def test_undated_commits_are_reported_and_not_counted(self):
+        record(self.root, "s1", self.payload("small next"), None, "r")
+        recorded = self.recorded_epoch()
+        path = self.activity(recorded, commits=[("new1234", "feat: x", 60)], last_change=60)
+        repo = json.loads(path.read_text(encoding="utf-8"))["repos"][0]
+        for undated, line in ((1, " 1 commit has no time and is not counted."),
+                              (2, " 2 commits have no time and are not counted.")):
+            commits = repo["commits"] + [{"hash": "old%d" % i, "subject": "s"} for i in range(undated)]
+            self.reseal(path, repos=[dict(repo, commits=commits)])
+            with self.subTest(undated=undated):
+                self.assertIn("0 dispatches / 1 commit after it." + line, self.start())
+
+    def test_counts_use_the_singular_for_one(self):
+        record(self.root, "s1", self.payload("small next"), None, "r")
+        recorded = self.recorded_epoch()
+        self.activity(recorded, agents=[("implementer", "build parser", 300)],
+                      commits=[("new1234", "feat: parser", 200)], last_change=300)
+        text = self.start()
+        self.assertIn("1 dispatch / 1 commit after it.", text)
+        self.assertIn(": 1 commit: new1234 feat: parser", text)
+
+    def test_checkpoint_without_any_captured_activity_makes_no_freshness_claim(self):
+        record(self.root, "s1", self.payload("small next"), None, "r")
+        self.activity(self.recorded_epoch())
+        text = self.start()
+        self.assertIn("No activity captured after the checkpoint.", text)
+        self.assertNotIn("not older than", text)
 
     def test_record_shrinks_to_digest_then_to_its_path(self):
         payload = self.payload("keep next")

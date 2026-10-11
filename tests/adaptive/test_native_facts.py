@@ -107,6 +107,18 @@ class NativeFactsTests(FixtureCase):
         rows = self.capture(event("Agent", {"subagent_type": "Explore", "run_in_background": False}))
         self.assertIs(rows[1]["bg"], False)
 
+    def test_background_flag_sent_as_a_string_is_kept(self):
+        # Real Agent dispatches carry the flag as the model sent it, a JSON string, last in
+        # tool_input; tool_response reports the launch (shape from a Claude Code 2.1 transcript).
+        response = {"isAsync": True, "status": "async_launched", "agentId": "a9", "description": "d",
+                    "prompt": "p", "outputFile": "C:\\t\\a9.output", "canReadOutputFile": True}
+        for flag, expected in (("true", True), ("false", False), (True, True)):
+            data = json.loads(event("Agent", {"subagent_type": "Explore", "description": "map seams",
+                                              "prompt": "Brief \u2192 \"run_in_background\": no\n",
+                                              "run_in_background": flag}))
+            data["tool_response"] = response
+            self.assertIs(self.capture(json.dumps(data, ensure_ascii=False))[-1]["bg"], expected, flag)
+
     def test_agent_with_unsafe_role_writes_nothing(self):
         for role in ('bad"role', "two words", "back\\slash", ""):
             self.assertNothingWritten(event("Agent", {"subagent_type": role, "description": "d"}))
@@ -398,6 +410,28 @@ class NativeFactsTests(FixtureCase):
         # The first <status> decides: a later failed status inside the result does not.
         for text in (self.notification(), "\n" + self.notification()):
             self.assertResultReminder(text)
+
+    def test_crlf_and_uppercase_escapes_remind(self):
+        texts = [self.handback().replace("\n", "\r\n"), self.notification().replace("\n", "\r\n")]
+        for text in texts:
+            self.assertResultReminder(text)
+        for text in texts + [self.handback(), self.notification()]:
+            stdin = json.dumps({"session_id": SESSION, "hook_event_name": "UserPromptSubmit",
+                                "prompt": text}).replace("<", "\\u003C").replace(">", "\\u003E")
+            result = self.run_bash(HOOK, stdin=stdin)
+            self.assertEqual((result.returncode, result.stderr), (0, ""))
+            context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+            self.assertTrue(context.startswith("Handoff: a subagent result just arrived"), text[:20])
+
+    def test_completed_result_that_mentions_handback_reminds(self):
+        for result in ("Fixed the SubagentHandback detection in hooks/native-facts.",
+                       "Done. Note: SubagentHandback was unavailable, so this is the report."):
+            self.assertResultReminder(self.notification(result=result))
+
+    def test_interim_handback_notice_does_not_remind(self):
+        interim = ("This agent has not reported yet: it is waiting on its own background work and will deliver "
+                   "its report through SubagentHandback when that finishes.")
+        self.assertEqual(self.prompt(text=self.notification(result=interim)), {})
 
     def test_other_notifications_do_not_remind(self):
         pointer = "This agent's report was delivered to you as a message from \"a1b2\" (its SubagentHandback call)"

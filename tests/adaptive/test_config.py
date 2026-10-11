@@ -41,6 +41,20 @@ class ConfigTests(FixtureCase):
         self.assertEqual(resolve_mode(self.cfg, other, self.root), "legacy")
         self.assertEqual(resolve_mode(self.cfg, other, other), "adaptive")
 
+    def test_exclude_roots_match_spelling_variants(self):
+        import os
+        text = str(self.root)
+        variants = {"trailing separator": text + os.sep, "forward slashes": self.root.as_posix(),
+                    "forward slashes, trailing": self.root.as_posix() + "/"}
+        if os.name == "nt":
+            variants["different case"] = text.swapcase()
+        for label, value in variants.items():
+            with self.subTest(label, value=value):
+                self.cfg.update(all_workspaces=True, exclude_roots=[value])
+                self.assertEqual(resolve_mode(self.cfg, self.root), "legacy")
+                self.assertEqual(resolve_mode(self.cfg, self.root / "nested"), "legacy")
+                self.assertEqual(resolve_mode(self.cfg, self.root.with_name(self.root.name + "2")), "adaptive")
+
     def test_exclude_roots_validated_and_optional(self):
         for value in ("C:/tmp", ["relative/path"], [1], {"a": "b"}):
             cfg = dict(self.cfg, exclude_roots=value)

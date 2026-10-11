@@ -18,7 +18,8 @@
 #   prompt that is a subagent result adds a result-record reminder, without
 #   reading or touching the flags: a [Subagent hand-back] agent-message, or an
 #   agent's completed <task-notification> that does not point at a
-#   SubagentHandback delivery (background-command notifications never count).
+#   SubagentHandback delivery (its pointer or interim phrasing; background-command
+#   notifications never count).
 #   Both arrive as one additionalContext; otherwise {}. `record` deletes all
 #   three flags.
 set -uo pipefail
@@ -89,9 +90,11 @@ if [[ "$event" == UserPromptSubmit && "$session_id" =~ ^[A-Za-z0-9-]+$ ]]; then
         # A subagent's result arrives as a prompt that starts with its hand-back
         # message (optionally behind the "Another Claude session" wrapper), or as a
         # <task-notification> for an agent ("<summary>Agent ...", first <status>
-        # completed) that does not just point at a SubagentHandback delivery.
-        # < and > may be \u-escaped. The prompt is read from the whole input: its
-        # text may contain "tool_input":.
+        # completed) that does not just point at a SubagentHandback delivery: the
+        # pointer "(its SubagentHandback call)" or the interim "... through
+        # SubagentHandback ...". A result that merely mentions SubagentHandback
+        # still counts. < and > may be \u-escaped. A UserPromptSubmit has no
+        # tool_input, so the prompt is read from the whole input.
         lt='(<|\\u003[cC])' gt='(>|\\u003[eE])' ws='([[:space:]]|\\[nrt])*'
         hand_re='^'"$ws"'(Another Claude session sent a message:'"$ws"')?'"$lt"'agent-message from=\\"([^"\\]|\\[^"])*\\"'"$gt$ws"'\[Subagent hand-back\]'
         note_re='^'"$ws$lt"'task-notification'"$gt"
@@ -101,7 +104,8 @@ if [[ "$event" == UserPromptSubmit && "$session_id" =~ ^[A-Za-z0-9-]+$ ]]; then
         if get "$input" prompt; then
             if [[ "$val" =~ $hand_re ]]; then
                 result=true
-            elif [[ "$val" =~ $note_re && "$val" != *SubagentHandback* ]] \
+            elif [[ "$val" =~ $note_re && "$val" != *'(its SubagentHandback call)'* \
+                    && "$val" != *'through SubagentHandback'* ]] \
                     && [[ "$val" =~ $status_re && "${BASH_REMATCH[3]}" == completed ]] \
                     && [[ "$val" =~ $summary_re && -n "${BASH_REMATCH[3]}" ]]; then
                 result=true
@@ -180,8 +184,10 @@ case "$tool" in
                     break
                 fi
             done
+            # tool_input keeps the value as the model sent it: real dispatches pass the
+            # string "true", which Claude Code accepts like the boolean.
             bg=false
-            [[ "$body" =~ \"run_in_background\"[[:space:]]*:[[:space:]]*true([^A-Za-z0-9_]|$) ]] && bg=true
+            [[ "$body" =~ \"run_in_background\"[[:space:]]*:[[:space:]]*(true([^A-Za-z0-9_]|$)|\"true\") ]] && bg=true
             out="{${prefix},\"k\":\"agent\",${tail_fields},\"role\":\"${role}\",\"desc\":\"${desc}\",\"bg\":${bg}}"$'\n'
             [[ " $writers " == *" $role "* ]] && flag=pending-dispatch
         fi

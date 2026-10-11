@@ -165,17 +165,22 @@ compacted with zero captured events, which means capture may be failing; omitted
 without `facts.json`), the checkpoint (payload, or its digest when
 over 4,500 characters), the activity since the last record, and the edited repo
 files, most recent first (at most 10, then `N more not listed` with the facts.json
-path). The activity section compares facts.json with the checkpoint's `recorded_at`:
-a staleness line (`Checkpoint is N min older than the latest captured activity; K
-dispatches / M commits after it.`, where the latest activity is `last_change_at` or
-the newest dispatch), the 5 newest later dispatches (role and description) and,
-per repo, the count and 3 newest later commits. Without a checkpoint it says so and
-counts all captured dispatches and commits as unrecorded; without `facts.json` it is
-omitted. Over budget, whole items are replaced, never cut: the file list first (by
-the facts.json path), then the checkpoint payload (its digest, then only the
-checkpoint path), then the activity section (its headline and the facts.json path),
-then the facts summary (by its path), and last the identity (paths and `status`
-usage only).
+path; N also counts the oldest files the facts size cap dropped, which are in
+neither the list nor facts.json: `N more not listed: K in <facts.json>, D older not
+kept`). The activity section compares facts.json with the checkpoint's
+`recorded_at`: a staleness line (`Checkpoint is N min older than the latest captured
+activity; K dispatches / M commits after it.`, where the latest activity is
+`last_change_at` or the newest dispatch; `No activity captured after the
+checkpoint.` when facts.json holds no activity time at all; commits without a time
+are named and not counted), the 5 newest later dispatches (role and description)
+and, per repo, the count and 3 newest later commits. Without a checkpoint it says so
+and counts all captured dispatches and commits as unrecorded; without `facts.json`
+it is omitted. Over budget, whole items are replaced, never cut: the file list
+first (by the facts.json path), then a full checkpoint payload by its digest, then
+the activity section (its headline, which keeps the staleness line, and the
+facts.json path), then the checkpoint digest (only the checkpoint path), then the
+facts summary (by its path), and last the identity (paths and `status` usage only).
+In the plugin, the policy text yields to its short form before the checkpoint.
 
 The save status names a genuine failure as `previous handoff save failed; verify
 any older checkpoint`. When the last PreCompact found no record (`NO_CHECKPOINT`)
@@ -300,7 +305,9 @@ hook, and for `UserPromptSubmit` as a sync hook.
   message:`) followed by `[Subagent hand-back]`; otherwise an agent's
   `<task-notification>` whose first `<status>` is `completed`, whose summary
   starts with `Agent `, and which does not point at a `SubagentHandback`
-  delivery. For either, of any role, the hook also reminds main to record the
+  delivery (the pointer `(its SubagentHandback call)` or the interim notice
+  `... through SubagentHandback ...`; a result that merely mentions
+  `SubagentHandback` still counts). For either, of any role, the hook also reminds main to record the
   result milestone if it changes the work state. That reminder fires for every
   result and ignores the flags; when both apply they share one context.
   Teammate messages without the hand-back tag, background-command

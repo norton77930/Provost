@@ -23,6 +23,15 @@ class CliTests(FixtureCase):
         self.assertEqual(data["mode"], "adaptive")
         self.assertNoStore()
 
+    def test_doctor_reports_legacy_for_an_excluded_workspace(self):
+        self.config_path.write_text(json.dumps(dict(self.cfg, all_workspaces=True, exclude_roots=[str(self.root)])),
+                                    encoding="utf-8")
+        result = self.run_cli("doctor", "--workspace", str(self.root))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual((data["mode"], data["handoff"]), ("legacy", False))
+        self.assertNoStore()
+
     def test_doctor_reports_store_home_and_repo_key(self):
         from provost_runtime.config import workspace_key
         data = json.loads(self.run_cli("doctor", "--workspace", str(self.root)).stdout)

@@ -244,14 +244,27 @@ def _facts_variants(data, path):
                "Session facts omitted for size: " + info["path"] + ("\n" + note if note else "")]
     if not files:
         return summary, []
+    # files_omitted: oldest files the facts size cap dropped; they are in neither list nor facts.json.
     listed = ["Edited repo files, most recent first:"] + ["- " + f for f in files[:RECOVERY_FILES]]
-    if len(files) > RECOVERY_FILES:
-        listed.append("- %d more not listed; full list: %s" % (len(files) - RECOVERY_FILES, info["path"]))
-    return summary, ["\n".join(listed), "Edited repo files omitted for size; full list: " + info["path"]]
+    more, dropped = max(0, len(files) - RECOVERY_FILES), info["files_omitted"]
+    if more and dropped:
+        listed.append("- %d more not listed: %d in %s, %d older not kept" % (more + dropped, more, info["path"], dropped))
+    elif more:
+        listed.append("- %d more not listed; full list: %s" % (more, info["path"]))
+    elif dropped:
+        listed.append("- %d more not listed: older, not kept" % dropped)
+    shrunk = ("Edited repo files omitted for size; %d in %s, %d older not kept" % (len(files), info["path"], dropped)
+              if dropped else "Edited repo files omitted for size; full list: " + info["path"])
+    return summary, ["\n".join(listed), shrunk]
 
 
 def _minutes(seconds):
     return "less than 1 min" if seconds < 60 else "%d min" % (seconds // 60)
+
+
+def _count(number, noun, plural=None):
+    """"1 dispatch", "2 dispatches": number and noun in agreement."""
+    return "%d %s" % (number, noun if number == 1 else plural or noun + "s")
 
 
 def _since_variants(data, path, checkpoint):
@@ -262,28 +275,34 @@ def _since_variants(data, path, checkpoint):
     try:
         recorded = _utc(checkpoint["recorded_at"]).timestamp() if checkpoint is not None else None
         found = facts.since(data, recorded)
-        counts = "%d dispatches / %d commits" % (len(found["dispatches"]), found["commits"])
+        counts = "%s / %s" % (_count(len(found["dispatches"]), "dispatch", "dispatches"),
+                              _count(found["commits"], "commit"))
         if checkpoint is None:
             head = ["Since the last record: no decision record in this session yet; %s captured, none recorded."
                     % counts]
         else:
             latest = found["latest"]
-            stale = ("Checkpoint is %s older than the latest captured activity; " % _minutes(latest - recorded)
-                     if latest is not None and latest > recorded
-                     else "Checkpoint is not older than the latest captured activity; ")
-            head = ["Since the last record (recorded_at %s):" % checkpoint["recorded_at"],
-                    stale + counts + " after it."
-                    + (" %d commits have no time and are not counted." % found["undated"] if found["undated"] else "")]
+            if latest is None and not found["dispatches"] and not found["commits"]:
+                line = "No activity captured after the checkpoint."  # no time at all: no freshness claim
+            else:
+                line = ("Checkpoint is %s older than the latest captured activity; " % _minutes(latest - recorded)
+                        if latest is not None and latest > recorded
+                        else "Checkpoint is not older than the latest captured activity; ") + counts + " after it."
+            if found["undated"]:
+                line += (" 1 commit has no time and is not counted." if found["undated"] == 1
+                         else " %d commits have no time and are not counted." % found["undated"])
+            head = ["Since the last record (recorded_at %s):" % checkpoint["recorded_at"], line]
         lines = list(head)
         shown = found["dispatches"][-RECOVERY_DISPATCHES:]
         if len(found["dispatches"]) > len(shown):
-            lines.append("- %d earlier dispatches not listed" % (len(found["dispatches"]) - len(shown)))
+            lines.append("- %s not listed" % _count(len(found["dispatches"]) - len(shown), "earlier dispatch",
+                                                     "earlier dispatches"))
         lines += ["- dispatched " + (a["role"] + ": " + a["desc"] if a["desc"] else a["role"]) for a in shown]
         for repo in found["repos"]:
             commits = repo["commits"][:RECOVERY_COMMITS]
             more = len(repo["commits"]) - len(commits)
-            lines.append(_clip("- %s: %d commits: %s%s" % (
-                repo["root"], len(repo["commits"]), "; ".join(c["hash"] + " " + c["subject"] for c in commits),
+            lines.append(_clip("- %s: %s: %s%s" % (
+                repo["root"], _count(len(repo["commits"]), "commit"), "; ".join(c["hash"] + " " + c["subject"] for c in commits),
                 " (+%d more)" % more if more else ""), RECOVERY_LINE_LIMIT))
     except (KeyError, TypeError, AttributeError, ValueError, OverflowError):
         return []
@@ -496,9 +515,10 @@ def handle_event(event, config_path, *, native=False):
                     warning = notice(key, code, state_dir)["message"]
                     status.append("Checkpoint unavailable; verify current sources. Error: " + code)
             sections[1] = ["\n".join(status)] if status else []
-            # Edited files go first, then the checkpoint, then the activity since it; a plugin policy
-            # yields before the checkpoint.
-            steps = (5, 3, 3, 4, 2, 0, 0) if native else (5, 0, 3, 3, 4, 2, 0)
+            # Edited files go first; the activity since the checkpoint shrinks to its headline (which
+            # keeps the staleness line) before the checkpoint loses its digest; a plugin policy yields
+            # before both.
+            steps = (5, 3, 4, 3, 2, 0, 0) if native else (5, 0, 3, 4, 3, 2, 0)
             return _context(_fit(sections, steps)) | _notification(warning, True)
         if not enabled:
             return {}

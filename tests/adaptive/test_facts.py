@@ -558,7 +558,7 @@ class RecoveryRefoldTests(FactsCase):
         self.write(self.agent("code-reviewer", self.now + 90, repo))  # between PreCompact and the boundary
         self.commit(repo, "late fix", self.now + 120)
         output, text = self.compact()
-        self.assertIn("2 dispatches / 1 commits after it.", text)
+        self.assertIn("2 dispatches / 1 commit after it.", text)
         self.assertIn("code-reviewer: do code-reviewer", text)
         self.assertIn("late fix", text)
         self.assertEqual([a["role"] for a in self.stored(self.root)["agents"]], ["implementer", "code-reviewer"])
@@ -577,13 +577,36 @@ class RecoveryRefoldTests(FactsCase):
             with self.subTest(error=error), mock.patch.object(facts, "fold", side_effect=error) as fold:
                 output, text = self.compact()
                 fold.assert_called_once()
-                self.assertIn("1 dispatches / 0 commits after it.", text)
+                self.assertIn("1 dispatch / 0 commits after it.", text)
                 self.assertIn("implementer: do implementer", text)
                 self.assertNotIn("code-reviewer", text)
                 self.assertNotIn("systemMessage", output)
                 self.assertNotIn("STORE_BUSY", text)
                 self.assertNotIn("FACTS_FAILED", text)
                 self.assertNotIn("Checkpoint unavailable", text)
+
+    def test_refold_blocked_by_the_held_session_lock_keeps_the_claimed_spool(self):
+        from provost_runtime.store import _lock, as_workspace, record, session_dir
+        repo = self.repo("app")
+        record(self.root, SESSION, self.payload(), None, "r1")
+        self.write(self.agent("implementer", self.now + 30, repo))
+        self.handle("PreCompact")
+        self.write(self.agent("code-reviewer", self.now + 90, repo))
+        ws = as_workspace(self.root)
+        with _lock(ws, session_dir(ws, SESSION)):  # a real fold, not a patched one, meets STORE_BUSY
+            output, text = self.compact()
+        self.assertIn("1 dispatch / 0 commits after it.", text)
+        self.assertNotIn("code-reviewer", text)
+        self.assertNotIn("systemMessage", output)
+        self.assertNotIn("STORE_BUSY", text)
+        claimed = list(self.spool().parent.glob(self.spool().name + ".folding-*"))
+        self.assertEqual(len(claimed), 1)
+        self.assertIn(b"code-reviewer", claimed[0].read_bytes())
+        self.assertEqual([a["role"] for a in self.stored(self.root)["agents"]], ["implementer"])
+        output, text = self.compact()  # lock released: the claimed spool is resumed exactly once
+        self.assertIn("2 dispatches / 0 commits after it.", text)
+        self.assertEqual([a["role"] for a in self.stored(self.root)["agents"]], ["implementer", "code-reviewer"])
+        self.assertEqual(list(self.spool().parent.glob(self.spool().name + ".folding-*")), [])
 
     def test_resume_and_unmarked_sessions_do_not_refold(self):
         self.write(self.agent("implementer", self.now + 30, self.root))
