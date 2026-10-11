@@ -43,6 +43,8 @@ if [[ "$_provost_module_root" == /* ]]; then
     unset _provost_native
 fi
 export PYTHONPATH="$_provost_module_root"
+# Hooks run with the project as cwd; keep `python -m` from importing its modules (3.11+).
+export PYTHONSAFEPATH=1
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONUTF8=1
 unset _provost_here _provost_module_root

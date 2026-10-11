@@ -18,6 +18,19 @@ class WrapperTests(FixtureCase):
     def event(self, name="SessionStart", source="startup"):
         return {"session_id": "s1", "cwd": str(self.root), "hook_event_name": name, "source": source}
 
+    def test_project_modules_in_cwd_do_not_shadow_runtime_imports(self):
+        # Hooks run with the project as cwd; `python -m` would put it first on sys.path.
+        project = self.root / "untrusted"
+        project.mkdir()
+        marker = self.root / "shadowed"
+        (project / "json.py").write_text(f"open({str(marker)!r}, 'w').close()\nraise SystemExit(3)\n",
+                                         encoding="utf-8")
+        env = dict(os.environ, PROVOST_CONFIG=str(self.config_path), PYTHONDONTWRITEBYTECODE="1")
+        result = subprocess.run([BASH, str(REPO / "hooks" / "runtime"), "doctor", "--workspace", str(project)],
+                                capture_output=True, text=True, encoding="utf-8", env=env, cwd=project, timeout=60)
+        self.assertFalse(marker.exists(), result.stderr)
+        self.assertNotEqual(result.returncode, 3)
+
     def test_opt_in_shell_routes_to_adaptive(self):
         result = self.run_script("session-start", self.event())
         self.assertIn("adaptive", result["hookSpecificOutput"]["additionalContext"])
