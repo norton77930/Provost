@@ -106,7 +106,6 @@ Provost 最早是三層治理框架（Tier 0 Bare、Tier 1 Collaborator、Tier 2
 ## 已知限制
 
 - 為單一使用者調校；模型別名（`fable`、`opus`、`sonnet`、`haiku`）實際對應哪個模型取決於你的 Claude Code 版本。
-- `legacy.py`（v1 store 的唯讀橋接）排定移除。
 - hook 每次都會啟動 bash 和 Python；在 Windows 上每個 hook 約花一秒。
 
 ## 授權

@@ -184,7 +184,6 @@ and is no longer maintained.
 
 - Tuned for one user; model aliases (`fable`, `opus`, `sonnet`, `haiku`) resolve
   to whatever your Claude Code version maps them to.
-- `legacy.py` (read-only bridge to the v1 store) is scheduled for removal.
 - Hooks spawn bash and Python on every call; on Windows that costs roughly a
   second per hook.
 

@@ -5,12 +5,12 @@ import json
 import sys
 from pathlib import Path
 
-from . import facts, legacy, search
+from . import facts, search
 from .config import ConfigError, config_path, handoff_home, load_config, resolve_mode
-from .hooks import (bind, binding, cursor, handle_event, last_binding_at, recovery_context,
+from .hooks import (binding, cursor, handle_event, last_binding_at, recovery_context,
                     resolve_transcript, workspace_root)
 from .facts import SPOOL_SESSION
-from .store import (FACTS_FLAGS, StoreError, current, guard, latest, list_snapshots, prune, record, snapshot,
+from .store import (FACTS_FLAGS, StoreError, current, guard, list_snapshots, prune, record, resume, snapshot,
                     storage_ready)
 
 
@@ -87,7 +87,6 @@ def main(argv=None):
         parser.add_argument("--limit")
         parser.add_argument("--show")
         parser.add_argument("--all-repos", action="store_true")
-        parser.add_argument("--legacy", action="store_true")
         options = parser.parse_args(args)
         root = workspace_root(options.workspace)
         cfg = load_config(config_path())
@@ -108,14 +107,14 @@ def main(argv=None):
                       "handoff": mode == "adaptive" and cfg.get("handoff", False),
                       "storage_ready": error is None, "storage_error": error,
                       "host_verified": bound_at is not None, "last_binding_at": bound_at,
-                      "stale_sessions": stale, "expired_sessions": expired, "legacy_store_present": legacy.present(root),
+                      "stale_sessions": stale, "expired_sessions": expired,
                       "store_home": str(handoff_home()), "repo_key": root.repo_key,
                       "runtime_root": str(RUNTIME_ROOT), "runtime_hash": runtime_hash(RUNTIME_ROOT)}
         else:
             if mode != "adaptive" or not cfg.get("handoff"):
                 raise StoreError("HANDOFF_DISABLED")
             if options.command == "list":
-                result = legacy.list_snapshots(root) if options.legacy else list_snapshots(root)
+                result = list_snapshots(root)
             elif options.command == "search":
                 if options.show is not None:
                     result = search.show(root, options.show, all_repos=options.all_repos)
@@ -131,27 +130,13 @@ def main(argv=None):
                 if not options.session:
                     raise StoreError("SESSION_REQUIRED")
                 source = binding(root, options.session)
-                old_binding = None
                 if not source:
-                    # resume keeps requiring a new-store binding.
-                    old_binding = None if options.command == "resume" else legacy.binding(root, options.session)
-                    if not old_binding:
-                        raise StoreError("SESSION_NOT_BOUND")
-                    source = old_binding[0]
-                    if options.command in ("record", "snapshot"):
-                        # Carry the legacy binding over so later calls find it in the new store.
-                        bind(root, options.session, {"transcript_path": source.get("transcript_path")})
-                        old_binding = None
+                    raise StoreError("SESSION_NOT_BOUND")
                 if options.command == "status":
                     checkpoint = current(root, options.session)
-                    old = None
-                    if checkpoint is None and latest(root, options.session) is None:
-                        old = legacy.checkpoint(root, options.session)
                     result = {"workspace": str(root.root), "session_id": options.session,
                               "expected": checkpoint["revision"] if checkpoint else None,
-                              "checkpoint": old[0] if old else checkpoint,
-                              **({"legacy": True, "legacy_path": str(old[1])} if old else {}),
-                              **({"legacy_binding": True} if old_binding else {}),
+                              "checkpoint": checkpoint,
                               "facts": None,
                               "template": {"work_id": "", "phase": "", "sources": [],
                                            "assignments": [], "decisions": [], "blockers": [],
@@ -193,7 +178,7 @@ def main(argv=None):
                 else:
                     if not options.source:
                         raise StoreError("SNAPSHOT_ID_REQUIRED")
-                    result = legacy.resume(root, options.session, options.source)
+                    result = resume(root, options.session, options.source)
                     result = {**result, "reconciliation": recovery_context(root, options.session)}
         print(json.dumps(result, ensure_ascii=True))
         return 0

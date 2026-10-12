@@ -20,16 +20,6 @@ when a new one is written, and `horizon.json` records where the chain was cut so
 reads still verify it. Retrying the request ID of the most recently removed record
 returns `REQUEST_ID_EXPIRED` (see Known limits below).
 
-Older stores under `<checkout>/.provost/handoffs/v1` are read-only: when the new
-store has nothing for a session, `status` and compact/resume recovery fall back to
-them (marked `legacy`; `expected` stays null so the first record starts a fresh
-chain), `list --legacy` lists their snapshots, and `resume` can adopt one. A
-session whose SessionStart bound it only in a legacy store (it started before the
-switch) still works: `status` reports `legacy_binding`, and the first `record` or
-`snapshot` copies the validated binding into the new store. Nothing is ever written
-to or deleted from legacy stores; remove them yourself when no longer needed.
-This bridge is temporary.
-
 ## Excluding workspaces
 
 The personal config enables adaptive mode per workspace (`workspace_roots`, exact
@@ -224,7 +214,7 @@ facts summary (by its path), and last the identity (paths and `status` usage onl
 
 The save status names a genuine failure as `previous handoff save failed; verify
 any older checkpoint`. When the last PreCompact found no record (`NO_CHECKPOINT`)
-and the session has no record, snapshot or legacy checkpoint at all, it says
+and the session has no record or snapshot at all, it says
 instead: `No handoff checkpoint: this session has not recorded yet; continue from
 the compact summary and record a milestone now.`
 
@@ -289,8 +279,7 @@ dir whose lock is held (`STORE_BUSY`), a dir with unexpected content
 (`UNEXPECTED_CONTENT`), and a dir whose stored `workspace_id` belongs to another
 repo (`FOREIGN_REPO`). Under `--apply`, an expired session kept because removal or
 archiving was refused is listed only in `skipped`, not under `expired`; the dry run
-lists it under `expired`. Nothing is deleted automatically, and legacy `.provost`
-stores are never pruned.
+lists it under `expired`. Nothing is deleted automatically.
 
 Decisions outlive expiry. Before an expired session (or a reclaimable `.pruning-`
 leftover) is moved aside or deleted, `--apply` preserves its newest record for each
@@ -319,8 +308,7 @@ Known limits: `horizon.json` carries no checksum, so tampering with it can hide 
 remove records; a reader that overlaps a trim can see a transient
 `CORRUPT_RECORD`/`INCOMPLETE_CHAIN` that a retry clears; `REQUEST_ID_EXPIRED`
 covers the newest trimmed id and on-disk leftovers, while an older trimmed id
-reused against the current head records a new entry (the chain stays valid); a corrupt legacy store
-surfaces as "Checkpoint unavailable" during recovery; submodules, bare-backed and
+reused against the current head records a new entry (the chain stays valid); submodules, bare-backed and
 separate-git-dir checkouts are refused (`REPO_KEY_UNRESOLVED`); Git older than
 2.31 is refused (`GIT_UNSUPPORTED`); on Windows without long-path support a long
 user or `PROVOST_HOME` path can exceed 260 characters.
