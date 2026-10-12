@@ -41,6 +41,12 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 - The interpreter's inside-the-project check restores the working directory,
   `PWD` and `OLDPWD` even when changing back fails, and reads a parent
   directory named `-` literally instead of jumping to `OLDPWD`.
+- `install.py` rolls back on an interrupt (not only on write errors) and names the backup dir, says
+  nothing changed when the backup step fails, hints at BOM or stray whitespace on policy markers,
+  and rejects `check --dry-run`.
+- `prune --apply` holds the session lock while removing an expired session, so
+  a concurrent record can no longer leave a broken chain; a busy or recreated
+  session is skipped or reported instead of deleted.
 
 ### Removed
 

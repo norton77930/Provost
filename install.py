@@ -3,8 +3,9 @@
 
 python install.py [install|check] [--dry-run] [--config-dir DIR] [--source DIR] [--json]
 
-check (default) is read-only: exit 0 no drift, 1 drift, 2 error.
+check (default) is read-only: exit 0 no drift, 1 drift, 2 error (--dry-run is rejected with check).
 install writes only changed targets, after backing them up: exit 0 success, 2 error.
+An error or interrupt during install rolls back and names the backup dir.
 Stdlib only; never reads or prints settings.json values beyond the hook commands it inspects.
 """
 import argparse
@@ -82,6 +83,23 @@ def _glob(source, directory, pattern):
     return found
 
 
+def _near_misses(lines):
+    """Hints for lines that look like a marker but are not an exact match (never accepted)."""
+    bom = b"\xef\xbb\xbf"
+    hints = []
+    for number, line in enumerate(lines, 1):
+        content = line.rstrip(b"\r\n")
+        if content in (BEGIN, END):
+            continue
+        has_bom = number == 1 and content.startswith(bom)
+        core = content[len(bom):] if has_bom else content
+        for name, marker in (("begin", BEGIN), ("end", END)):
+            if core.strip(b" \t") == marker:
+                cause = "the file starts with a BOM" if has_bom else "the line has leading or trailing whitespace"
+                hints.append(f"line {number} looks like the {name} marker but {cause}")
+    return "; " + "; ".join(hints) if hints else ""
+
+
 def split_policy(data):
     """Return (before, body, after) around the marker lines; after starts at the end marker."""
     lines = data.splitlines(keepends=True)
@@ -89,7 +107,7 @@ def split_policy(data):
     ends = [i for i, line in enumerate(lines) if line.rstrip(b"\r\n") == END]
     if len(begins) != 1 or len(ends) != 1:
         raise InstallError(f"{POLICY_TARGET}: expected exactly one begin and one end marker line "
-                           f"(found {len(begins)} begin, {len(ends)} end)")
+                           f"(found {len(begins)} begin, {len(ends)} end)" + _near_misses(lines))
     begin, end = begins[0], ends[0]
     if begin > end:
         raise InstallError(f"{POLICY_TARGET}: end marker comes before begin marker")
@@ -228,15 +246,23 @@ def missing_dirs(config, path):
 
 
 def install(config, changes):
-    backup = backup_dir(config)
+    backup = None
     changed = [t.rel for t in changes if (config / t.rel).exists()]
     created = [t.rel for t in changes if t.rel not in changed]
-    for rel in changed:
-        dest = backup / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(config / rel, dest)
-    manifest = {"schema_version": 1, "changed": changed, "created": created}
-    atomic_write(backup / "manifest.json", (json.dumps(manifest, indent=2) + "\n").encode("utf-8"))
+    try:
+        backup = backup_dir(config)
+        for rel in changed:
+            dest = backup / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(config / rel, dest)
+        manifest = {"schema_version": 1, "changed": changed, "created": created}
+        atomic_write(backup / "manifest.json", (json.dumps(manifest, indent=2) + "\n").encode("utf-8"))
+    except OSError as exc:
+        # Nothing managed has been written yet. The partial backup dir is kept (an error path should
+        # not delete anything) and named, so the user can see it holds only unfinished copies.
+        left = (f"; partial backup dir {backup} has no manifest and can be deleted" if backup
+                else "")
+        raise InstallError(f"backup failed ({exc}); no managed file was changed{left}") from exc
     written, new_dirs = [], []
     try:
         for target in changes:
@@ -247,12 +273,18 @@ def install(config, changes):
             mode = stat.S_IMODE((path if target.policy else target.source).stat().st_mode)
             atomic_write(path, target.desired, mode)
             written.append(target.rel)
-    except OSError as exc:
+    except BaseException as exc:  # includes KeyboardInterrupt: never leave a half-written config
         failed = rollback(config, backup, written, set(changed), new_dirs)
+        reason = str(exc) if isinstance(exc, OSError) else type(exc).__name__
         if failed:
-            raise InstallError(f"install failed ({exc}); rollback incomplete: {', '.join(failed)}; "
-                               f"backup kept at {backup}") from exc
-        raise InstallError(f"install failed ({exc}); all changes rolled back; backup at {backup}") from exc
+            outcome = f"rollback incomplete: {', '.join(failed)}; backup kept at {backup}"
+        else:
+            outcome = f"all changes rolled back; backup at {backup}"
+        message = f"install failed ({reason}); {outcome}"
+        if isinstance(exc, OSError):
+            raise InstallError(message) from exc
+        print(f"install.py: {message}", file=sys.stderr)
+        raise
     return backup, changed, created
 
 
@@ -281,7 +313,10 @@ def parse(argv):
     parser.add_argument("--config-dir", help="default: $CLAUDE_CONFIG_DIR or ~/.claude")
     parser.add_argument("--source", help="default: the directory containing install.py")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.dry_run and args.command == "check":
+        parser.error("--dry-run applies only to install (check is always read-only)")
+    return args
 
 
 def emit(args, payload, lines):
