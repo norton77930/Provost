@@ -47,6 +47,10 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 - `prune --apply` holds the session lock while removing an expired session, so
   a concurrent record can no longer leave a broken chain; a busy or recreated
   session is skipped or reported instead of deleted.
+- `install.py` refuses an empty or whitespace-only policy source instead of
+  emptying the installed section, and an interrupt right after a target is
+  replaced still rolls that target back; `prune --apply` lists a session kept
+  as `skipped` (for example `STORE_BUSY`) only there, no longer also under `expired`.
 
 ### Removed
 

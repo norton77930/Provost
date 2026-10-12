@@ -400,6 +400,25 @@ class ExpiredPruneTests(FixtureCase):
         self.assertTrue(busy.is_dir())
         self.assertEqual(self.expired(prune(self.root)), [busy.name])
 
+    def test_a_session_that_turns_busy_at_removal_is_listed_only_as_skipped(self):
+        from unittest import mock
+        from provost_runtime import store
+        busy, gone = self.session("busy", 90), self.session("gone", 90)
+        real_remove = store._remove_expired
+
+        def busy_at_removal(home, entry, *args):  # locked after the listing probe, before the remove
+            if entry == busy:
+                raise StoreError("STORE_BUSY")
+            return real_remove(home, entry, *args)
+
+        with mock.patch.object(store, "_remove_expired", busy_at_removal):
+            result = prune(self.root, apply=True)
+        self.assertEqual(self.expired(result), [gone.name])
+        self.assertEqual(result["expired_removed"], 1)
+        self.assertIn({"entry": busy.name, "reason": "STORE_BUSY"}, result["skipped"])
+        self.assertTrue((busy / "records").is_dir())
+        self.assertFalse(gone.exists())
+
     def test_dry_run_and_probe_create_no_lock_file(self):
         old = self.session("old", 90)
         (old / ".lock").unlink(missing_ok=True)
