@@ -113,7 +113,7 @@ class LegacyFallback(LegacyCase):
     def test_compact_injection_carries_the_legacy_checkpoint(self):
         self.legacy_record(self.root, "s1")
         result = handle_event({"hook_event_name": "SessionStart", "cwd": str(self.root),
-                               "session_id": "s1", "source": "compact"}, self.config_path, native=True)
+                               "session_id": "s1", "source": "compact"}, self.config_path)
         text = result["hookSpecificOutput"]["additionalContext"]
         self.assertIn(MARK, text)
         self.assertIn("legacy step", text)

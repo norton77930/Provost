@@ -184,9 +184,6 @@ and is no longer maintained.
 
 - Tuned for one user; model aliases (`fable`, `opus`, `sonnet`, `haiku`) resolve
   to whatever your Claude Code version maps them to.
-- The runtime still contains the unused plugin-mode SessionStart path and lists
-  the removed `native-reminder` hook in `runtime_hash`; both are scheduled for
-  removal.
 - `legacy.py` (read-only bridge to the v1 store) is scheduled for removal.
 - Hooks spawn bash and Python on every call; on Windows that costs roughly a
   second per hook.

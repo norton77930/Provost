@@ -180,6 +180,40 @@ class InterpreterCacheTests(FixtureCase):
         self.assertEqual(result.stdout.split(),
                          ["rc=1", "rc=0", "pwd-kept", "oldpwd-kept", "cwd-kept", "oldpwd-unset"])
 
+    def test_failed_return_cd_still_restores_the_shell(self):
+        project, other = self.root / "project", self.root / "other" / "bin"
+        project.mkdir()
+        other.mkdir(parents=True)
+        # A `builtin` override fails the third cd (the way back from the candidate's parent),
+        # as a cwd removed or made untraversable mid-check would.
+        script = ('source "$1"; cd "$2" || exit 9; OLDPWD=before; start="$PWD"; n=0; '
+                  'builtin() { if [[ "$1" == cd ]]; then n=$((n + 1)); [[ $n != 3 ]] || return 1; fi; '
+                  'command builtin "$@"; }; '
+                  '_provost_in_cwd "$3/python3"; echo "rc=$?"; unset -f builtin; '
+                  '[[ "$PWD" == "$start" ]] && echo pwd-kept; [[ "$OLDPWD" == before ]] && echo oldpwd-kept; '
+                  '[[ "$(pwd -P)" -ef "$2" ]] && echo cwd-kept; exit 0')
+        result = subprocess.run([BASH, "-c", script, "probe", (REPO / "hooks" / "_python.sh").as_posix(),
+                                 project.as_posix(), other.as_posix()],
+                                capture_output=True, text=True, encoding="utf-8", timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # Unresolved counts as inside (never cached); the shell is back where it was.
+        self.assertEqual(result.stdout.split(), ["rc=0", "pwd-kept", "oldpwd-kept", "cwd-kept"])
+
+    def test_parent_named_dash_is_a_literal_directory_not_oldpwd(self):
+        project, other = self.root / "project", self.root / "other"
+        project.mkdir()
+        other.mkdir()
+        # `cd -P -- -` would jump to OLDPWD (outside) and print it to stdout.
+        script = ('source "$1"; cd "$2" || exit 9; OLDPWD="$3"; start="$PWD"; '
+                  '_provost_in_cwd "-/python3"; echo "rc=$?"; mkdir -- -; '
+                  '_provost_in_cwd "-/python3"; echo "rc=$?"; '
+                  '[[ "$PWD" == "$start" && "$OLDPWD" == "$3" ]] && echo kept')
+        result = subprocess.run([BASH, "-c", script, "probe", (REPO / "hooks" / "_python.sh").as_posix(),
+                                 project.as_posix(), other.as_posix()],
+                                capture_output=True, text=True, encoding="utf-8", timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split(), ["rc=0", "rc=0", "kept"])
+
     def test_provost_python_overrides_cache_and_probe(self):
         override_log = self.root / "override.log"
         override = self.fake_interpreter(self.root / "override", "python", override_log)

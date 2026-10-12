@@ -22,7 +22,7 @@ class HookTests(FixtureCase):
         snapshot(self.root, "s1", "e")
         for source in ("startup", "clear", "fork"):
             output = handle_event(self.event("SessionStart", source), self.config_path)
-            self.assertIn("adaptive", self.context(output))
+            self.assertIn("Native handoff runtime active", self.context(output))
             self.assertNotIn("PRIVATE NEXT STEP", self.context(output))
             self.assertNotIn("initialUserMessage", output.get("hookSpecificOutput", {}))
 
@@ -45,30 +45,23 @@ class HookTests(FixtureCase):
 
     def test_missing_checkpoint_not_reported_as_saved(self):
         self.enable_facts()
-        output = json.dumps(handle_event(self.event("PreCompact"), self.config_path, native=True))
+        output = json.dumps(handle_event(self.event("PreCompact"), self.config_path))
         self.assertIn("decision record missing", output)
         self.assertNotIn("handoff saving recovered", output)
 
     def test_precompact_without_marker_keeps_the_pre_facts_behaviour(self):
         from provost_runtime.store import session_dir
-        for native in (False, True):
-            output = json.dumps(handle_event(self.event("PreCompact"), self.config_path, native=native))
-            self.assertIn("NO_CHECKPOINT", output)
-            self.assertFalse((session_dir(self.root, "s1") / "facts.json").exists())
+        output = json.dumps(handle_event(self.event("PreCompact"), self.config_path))
+        self.assertIn("NO_CHECKPOINT", output)
+        self.assertFalse((session_dir(self.root, "s1") / "facts.json").exists())
         record(self.root, "s1", self.payload(), None, "r")
         self.assertIn("handoff saving recovered", json.dumps(handle_event(self.event("PreCompact"), self.config_path)))
-        self.assertFalse((session_dir(self.root, "s1") / "facts.json").exists())
-
-    def test_marker_on_plugin_path_does_not_fold(self):
-        from provost_runtime.store import session_dir
-        self.enable_facts()
-        self.assertIn("NO_CHECKPOINT", json.dumps(handle_event(self.event("PreCompact"), self.config_path)))
         self.assertFalse((session_dir(self.root, "s1") / "facts.json").exists())
 
     def test_compact_after_partial_save_asks_for_a_record_and_points_to_facts(self):
         from provost_runtime.store import session_dir
         self.enable_facts()
-        handle_event(self.event("PreCompact"), self.config_path, native=True)
+        handle_event(self.event("PreCompact"), self.config_path)
         output = handle_event(self.event("SessionStart", "compact"), self.config_path)
         self.assertEqual(output["systemMessage"],
                          "Provost: last compaction saved facts only; write a decision record from the compaction "
@@ -79,9 +72,11 @@ class HookTests(FixtureCase):
         from provost_runtime import facts
         self.enable_facts()
         with mock.patch.object(facts, "fold", side_effect=StoreError("WRITE_FAILED")) as fold:
-            handle_event(self.event("PreCompact"), self.config_path, native=True)
-        fold.assert_called_once()
-        output = handle_event(self.event("SessionStart", "compact"), self.config_path)
+            handle_event(self.event("PreCompact"), self.config_path)
+            fold.assert_called_once()
+            # SessionStart(compact) refolds and fails again: still no facts.json to point at.
+            output = handle_event(self.event("SessionStart", "compact"), self.config_path)
+        self.assertEqual(fold.call_count, 2)
         self.assertEqual(output["systemMessage"],
                          "Provost: previous handoff save failed; verify any older checkpoint before continuing.")
         self.assertNotIn("facts.json", self.context(output))
@@ -113,27 +108,18 @@ class HookTests(FixtureCase):
         self.assertEqual(handle_event(self.event("PreCompact"), self.config_path), {})
         self.assertEqual(list(self.root.iterdir()), before)
 
-    def test_legacy_resume_is_empty(self):
+    def test_missing_config_session_start_is_empty(self):
         self.config_path.unlink()
-        self.assertEqual(handle_event(self.event("SessionStart", "resume"), self.config_path), {})
-        self.assertIn("collaborator tier", self.context(handle_event(self.event("SessionStart", "startup"), self.config_path)))
-
-    def test_bad_config_warns_and_falls_back(self):
-        self.config_path.write_text("{broken")
-        output = handle_event(self.event("SessionStart", "startup"), self.config_path)
-        self.assertIn("systemMessage", output)
-        self.assertIn("collaborator tier", self.context(output))
+        for source in ("startup", "resume"):
+            self.assertEqual(handle_event(self.event("SessionStart", source), self.config_path), {})
         self.assertNoStore()
 
-    def test_legacy_fallback_without_policy_file_is_fail_soft(self):
-        from provost_runtime import hooks
-        with mock.patch.object(hooks, "PLUGIN", self.root / "no-plugin"):
-            self.config_path.write_text("{broken")
-            output = handle_event(self.event("SessionStart", "startup"), self.config_path)
-            self.assertIn("unavailable", output["systemMessage"])
-            self.assertEqual(self.context(output), "")
-            self.config_path.unlink()
-            self.assertEqual(handle_event(self.event("SessionStart", "startup"), self.config_path), {})
+    def test_bad_config_warns_without_context(self):
+        self.config_path.write_text("{broken")
+        output = handle_event(self.event("SessionStart", "startup"), self.config_path)
+        self.assertIn("Personal policy unchanged; handoff unavailable.", output["systemMessage"])
+        self.assertEqual(self.context(output), "")
+        self.assertNoStore()
 
     def test_context_size_is_bounded_and_payload_is_not_silently_lost(self):
         record(self.root, "s1", self.payload("details " * 2000), None, "r")
@@ -154,9 +140,9 @@ class HookTests(FixtureCase):
         record(self.root, "s1", self.payload(), None, "r")
         store._HOME_CHECKED.clear()
         with mock.patch.object(store.subprocess, "run", wraps=store.subprocess.run) as run:
-            handle_event(self.event("SessionStart", "compact"), self.config_path, native=True)
+            handle_event(self.event("SessionStart", "compact"), self.config_path)
             self.assertEqual(run.call_count, 2)
-            handle_event(self.event("PreCompact"), self.config_path, native=True)
+            handle_event(self.event("PreCompact"), self.config_path)
             self.assertEqual(run.call_count, 3)
 
     def test_bad_event_does_not_raise_or_echo_payload(self):
@@ -171,8 +157,8 @@ class SessionStartBudgetTests(FixtureCase):
     def event(self, source, session="s1"):
         return {"session_id": session, "cwd": str(self.root), "hook_event_name": "SessionStart", "source": source}
 
-    def start(self, source="compact", native=True):
-        output = handle_event(self.event(source), self.config_path, native=native)
+    def start(self, source="compact"):
+        output = handle_event(self.event(source), self.config_path)
         text = output.get("hookSpecificOutput", {}).get("additionalContext", "")
         self.assertNotIn("unavailable", output.get("systemMessage", ""))
         self.assertLessEqual(len(text), 8000)
@@ -327,16 +313,14 @@ class SessionStartBudgetTests(FixtureCase):
         repo = json.loads(path.read_text(encoding="utf-8"))["repos"][0]
         self.reseal(path, repos=[dict(repo, root=repo["root"] + str(k)) for k in range(3)])
         # Sized so that either the activity details or the digest must go (the old order dropped the digest).
-        for native in (True, False):
-            with self.subTest(native=native):
-                text = self.start(native=native)
-                self.assertIn("Observed payload digest", text)
-                for kept in ("keep-work", "keep next", "keep blocker"):
-                    self.assertIn(kept, text)
-                self.assertIn("Checkpoint is 6 min older than the latest captured activity; "
-                              "5 dispatches / 9 commits after it.", text)
-                self.assertNotIn("slice 4", text)
-                self.assertNotIn("f0002", text)
+        text = self.start()
+        self.assertIn("Observed payload digest", text)
+        for kept in ("keep-work", "keep next", "keep blocker"):
+            self.assertIn(kept, text)
+        self.assertIn("Checkpoint is 6 min older than the latest captured activity; "
+                      "5 dispatches / 9 commits after it.", text)
+        self.assertNotIn("slice 4", text)
+        self.assertNotIn("f0002", text)
 
     def test_undated_commits_are_reported_and_not_counted(self):
         record(self.root, "s1", self.payload("small next"), None, "r")
@@ -388,8 +372,7 @@ class SessionStartBudgetTests(FixtureCase):
 
     def test_partial_save_status_is_kept_with_the_facts(self):
         self.enable_facts()
-        handle_event({"session_id": "s1", "cwd": str(self.root), "hook_event_name": "PreCompact"}, self.config_path,
-                     native=True)
+        handle_event({"session_id": "s1", "cwd": str(self.root), "hook_event_name": "PreCompact"}, self.config_path)
         self.seed_facts(files=300, repos=5, agents=40, name_chars=300)
         text = self.start()
         self.assertIn("write a decision record from the compaction summary", text)
@@ -401,11 +384,11 @@ class SessionStartBudgetTests(FixtureCase):
         from provost_runtime import hooks
         record(self.root, "s1", self.payload("small next"), None, "r")
         self.seed_facts(files=300, repos=5, agents=40, name_chars=300)
-        for chars, native in ((2600, True), (2600, False), (9000, True)):
-            with self.subTest(chars=chars, native=native), \
+        for chars in (2600, 9000):
+            with self.subTest(chars=chars), \
                     mock.patch.object(hooks, "PLUGIN", Path("C:/" + "p" * chars)), \
                     mock.patch.object(hooks, "_policy", return_value="POLICY " * 3000):
-                text = self.start(native=native)
+                text = self.start()
                 if chars < 8000:
                     self.assertIn("status --workspace", text)
                     self.assertNotIn("Writer limits", text)
@@ -421,7 +404,7 @@ class SessionStartBudgetTests(FixtureCase):
                 expected = record(self.root, "s1", payload, expected, "r-%d-%d" % (files, chars))["revision"]
                 self.seed_facts(files, repos, agents, chars)
                 self.start("compact")
-                self.start("resume", native=False)
+                self.start("resume")
 
     def test_session_start_creates_the_facts_cache_dir_and_marker(self):
         facts_dir = self.config_path.parent / "cache" / "facts"
@@ -435,17 +418,15 @@ class SessionStartBudgetTests(FixtureCase):
         self.start("startup")
         self.assertFalse(facts_dir.exists())
 
-    def test_marker_needs_native_path_and_resolved_workspace(self):
+    def test_marker_needs_resolved_workspace_and_usable_session(self):
         facts_dir = self.config_path.parent / "cache" / "facts"
-        self.start("startup", native=False)
-        self.assertFalse(facts_dir.exists())
         self.cfg["workspace_roots"] = []
         self.config_path.write_text(json.dumps(self.cfg))
-        handle_event(self.event("startup"), self.config_path, native=True)
+        handle_event(self.event("startup"), self.config_path)
         self.assertFalse(facts_dir.exists())
         self.cfg["workspace_roots"] = [str(self.root)]
         self.config_path.write_text(json.dumps(self.cfg))
-        handle_event(self.event("startup", session="bad.id"), self.config_path, native=True)
+        handle_event(self.event("startup", session="bad.id"), self.config_path)
         self.assertFalse(facts_dir.exists())  # the hook could never use such a session id
 
     def test_corrupt_checkpoint_keeps_the_facts_section(self):

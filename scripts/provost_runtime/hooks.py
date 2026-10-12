@@ -112,16 +112,6 @@ def bind(root, session, event):
                   "last_cursor": cursor(resolve_transcript(event.get("transcript_path")))})
 
 
-def _legacy(source):
-    if source not in ("startup", "clear", "compact"):
-        return {}
-    try:
-        policy = (PLUGIN / "orchestration.md").read_text(encoding="utf-8")
-    except (OSError, UnicodeError):  # the fallback itself must never raise
-        return {}
-    return _context(policy)
-
-
 def _context(text):
     return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}
 
@@ -348,11 +338,9 @@ def _fit(sections, steps, budget=SESSION_START_BUDGET):
     return result if len(result) <= budget else _clip(result, budget)
 
 
-def _policy(native):
-    if native:
-        return ("Native handoff runtime active. Follow personal CLAUDE.md for orchestration. "
-                "This context supplies runtime identity and operations, not a second dispatch policy.")
-    return (PLUGIN / "policies/adaptive-orchestration.md").read_text(encoding="utf-8")
+def _policy():
+    return ("Native handoff runtime active. Follow personal CLAUDE.md for orchestration. "
+            "This context supplies runtime identity and operations, not a second dispatch policy.")
 
 
 def _marker(config_path, session):
@@ -420,7 +408,7 @@ def _event_key(event, checkpoint):
                               "revision": checkpoint["revision"] if checkpoint else None}, sort_keys=True))
 
 
-def handle_event(event, config_path, *, native=False):
+def handle_event(event, config_path):
     name = event.get("hook_event_name") if isinstance(event, dict) else None
     source = event.get("source", "startup") if isinstance(event, dict) else "startup"
     key = None
@@ -429,24 +417,19 @@ def handle_event(event, config_path, *, native=False):
             return {}
         cfg = load_config(config_path)
         if cfg.get("mode") != "adaptive":
-            return _legacy(source) if name == "SessionStart" and not native else {}
+            return {}
         if (not isinstance(event.get("cwd"), str) or not Path(event["cwd"]).is_absolute()
                 or not isinstance(event.get("session_id"), str) or not event["session_id"]):
             raise StoreError("INVALID_HOOK_INPUT")
         root = workspace_root(event["cwd"])
         session = event["session_id"]
         if resolve_mode(cfg, root.root, root.main) != "adaptive":
-            if native:
-                return {}
-            if name == "SessionStart":
-                return _legacy(source) | _notification(
-                    "Provost adaptive not enabled for this workspace; legacy behavior retained.", True)
             return {}
         enabled = cfg["handoff"]
         state_dir = config_path.parent / "cache" / "notifications"
         key = root.repo_key + ":" + session
         if name == "SessionStart":
-            policy = _policy(native)
+            policy = _policy()
             runtime = str(PLUGIN / "hooks/runtime")
             info = ("\nRuntime: " + runtime
                     + "\nWorkspace: " + str(root.root) + "\nSession: " + session
@@ -456,7 +439,7 @@ def handle_event(event, config_path, *, native=False):
                     + "\nUse doctor/status/record/snapshot/list/resume/changes/search/prune through the runtime."
                     + " Start a save with status (read-only: expected revision and a complete template);"
                     + " record reads JSON from --input <payload-file>.")
-            if native and enabled:
+            if enabled:
                 info += ("\nOperations guide: " + str(PLUGIN / "docs/native-handoff.md")
                          + "\nUse Bash: bash <quoted-runtime-path> status --workspace <quoted-workspace> --session <quoted-session>."
                          + "\nStatus is read-only and returns expected revision, checkpoint and a complete template."
@@ -466,9 +449,7 @@ def handle_event(event, config_path, *, native=False):
                          + " Use snapshot for explicit /handoff. Never treat an unfilled template as saved work."
                          + "\nOn conflict rerun status and reconcile; do not force overwrite. A worktree and its main checkout share one handoff store.")
             # Keep identity and restrictions; never slice a decision halfway.
-            short = ("Native handoff runtime. Personal policy remains authoritative." if native else
-                     "Provost adaptive mode. Read the policy before dispatch: "
-                     + str(PLUGIN / "policies/adaptive-orchestration.md"))
+            short = "Native handoff runtime. Personal policy remains authoritative."
             shortest = (short + "\nRuntime: " + runtime + "\nWorkspace: " + str(root.root) + "\nSession: " + session + "\n"
                         + ("Use Bash: bash <quoted-runtime-path> status --workspace <quoted-workspace> --session <quoted-session>."
                            if enabled else "Handoff: disabled; do not record or snapshot."))
@@ -477,9 +458,8 @@ def handle_event(event, config_path, *, native=False):
             status, warning, partial = [], "", False
             if enabled:
                 # Only a session PreCompact could fold for: the marker this SessionStart creates does not count.
-                refold = native and source == "compact" and facts_enabled(config_path, session)
-                if native:
-                    _enable_facts(config_path, session)
+                refold = source == "compact" and facts_enabled(config_path, session)
+                _enable_facts(config_path, session)
                 try:
                     bind(root, session, event)
                     recovering = source in ("compact", "resume")
@@ -522,15 +502,14 @@ def handle_event(event, config_path, *, native=False):
                     status.append("Checkpoint unavailable; verify current sources. Error: " + code)
             sections[1] = ["\n".join(status)] if status else []
             # Edited files go first; the activity since the checkpoint shrinks to its headline (which
-            # keeps the staleness line) before the checkpoint loses its digest; a plugin policy yields
-            # before both.
-            steps = (5, 3, 4, 3, 2, 0, 0) if native else (5, 0, 3, 4, 3, 2, 0)
+            # keeps the staleness line) before the checkpoint loses its digest.
+            steps = (5, 3, 4, 3, 2, 0, 0)
             return _context(_fit(sections, steps)) | _notification(warning, True)
         if not enabled:
             return {}
         if name == "PreCompact":
-            if not (native and facts_enabled(config_path, session)):
-                # Plugin path, or a session no native SessionStart enabled: save exactly as before
+            if not facts_enabled(config_path, session):
+                # A session no native SessionStart enabled: save exactly as before
                 # the facts layer (a snapshot, or NO_CHECKPOINT without a record).
                 checkpoint = current(root, session)
                 snapshot(root, session, _event_key(event, checkpoint))
@@ -554,10 +533,8 @@ def handle_event(event, config_path, *, native=False):
     except (ConfigError, StoreError, OSError) as exc:
         code = str(exc) if isinstance(exc, (ConfigError, StoreError)) else "RUNTIME_IO_FAILED"
         if name == "SessionStart":
-            result = {} if native else _legacy(source)
-            suffix = ". Personal policy unchanged; handoff unavailable." if native else ". Legacy behavior retained."
-            result.update(_notification("Provost adaptive unavailable: " + code + suffix, True))
-            return result
+            return _notification("Provost adaptive unavailable: " + code
+                                 + ". Personal policy unchanged; handoff unavailable.", True)
         if name in ("PreCompact", "PostCompact"):
             if key is None:
                 key = str(event.get("session_id", "unknown"))

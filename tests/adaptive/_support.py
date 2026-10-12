@@ -39,23 +39,6 @@ class FixtureCase(unittest.TestCase):
                                   PROVOST_HANDOFF_HOME=str(self.store_home))
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.stub_plugin_policy()
-
-    def stub_plugin_policy(self):
-        """Point the non-native (plugin) SessionStart path at stand-in policy files: the repo no longer
-        ships orchestration.md or policies/, but that fallback path is still exercised."""
-        from provost_runtime import hooks
-        plugin = tempfile.TemporaryDirectory(prefix="provost-plugin-")
-        self.addCleanup(plugin.cleanup)
-        self.plugin_stub = Path(plugin.name)
-        (self.plugin_stub / "policies").mkdir()
-        (self.plugin_stub / "orchestration.md").write_text(
-            "# Stand-in orchestration policy (collaborator tier)\n" + "line\n" * 60, encoding="utf-8")
-        (self.plugin_stub / "policies" / "adaptive-orchestration.md").write_text(
-            "# Stand-in adaptive policy\nroles: provost:adaptive-implementer\n", encoding="utf-8")
-        patcher = mock.patch.object(hooks, "PLUGIN", self.plugin_stub)
-        patcher.start()
-        self.addCleanup(patcher.stop)
 
     def assertNoStore(self, *workspaces):
         """Nothing was written to the handoff store or under any workspace."""

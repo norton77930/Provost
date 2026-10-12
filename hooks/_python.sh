@@ -11,7 +11,8 @@
 #      that qualifies is written to the cache (best effort).
 # An interpreter inside the current working directory tree (a project venv on
 # PATH) is used for that run only: never cached, and a cached one is skipped,
-# so one repo's venv is not pinned for every other repo. Pure string checks.
+# so one repo's venv is not pinned for every other repo. No spawns: string checks
+# against $PWD, confirmed with `builtin cd -P` in this shell when a path looks outside.
 
 # Directory of this file (== hooks/) and the scripts/ module root, derived with
 # parameter expansion only. Handles C:/..., /c/... and relative invocation.
@@ -82,12 +83,20 @@ _provost_physically_outside() {
     [[ "$here" != / ]] || return 0 # as above: nothing counts as inside a cwd of /
     [[ "$1" == */* && -n "$here" ]] || return 1
     [[ -n "$parent" ]] || parent=/
-    builtin cd -P -- "$here" 2>/dev/null || return 1
-    home="${PWD%/}"
-    if builtin cd -P -- "$parent" 2>/dev/null; then
-        target="$PWD"
-        builtin cd -P -- "${home:-/}" 2>/dev/null || return 1
+    # `cd -- -` would jump to OLDPWD and print it: a parent named "-" is a directory.
+    [[ "$parent" != - ]] || parent=./-
+    if builtin cd -P -- "$here" 2>/dev/null; then
+        home="${PWD%/}"
+        if builtin cd -P -- "$parent" 2>/dev/null; then
+            target="$PWD"
+            if ! builtin cd -P -- "${home:-/}" 2>/dev/null; then
+                # Unresolved (fail-safe: inside); still try to put the cwd back.
+                target=""
+                builtin cd -- "$here" 2>/dev/null || true
+            fi
+        fi
     fi
+    # Every path back out restores PWD and OLDPWD, even when the cwd could not be.
     PWD="$here"
     if [[ -n "$had_old" ]]; then OLDPWD="$old"; else unset OLDPWD; fi
     [[ -n "$target" ]] || return 1

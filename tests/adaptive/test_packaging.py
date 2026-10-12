@@ -42,3 +42,12 @@ class PackagingTests(unittest.TestCase):
                 if re.search(r"%\([^)]*\)T", line) and "BASH_VERSINFO" not in lines[number - 2]:
                     found.append("%s:%d unguarded printf %%(...)T" % (path.name, number))
         self.assertEqual(found, [])
+
+    def test_runtime_does_not_reference_removed_plugin_files(self):
+        removed = ("orchestration.md", "adaptive-orchestration", "policies/", "hooks/session-start",
+                   "hooks/handoff-event", "native-reminder", "hooks.json")
+        runtime = sorted((REPO / "scripts" / "provost_runtime").glob("*.py"))
+        runtime += sorted(p for p in (REPO / "hooks").iterdir() if p.is_file())
+        found = ["%s: %s" % (path.name, name) for path in runtime
+                 for name in removed if name in path.read_text(encoding="utf-8")]
+        self.assertEqual(found, [])
