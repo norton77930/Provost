@@ -1,5 +1,6 @@
 """Small local checkpoint store; no model, network, or task scheduler."""
 import copy
+import errno
 import hashlib
 import json
 import os
@@ -140,7 +141,7 @@ def _home_outside_repo(home):
         child = (Path(home) / "v2" / "repos" / ("0" * REPO_DIR_CHARS)).relative_to(cwd)
         try:
             result = subprocess.run(["git", "-C", str(cwd), "check-ignore", "-q", "--", child.as_posix()],
-                                    capture_output=True, text=True, timeout=5)
+                                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
         except FileNotFoundError:
             result = None  # no Git, nothing can commit the store
         except (OSError, subprocess.TimeoutExpired):
@@ -231,37 +232,66 @@ def atomic_write(base, path, data):
 
 
 @contextmanager
+def _locked(path):
+    """Hold the lock file at path (created if missing) without waiting; yields its stream.
+
+    StoreError STORE_BUSY while another holder has it. Closing the stream inside the
+    block releases the lock early (Windows: an open handle blocks moving its dir).
+    """
+    with path.open("a+b") as stream:
+        stream.seek(0, 2)
+        if stream.tell() == 0:
+            stream.write(b"0")
+            stream.flush()
+        stream.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise StoreError("STORE_BUSY") from exc
+        try:
+            yield stream
+        finally:
+            if not stream.closed:
+                _unlock(stream)
+
+
+def _unlock(stream):
+    stream.seek(0)
+    if os.name == "nt":
+        import msvcrt
+        msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def _names(stream, path):
+    """True when path still names the open file: prune can move a session's lock file
+    away (with its dir) between a writer's open and its lock (POSIX only)."""
+    try:
+        here = os.stat(path, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    there = os.fstat(stream.fileno())
+    return (here.st_dev, here.st_ino) == (there.st_dev, there.st_ino)
+
+
+@contextmanager
 def _lock(root, directory):
     storage_ready(root)
     guard(handoff_home(), directory / ".lock")
     directory.mkdir(parents=True, exist_ok=True)
     try:
-        with (directory / ".lock").open("a+b") as stream:
-            stream.seek(0, 2)
-            if stream.tell() == 0:
-                stream.write(b"0")
-                stream.flush()
-            stream.seek(0)
-            if os.name == "nt":
-                import msvcrt
-                try:
-                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
-                except OSError as exc:
-                    raise StoreError("STORE_BUSY") from exc
-            else:
-                import fcntl
-                try:
-                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except OSError as exc:
-                    raise StoreError("STORE_BUSY") from exc
-            try:
-                yield
-            finally:
-                stream.seek(0)
-                if os.name == "nt":
-                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        with _locked(directory / ".lock") as stream:
+            # A lock on a moved-away file excludes no writer that opens the path now.
+            if os.name != "nt" and not _names(stream, directory / ".lock"):
+                raise StoreError("STORE_BUSY")
+            yield
     except OSError as exc:
         raise StoreError("WRITE_FAILED") from exc
 
@@ -736,22 +766,39 @@ def _is_expired(scan, cutoff, repo_key):
 
 
 def _remove_expired(home, entry, staging, cutoff, repo_key):
-    """Move an expired session aside, re-verify it is still expired and unlocked, then delete it.
+    """Under the session lock, re-verify an expired session, move it aside, re-verify it, delete it.
 
-    A record or snapshot written, or the lock taken, between the listing and the
-    move is caught by the re-check and the dir is moved back. Returns True when removed.
+    The lock is taken without waiting (StoreError STORE_BUSY while a record or snapshot
+    holds it), so no locked write runs from the check until the delete: a writer opening
+    the lock path after the move gets a new dir and an empty chain, and one that opened
+    the moved file is refused by _lock. On Windows an open handle blocks the move, so
+    the lock is released just before it; a write completed in that gap, or an unlocked
+    session-file write (binding, compaction) before the move, fails the re-check and the
+    dir is moved back. If the original name was recreated after the move, nothing is
+    deleted: FileExistsError leaves the dir at the staging name for a later run.
+    Returns True when removed.
     """
-    entry.rename(staging)
-    try:
-        keep = not _is_expired(_scan(home, staging), cutoff, repo_key) or _lock_held(home, staging)
-    except (StoreError, OSError):
-        staging.rename(entry)
-        raise
-    if keep:
-        staging.rename(entry)
-        return False
-    shutil.rmtree(staging)
-    return True
+    lock = entry / ".lock"
+    guard(home, lock)
+    with _locked(lock) as stream:
+        if not _is_expired(_scan(home, entry), cutoff, repo_key):
+            return False
+        if os.name == "nt":
+            _unlock(stream)
+            stream.close()
+        entry.rename(staging)
+        try:
+            keep = not _is_expired(_scan(home, staging), cutoff, repo_key)
+        except (StoreError, OSError):
+            staging.rename(entry)
+            raise
+        if keep:
+            staging.rename(entry)
+            return False
+        if os.path.lexists(entry):
+            raise FileExistsError(errno.EEXIST, "session dir recreated during prune", str(entry))
+        shutil.rmtree(staging)
+        return True
 
 
 def _cache_of(home, directory, name, cache):
