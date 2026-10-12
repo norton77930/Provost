@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import time
+import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from _support import FixtureCase, REPO
@@ -423,22 +424,123 @@ class ExpiredPruneTests(FixtureCase):
         self.assertTrue((old / "records" / ("f" * 64 + ".json")).exists())
         self.assertEqual(list(old.parent.glob(".pruning-*")), [])
 
-    def test_a_lock_taken_after_the_move_restores_the_dir(self):
+    def test_a_record_in_flight_across_the_move_keeps_its_chain(self):
+        """The listing saw no lock; a writer then takes it and reads the chain before the move,
+        and (unless the move is refused) finishes between the move and the delete."""
+        import threading
+        from unittest import mock
+        from provost_runtime import store
+        old = self.session("race", 90)
+        head = store.current(self.root, "race")["revision"]
+        real_current, real_remove, real_scan = store.current, store._remove_expired, store._scan
+        read, go, outcome = threading.Event(), threading.Event(), {}
+
+        def write():
+            try:
+                outcome["data"] = record(self.root, "race", self.payload(), head, "r2")
+            except StoreError as exc:
+                outcome["error"] = str(exc)
+
+        writer = threading.Thread(target=write)
+
+        def current_then_pause(root, session):
+            found = real_current(root, session)
+            if threading.current_thread() is writer:
+                read.set()
+                go.wait(10)
+            return found
+
+        def finish_writer():
+            go.set()
+            writer.join(10)
+
+        def remove_while_writing(*args):
+            writer.start()
+            read.wait(10)  # the writer holds the session lock and has read the chain
+            try:
+                return real_remove(*args)
+            finally:
+                finish_writer()
+
+        def writer_finishes_after_the_move(home, directory):
+            if directory.name.startswith(".pruning-") and not go.is_set():
+                finish_writer()
+            return real_scan(home, directory)
+
+        with mock.patch.object(store, "current", current_then_pause), \
+                mock.patch.object(store, "_remove_expired", remove_while_writing), \
+                mock.patch.object(store, "_scan", writer_finishes_after_the_move):
+            result = prune(self.root, apply=True)
+        self.assertNotIn("error", outcome)
+        self.assertEqual((result["expired_removed"], result["errors"]), (0, []))
+        self.assertIn({"entry": old.name, "reason": "STORE_BUSY"}, result["skipped"])
+        latest = store.current(self.root, "race")
+        self.assertEqual((latest["revision"], latest["parent_record"]), (outcome["data"]["revision"], head))
+        self.assertEqual(list(old.parent.glob(".pruning-*")), [])
+
+    def test_a_session_recreated_after_the_move_is_left_for_a_later_run(self):
         from unittest import mock
         from provost_runtime import store
         old = self.session("lk", 90)
-        probes = []
+        staging = old.parent / (".pruning-" + old.name)
+        real_scan = store._scan
 
-        def held_after_move(home, directory):
-            probes.append(directory.name)
-            return directory.name.startswith(".pruning-")
+        def rebind_after_the_move(home, directory):
+            if directory == staging and not old.exists():
+                bind(self.root, "lk", {})  # an unlocked SessionStart write recreates the original dir
+            return real_scan(home, directory)
 
-        with mock.patch.object(store, "_lock_held", held_after_move):
+        with mock.patch.object(store, "_scan", rebind_after_the_move):
             result = prune(self.root, apply=True)
-        self.assertEqual(result["expired_removed"], 0)
-        self.assertEqual(len(probes), 2)
-        self.assertTrue((old / "records").is_dir())
-        self.assertEqual(list(old.parent.glob(".pruning-*")), [])
+        self.assertEqual((result["expired_removed"], result["errors"]),
+                         (0, [{"session_dir": old.name, "error": "FileExistsError", "left_at": staging.name}]))
+        self.assertTrue((staging / "records").is_dir())
+        self.assertEqual([child.name for child in old.iterdir()], ["binding.json"])
+        later = prune(self.root, apply=True)
+        self.assertEqual((later["reclaimed"], later["errors"]), (1, []))
+        self.assertFalse(staging.exists())
+        self.assertTrue((old / "binding.json").is_file())
+
+    @unittest.skipIf(os.name == "nt", "an open lock handle blocks the move on Windows")
+    def test_a_writer_whose_lock_file_was_moved_away_before_it_locked_is_refused(self):
+        """Locking the moved-away lock file would let it run beside a writer that locks the
+        recreated one: two writers on one chain."""
+        import fcntl
+        from unittest import mock
+        from provost_runtime import store
+        old = self.session("orphan", 90)
+        real_flock, armed = fcntl.flock, [True]
+
+        def prune_before_the_writer_locks(fd, operation):
+            if armed:
+                armed.clear()  # the writer has opened <session>/.lock; the whole prune runs now
+                self.assertEqual(prune(self.root, apply=True)["expired_removed"], 1)
+            return real_flock(fd, operation)
+
+        with mock.patch.object(fcntl, "flock", prune_before_the_writer_locks):
+            with self.assertRaisesRegex(StoreError, "^STORE_BUSY$"):
+                record(self.root, "orphan", self.payload(), None, "late")
+        self.assertFalse(old.exists())
+        self.assertIsNone(store.current(self.root, "orphan"))
+        self.assertIsNotNone(record(self.root, "orphan", self.payload(), None, "retry"))
+
+    def test_a_deleted_lock_file_never_names_a_new_one_that_reused_its_inode_number(self):
+        """After a prune deletes a session, the recreated .lock may get the freed inode number
+        (ext4): a writer still holding the deleted file must not match it by (dev, ino) alone."""
+        from unittest import mock
+        from provost_runtime import store
+        lock = self.session("reused", 90) / ".lock"
+        real_fstat = os.fstat
+
+        def unlinked(fd):
+            fields = list(real_fstat(fd)[:10])
+            fields[3] = 0  # st_nlink: the held file has no name left; dev and ino still match the path
+            return os.stat_result(fields)
+
+        with lock.open("a+b") as stream:
+            self.assertTrue(store._names(stream, lock))
+            with mock.patch.object(store.os, "fstat", unlinked):
+                self.assertFalse(store._names(stream, lock))
 
     def test_missing_or_unreadable_timestamps_fall_back_to_file_mtime(self):
         old = self.session("old", 0)
