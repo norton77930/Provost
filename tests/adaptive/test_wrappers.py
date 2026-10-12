@@ -1,0 +1,294 @@
+import json
+import os
+import shutil
+import subprocess
+import unittest
+from pathlib import Path
+from _support import BASH, FixtureCase, REPO
+
+
+class WrapperTests(FixtureCase):
+    def run_script(self, script, event, *, config=True):
+        env = dict(os.environ, PROVOST_CONFIG=str(self.config_path if config else self.root / "absent.json"),
+                   PYTHONDONTWRITEBYTECODE="1")
+        result = subprocess.run([BASH, str(REPO / "hooks" / script)], input=json.dumps(event),
+                                capture_output=True, text=True, encoding="utf-8", env=env, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout or "{}")
+
+    def event(self, name="SessionStart", source="startup"):
+        return {"session_id": "s1", "cwd": str(self.root), "hook_event_name": name, "source": source}
+
+    def test_project_modules_in_cwd_do_not_shadow_runtime_imports(self):
+        # Hooks run with the project as cwd; `python -m` would put it first on sys.path.
+        project = self.root / "untrusted"
+        project.mkdir()
+        marker = self.root / "shadowed"
+        (project / "json.py").write_text(f"open({str(marker)!r}, 'w').close()\nraise SystemExit(3)\n",
+                                         encoding="utf-8")
+        env = dict(os.environ, PROVOST_CONFIG=str(self.config_path), PYTHONDONTWRITEBYTECODE="1")
+        result = subprocess.run([BASH, str(REPO / "hooks" / "runtime"), "doctor", "--workspace", str(project)],
+                                capture_output=True, text=True, encoding="utf-8", env=env, cwd=project, timeout=60)
+        self.assertFalse(marker.exists(), result.stderr)
+        self.assertNotEqual(result.returncode, 3)
+
+    def test_opt_in_shell_routes_to_adaptive(self):
+        result = self.run_script("session-start", self.event())
+        self.assertIn("adaptive", result["hookSpecificOutput"]["additionalContext"])
+        self.assertNotIn("Run the main/orchestrator agent on Opus", result["hookSpecificOutput"]["additionalContext"])
+
+    def test_legacy_startup_preserves_context(self):
+        result = self.run_script("session-start", self.event(), config=False)
+        self.assertIn("collaborator tier", result["hookSpecificOutput"]["additionalContext"])
+        self.assertNoStore()
+
+    def test_legacy_resume_does_not_add_policy(self):
+        self.assertEqual(self.run_script("session-start", self.event(source="resume"), config=False), {})
+
+    def test_disabled_compaction_hook_is_noop(self):
+        self.assertEqual(self.run_script("handoff-event", self.event("PreCompact"), config=False), {})
+        self.assertNoStore()
+
+    def test_enabled_compaction_missing_record_does_not_block(self):
+        result = self.run_script("handoff-event", self.event("PreCompact"))
+        self.assertNotEqual(result.get("decision"), "block")
+        self.assertIn("NO_CHECKPOINT", json.dumps(result))
+
+    def test_plugin_path_with_spaces_and_missing_python(self):
+        plugin = self.root / "plugin with spaces"
+        plugin.mkdir()
+        for name in ("hooks", "scripts", "policies"):
+            shutil.copytree(REPO / name, plugin / name)
+        shutil.copy2(REPO / "orchestration.md", plugin / "orchestration.md")
+        env = dict(os.environ, PROVOST_CONFIG=str(self.config_path), PYTHONDONTWRITEBYTECODE="1")
+        event = json.dumps(self.event())
+        command = [BASH, str(plugin / "hooks/session-start")]
+        result = subprocess.run(command, input=event, capture_output=True, text=True,
+                                encoding="utf-8", env=env, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("adaptive", json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"])
+        # The run above cached a working interpreter; forget it so the fakes are what gets probed.
+        self.cache_file.unlink(missing_ok=True)
+        missing = self.root / "missing-python"
+        missing.mkdir()
+        for name in ("python3", "python", "py"):
+            candidate = missing / name
+            candidate.write_text("#!/usr/bin/env bash\nexit 127\n", encoding="utf-8", newline="\n")
+            candidate.chmod(0o755)
+        # Git Bash uses a colon-separated path internally; MSYS converts the
+        # inherited native Windows PATH before this command.
+        setup = 'probe="$1"; if command -v cygpath >/dev/null; then probe="$(cygpath -u "$probe")"; fi; export PATH="$probe:$PATH"; exec bash "$2"'
+        for script, field in (("session-start", "systemMessage"), ("handoff-event", "terminalSequence")):
+            result = subprocess.run([BASH, "-c", setup, "probe", missing.as_posix(),
+                                     str(plugin / "hooks" / script)], input=event,
+                                    capture_output=True, text=True, encoding="utf-8", env=env, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("unavailable", json.loads(result.stdout)[field])
+            self.assertIn("requires Python 3.11+", result.stderr)  # failed for the intended reason
+
+
+class InterpreterCacheTests(FixtureCase):
+    """hooks/runtime resolves the interpreter once, then reuses the cached path."""
+
+    def setUp(self):
+        super().setUp()
+        self.log = self.root / "calls.log"
+        self.bin = self.root / "bin"
+
+    def calls(self, log=None):
+        log = Path(log or self.log)
+        return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+
+    def probes(self, log=None):
+        return [c for c in self.calls(log) if " -c " in c]
+
+    def runtime(self, *args, **kwargs):
+        return self.run_bash(REPO / "hooks" / "runtime", *args, path_dirs=[self.bin], **kwargs)
+
+    def test_cache_written_after_first_probe(self):
+        self.fake_interpreter(self.bin, "python3", self.log)
+        result = self.runtime("status")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.cache_file.is_file())
+        self.assertTrue(self.cache_file.read_text(encoding="utf-8").strip().endswith("/bin/python3"))
+        self.assertEqual(len(self.probes()), 1)
+
+    def test_cached_interpreter_runs_without_probe(self):
+        cached_log = self.root / "cached.log"
+        cached = self.fake_interpreter(self.root / "cached", "python", cached_log)
+        self.fake_interpreter(self.bin, "python3", self.log)
+        self.cache_file.parent.mkdir(parents=True)
+        self.cache_file.write_text(cached.as_posix() + "\n", encoding="utf-8")
+        result = self.runtime("status")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls(cached_log)
+        self.assertEqual(len(calls), 1, calls)
+        self.assertIn("-m provost_runtime.cli status", calls[0])
+        self.assertEqual(self.calls(), [])
+
+    def test_unusable_cache_falls_back_and_is_rewritten(self):
+        self.fake_interpreter(self.bin, "python3", self.log)
+        plain = self.root / "plain-file"
+        plain.write_text("not executable", encoding="utf-8")
+        plain.chmod(0o644)
+        for label, content in (("missing", (self.root / "gone" / "python").as_posix()), ("empty", ""),
+                               ("not-executable", plain.as_posix())):
+            with self.subTest(label):
+                self.log.unlink(missing_ok=True)
+                self.cache_file.parent.mkdir(parents=True, exist_ok=True)
+                self.cache_file.write_text(content, encoding="utf-8")
+                result = self.runtime("status")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(self.cache_file.read_text(encoding="utf-8").strip().endswith("/bin/python3"))
+                self.assertEqual(len(self.probes()), 1)
+
+    def test_interpreter_inside_cwd_is_never_cached_or_reused(self):
+        # A project venv on PATH must not be pinned for every other repo.
+        project = self.root / "project"
+        venv_log = self.root / "venv.log"
+        venv = self.fake_interpreter(project / ".venv" / "bin", "python3", venv_log)
+        result = self.run_bash(REPO / "hooks" / "runtime", "status", path_dirs=[venv.parent], cwd=project)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.probes(venv_log)), 1)
+        self.assertFalse(self.cache_file.exists())
+        # A cache entry inside the project (as an older runtime wrote it) is probed past, not reused.
+        self.fake_interpreter(self.bin, "python3", self.log)
+        self.cache_file.parent.mkdir(parents=True)
+        bash_spelling = (venv.as_posix() if os.name != "nt" else subprocess.run(
+            [BASH, "-c", 'cygpath -u "$1"', "probe", str(venv)], capture_output=True, text=True,
+            encoding="utf-8", timeout=60).stdout.strip())
+        self.cache_file.write_text(bash_spelling + "\n", encoding="utf-8")
+        venv_log.unlink()
+        result = self.runtime("status", cwd=project)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(venv_log), [])
+        self.assertEqual(len(self.probes()), 1)
+        cached = self.cache_file.read_text(encoding="utf-8").strip()
+        self.assertTrue(cached.endswith("/bin/python3") and ".venv" not in cached, cached)
+
+    def assert_venv_on_path_is_not_cached(self, project, path_dir):
+        venv_log = self.root / "venv.log"
+        self.fake_interpreter(project / ".venv" / "bin", "python3", venv_log)
+        result = self.run_bash(REPO / "hooks" / "runtime", "status", path_dirs=[path_dir], cwd=project)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.probes(venv_log)), 1)
+        self.assertFalse(self.cache_file.exists(), self.cache_file.read_text(encoding="utf-8")
+                         if self.cache_file.exists() else "")
+
+    def test_interpreter_inside_cwd_through_a_link_is_not_cached(self):
+        # macOS: PATH says /var/folders/..., the shell's PWD says /private/var/folders/...
+        project = self.root / "project"
+        (project / ".venv" / "bin").mkdir(parents=True)
+        alias = self.root / "alias"
+        try:
+            os.symlink(project, alias, target_is_directory=True)
+        except OSError:
+            try:
+                import _winapi
+                _winapi.CreateJunction(str(project), str(alias))
+            except (ImportError, AttributeError, OSError):
+                self.skipTest("OS permits neither symlinks nor junctions")
+        self.assert_venv_on_path_is_not_cached(project, alias / ".venv" / "bin")
+
+    @unittest.skipUnless(os.name == "nt", "8.3 short names exist only on Windows")
+    def test_interpreter_inside_cwd_by_short_name_is_not_cached(self):
+        # Windows runners: Python's temp path says RUNNER~1, the shell's PWD the long name.
+        import ctypes
+        project = self.root / "project with a long name"
+        (project / ".venv" / "bin").mkdir(parents=True)
+        def spelled(api, path):
+            buffer = ctypes.create_unicode_buffer(32768)
+            return buffer.value if api(str(path), buffer, len(buffer)) else None
+        long_project = spelled(ctypes.windll.kernel32.GetLongPathNameW, project)
+        short_bin = spelled(ctypes.windll.kernel32.GetShortPathNameW, project / ".venv" / "bin")
+        if not short_bin or "~" not in short_bin or not long_project:
+            self.skipTest("8.3 short names are disabled on this volume")
+        self.assert_venv_on_path_is_not_cached(Path(long_project), short_bin)
+
+    def test_inside_cwd_check_matches_whole_directories_only(self):
+        # PWD is set by hand (no spawn on the cached path): inside is a string match, and an
+        # outside answer is confirmed physically, so those directories exist. One that does
+        # not resolve counts as inside (fail-safe: never cached).
+        w = self.root / "w"
+        for sub in ("proj/.venv/bin", "proj2/bin", "bin"):
+            (w / sub).mkdir(parents=True)
+        base = w.as_posix()
+        proj = base + "/proj"
+        cases = [(proj, proj + "/.venv/bin/python3", True), (proj, base + "/proj2/bin/python3", False),
+                 (proj, base + "/bin/python3", False), ("/", "/usr/bin/python3", False),
+                 (proj, base + "/gone/bin/python3", True)]
+        if os.name == "nt":  # Git Bash: drive spelling and case-insensitivity
+            drive_form = "/" + proj[0].lower() + proj[2:]  # C:/x -> /c/x
+            cases += [(drive_form, proj.swapcase() + "/.venv/Scripts/python.exe", True),
+                      (drive_form, (proj + "/venv/python.exe").replace("/", "\\"), True),
+                      (drive_form, base + "/proj2/bin/python.exe", False)]
+        script = ('source "$1"; shift; while (( $# )); do PWD="$1"; '
+                  'if _provost_in_cwd "$2"; then echo 1; else echo 0; fi; shift 2; done')
+        args = [part for pwd, path, _ in cases for part in (pwd, path)]
+        result = subprocess.run([BASH, "-c", script, "probe", (REPO / "hooks" / "_python.sh").as_posix(), *args],
+                                capture_output=True, text=True, encoding="utf-8", timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split(), ["1" if inside else "0" for *_, inside in cases])
+
+    def test_physical_check_leaves_the_shell_where_it_was(self):
+        project, other = self.root / "project", self.root / "other" / "bin"
+        project.mkdir()
+        other.mkdir(parents=True)
+        # The temp root's logical spelling (Windows 8.3 names, macOS /var) is what `cd -P` rewrites.
+        script = ('source "$1"; cd "$2" || exit 9; OLDPWD=before; start="$PWD"; '
+                  'for path in "$3/python3" "$2/gone/python3"; do _provost_in_cwd "$path"; echo "rc=$?"; done; '
+                  '[[ "$PWD" == "$start" ]] && echo pwd-kept; [[ "$OLDPWD" == before ]] && echo oldpwd-kept; '
+                  '[[ "$(pwd -P)" -ef "$2" ]] && echo cwd-kept; '
+                  'unset OLDPWD; _provost_in_cwd "$3/python3"; [[ -z "${OLDPWD+set}" ]] && echo oldpwd-unset')
+        result = subprocess.run([BASH, "-c", script, "probe", (REPO / "hooks" / "_python.sh").as_posix(),
+                                 project.as_posix(), other.as_posix()],
+                                capture_output=True, text=True, encoding="utf-8", timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split(),
+                         ["rc=1", "rc=0", "pwd-kept", "oldpwd-kept", "cwd-kept", "oldpwd-unset"])
+
+    def test_provost_python_overrides_cache_and_probe(self):
+        override_log = self.root / "override.log"
+        override = self.fake_interpreter(self.root / "override", "python", override_log)
+        self.fake_interpreter(self.bin, "python3", self.log)
+        result = self.runtime("status", env={"PROVOST_PYTHON": override.as_posix()})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls(override_log)
+        self.assertEqual(len(calls), 1, calls)
+        self.assertIn("-m provost_runtime.cli status", calls[0])
+        self.assertEqual(self.calls(), [])
+        self.assertFalse(self.cache_file.exists())
+
+    def test_unusable_provost_python_falls_back_to_probe(self):
+        self.fake_interpreter(self.bin, "python3", self.log)
+        result = self.runtime("status", env={"PROVOST_PYTHON": (self.root / "nope").as_posix()})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.probes()), 1)
+
+    def test_no_qualifying_interpreter_exits_127(self):
+        self.bin.mkdir()
+        for name in ("python3", "python", "py"):
+            candidate = self.bin / name
+            candidate.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8", newline="\n")
+            candidate.chmod(0o755)
+        result = self.runtime("status")
+        self.assertEqual(result.returncode, 127)
+        self.assertIn("requires Python 3.11+", result.stderr)
+        self.assertFalse(self.cache_file.exists())
+
+    def test_module_root_from_every_invocation_form(self):
+        self.fake_interpreter(self.bin, "python3", self.log)
+        forms = {"absolute": (str(REPO / "hooks" / "runtime"), None),
+                 "relative": ("hooks/runtime", REPO),
+                 "same-directory": ("runtime", REPO / "hooks"),
+                 "parent-relative": ("../hooks/runtime", REPO / "scripts")}
+        if os.name == "nt":
+            forms["msys-posix"] = ("/" + REPO.drive[0].lower() + REPO.as_posix()[2:] + "/hooks/runtime", None)
+        for label, (script, cwd) in forms.items():
+            with self.subTest(label):
+                self.log.unlink(missing_ok=True)
+                result = self.run_bash(script, "status", path_dirs=[self.bin], cwd=cwd)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                line = self.calls()[-1]
+                pythonpath = line.split("PYTHONPATH=", 1)[1].split(" -m ", 1)[0]
+                self.assertEqual(Path(pythonpath).resolve(), (REPO / "scripts").resolve(), line)

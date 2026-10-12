@@ -12,7 +12,7 @@ Tier 2 是寫成 code 的 reference implementation，不是一份說明：其中
 
 ## 現在可用
 
-- [`agents/`](agents/) 下的六個 Claude Code role definitions，可用 plugin 安裝（見下方「安裝」）。
+- [`agents/`](agents/) 下的七個 Claude Code role definitions，可用 plugin 安裝（見下方「安裝」）。
 - Tier 1 [`orchestration.md`](orchestration.md)：plan-first、單一 active writer 與 evidence-based completion discipline，由 plugin 直接送進每個 session，不需手動合併。
 - [`skills/`](skills/) 中的 TDD、診斷、review 與完成前驗證方法；第三方歸屬保留於 [`skills/NOTICE.md`](skills/NOTICE.md)。
 - Windows launcher：開啟治理 session、為該 session 註冊 Tier 2 hooks、在無法執行 enforcement 時拒絕啟動；`Initialize` 會要求 hooks 確實執行過的證據。
@@ -65,7 +65,7 @@ claude plugin install provost@provost
 
 在 session 內也可以用 `/plugin marketplace add` 與 `/plugin install`。
 
-安裝後會得到六個 collaborator roles、六個 methodology skills 與 orchestration policy。policy 透過 `SessionStart` hook 進入每個 session，不需要手動合併進 `CLAUDE.md`。
+安裝後會得到七個 collaborator roles、六個 methodology skills、一個 handoff skill 與 orchestration policy。policy 透過 `SessionStart` hook 進入每個 session，不需要手動合併進 `CLAUDE.md`。
 
 Collaborator tier 就是單純的 Claude Code 設定：Claude Code 能跑的地方它就能跑，不需要 proxy、gateway 或額外服務。下方的 Tier 2 reference runtime 目前僅支援 Windows。
 
@@ -79,6 +79,7 @@ claude --plugin-dir .
 
 | Role | Model | 職責 |
 |---|---|---|
+| `adaptive-implementer` | opus | Opt-in bounded implementation; high effort |
 | `explorer` | haiku | 唯讀 evidence gathering |
 | `implementer` / `implementer-deep` | sonnet / opus | 有界的 TDD implementation |
 | `test-analyst` | haiku | 不改 source 的既有測試執行 |
@@ -87,6 +88,16 @@ claude --plugin-dir .
 這些是設定選擇，不是 portable model abstractions。你可以依 Claude Code environment 可用的 model 調整 mapping；Provost 不交付或認證第三方 gateway。
 
 隨附的六個 methodology skills 涵蓋 TDD、bug 診斷、design grilling、two-axis review 與完成前驗證。第三方歸屬見 [`skills/NOTICE.md`](skills/NOTICE.md)。
+
+## 選配 adaptive orchestration 與 handoff
+
+新模式採個人全域設定與精確 workspace allowlist，預設維持舊行為。
+選配 runtime 需要 Python 3.11+。adaptive-implementer 預設 Opus/high；
+方法已確定且範圍明確時，可用 Sonnet override 並維持 high effort。
+排程與 writer 上限是指令政策，專案較嚴格的限制仍優先。
+交接歷史保留於本機並排除於 Git。實際壓縮通知與模型路由仍待試行。
+
+設定、工作流程、限制與回退方式見[試行指南](docs/examples/adaptive-handoff-pilot.md)。
 
 ## 如何試用
 

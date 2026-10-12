@@ -11,6 +11,10 @@ Thumbs.db
 .claude/projects/
 .claude/todos/
 .claude/shell-snapshots/
+.claude/worktrees/
+
+# Legacy in-repo handoff store (read-only bridge); holds session IDs and local paths
+.provost/
 
 # Backups, logs, scratch, browser-automation dumps
 *.bak
@@ -24,3 +28,7 @@ node_modules/
 
 # NOTE: .claude/agents/ is intentionally NOT ignored — the collaborator
 # role definitions are a shipped part of this project.
+
+# Python runtime caches
+__pycache__/
+*.py[cod]

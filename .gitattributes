@@ -1,0 +1,2 @@
+# Bash hooks must also work in Git for Windows checkouts.
+hooks/* text eol=lf

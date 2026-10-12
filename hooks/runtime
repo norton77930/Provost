@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Optional runtime. Legacy installs do not invoke Python when no config exists.
+set -euo pipefail
+_src="${BASH_SOURCE[0]//\\//}"
+[[ "$_src" == */* ]] || _src="./${_src}"
+# shellcheck source=_python.sh
+source "${_src%/*}/_python.sh"
+provost_find_python || exit 127
+exec "${PROVOST_PY[@]}" -m provost_runtime.cli "$@"

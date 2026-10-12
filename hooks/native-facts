@@ -1,0 +1,263 @@
+#!/usr/bin/env bash
+# Handoff facts layer hook. Pure bash builtins on every path: no interpreter, no
+# external command, no command substitution, no pipe (each process costs about
+# 0.5 s on Windows). The one exception is bash < 4.2 (macOS /bin/bash 3.2), which
+# lacks printf %(...)T and forks `date` for the timestamp; the script otherwise
+# runs on bash 3.2. Never blocks and always exits 0. It never creates the facts
+# directory (the runtime side does) and never stores command text, file
+# contents, prompts or responses.
+# The authoritative gate is the session's enablement marker <session_id>.enabled,
+# created by the native SessionStart only when adaptive mode resolves for the
+# workspace and handoff is enabled: without it nothing is written or reminded.
+# The "handoff": true config match below is only a cheap first check.
+# - PostToolUse (async): appends one JSON line per fact to
+#   <provost dir>/cache/facts/<session_id>.jsonl, prints {}, and touches the
+#   reminder flags <session_id>.pending-edit (main-session edit of a repo file;
+#   the main session is an event without agent_id, whatever its agent_type)
+#   and <session_id>.pending-dispatch (writer subagent dispatched). A dir fact
+#   whose target normalizes to the event's cwd is skipped.
+# - UserPromptSubmit (sync): with a pending flag and no <session_id>.reminded,
+#   creates .reminded and adds the record reminder once. Independently, every
+#   prompt that is a subagent result adds a result-record reminder, without
+#   reading or touching the flags: a [Subagent hand-back] agent-message, or an
+#   agent's completed <task-notification> that does not point at a
+#   SubagentHandback delivery (its pointer or interim phrasing; background-command
+#   notifications never count).
+#   Both arrive as one additionalContext; otherwise {}. `record` deletes all
+#   three flags.
+set -uo pipefail
+config_file="${PROVOST_CONFIG:-${HOME}/.claude/provost/config.json}"
+config=""
+[[ -r "$config_file" ]] && { IFS= read -r -d '' config < "$config_file" || true; }
+if ! [[ "$config" =~ \"handoff\"[[:space:]]*:[[:space:]]*true([^A-Za-z0-9_]|$) ]]; then
+    printf '{}\n'
+    exit 0
+fi
+facts_dir="${config_file%[/\\]*}/cache/facts"
+if [[ ! -d "$facts_dir" ]]; then
+    printf '{}\n'
+    exit 0
+fi
+input=""
+IFS= read -r -d '' input || true
+
+# Header fields come only from the part before tool_input, tool fields only from
+# the part after it, so text inside a tool's own arguments cannot spoof a header.
+# A prompt is one JSON string, so its quotes arrive escaped and match no key.
+head="$input" body=""
+if [[ "$input" == *'"tool_input":'* ]]; then
+    head="${input%%\"tool_input\":*}"
+    body="${input#*\"tool_input\":}"
+    body="${body%%\"tool_response\":*}"
+fi
+
+# val_re matches a JSON string value; the capture keeps escapes exactly as sent.
+val_re='"(([^"\\]|\\.)*)"'
+# get <text> <key>: sets val to the raw first string value of "key", else fails.
+get() {
+    local re='"'"$2"'"[[:space:]]*:[[:space:]]*'"$val_re"
+    if [[ "$1" =~ $re ]]; then
+        val="${BASH_REMATCH[1]}"
+        return 0
+    fi
+    val=""
+    return 1
+}
+
+# norm <raw JSON path>: sets normed to a comparable form (compare it with same):
+# escaped or plain backslashes become /, no trailing /, and Git Bash /x/... becomes x:/...
+norm() {
+    local p="${1//\\\\//}"
+    p="${p//\\//}"
+    while [[ ${#p} -gt 1 && "$p" == */ ]]; do p="${p%/}"; done
+    [[ "$p" =~ ^/([A-Za-z])(/.*)?$ ]] && p="${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"
+    normed="$p"
+}
+
+# same <a> <b>: equal ignoring case. nocasematch is bash 3.1+; ${x,,} needs bash 4.
+same() {
+    local rc=1
+    shopt -s nocasematch
+    [[ "$1" == "$2" ]] && rc=0
+    shopt -u nocasematch
+    return "$rc"
+}
+
+val=""
+get "$head" hook_event_name
+event="$val"
+get "$head" session_id
+session_id="$val"
+if [[ "$event" == UserPromptSubmit && "$session_id" =~ ^[A-Za-z0-9-]+$ ]]; then
+    flag="${facts_dir}/${session_id}"
+    msg=""
+    if [[ -e "${flag}.enabled" ]]; then
+        if [[ ( -e "${flag}.pending-edit" || -e "${flag}.pending-dispatch" ) && ! -e "${flag}.reminded" ]]; then
+            # Remind only when the marker was written, so a failing write cannot repeat it every turn.
+            if : 2>/dev/null > "${flag}.reminded"; then
+                msg="Handoff: since the last record this session edited repo files or dispatched a writer subagent. Record the decisions behind them now (status, then record); facts are captured automatically."
+            fi
+        fi
+        # A subagent's result arrives as a prompt that starts with its hand-back
+        # message (optionally behind the "Another Claude session" wrapper), or as a
+        # <task-notification> for an agent ("<summary>Agent ...", first <status>
+        # completed) that does not just point at a SubagentHandback delivery: the
+        # pointer "(its SubagentHandback call)" or the interim "... will deliver
+        # its report through SubagentHandback ...". A result that merely mentions
+        # SubagentHandback still counts. < and > may be \u-escaped. A
+        # UserPromptSubmit has no tool_input, so the prompt is read from the whole
+        # input.
+        lt='(<|\\u003[cC])' gt='(>|\\u003[eE])' ws='([[:space:]]|\\[nrt])*'
+        hand_re='^'"$ws"'(Another Claude session sent a message:'"$ws"')?'"$lt"'agent-message from=\\"([^"\\]|\\[^"])*\\"'"$gt$ws"'\[Subagent hand-back\]'
+        note_re='^'"$ws$lt"'task-notification'"$gt"
+        status_re="${lt}status${gt}([A-Za-z_-]*)${lt}"
+        summary_re="${lt}summary${gt}(Agent )?"
+        result=false
+        if get "$input" prompt; then
+            if [[ "$val" =~ $hand_re ]]; then
+                result=true
+            elif [[ "$val" =~ $note_re && "$val" != *'(its SubagentHandback call)'* \
+                    && "$val" != *'will deliver its report through SubagentHandback'* ]] \
+                    && [[ "$val" =~ $status_re && "${BASH_REMATCH[3]}" == completed ]] \
+                    && [[ "$val" =~ $summary_re && -n "${BASH_REMATCH[3]}" ]]; then
+                result=true
+            fi
+        fi
+        if [[ "$result" == true ]]; then
+            if [[ -n "$msg" ]]; then
+                msg+=" A subagent result also just arrived: if it changes the work state, record the result milestone too."
+            else
+                msg="Handoff: a subagent result just arrived. If it changes the work state, record the result milestone now (status, then record); facts are captured automatically."
+            fi
+        fi
+    fi
+    if [[ -n "$msg" ]]; then
+        printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"'"$msg"'"}}'
+    else
+        printf '{}\n'
+    fi
+    exit 0
+fi
+if [[ "$event" != PostToolUse || -z "$body" ]]; then
+    printf '{}\n'
+    exit 0
+fi
+get "$head" tool_name
+tool="$val"
+get "$head" cwd
+cwd="$val"
+# Only a subagent's events carry agent_id. agent_type alone does not decide:
+# background-job sessions send agent_type "claude" on main-session events. The
+# spool's agent is the subagent's agent_type, and "" for the main session.
+agent="" main_session=true
+if get "$head" agent_id; then
+    main_session=false
+    get "$head" agent_type && agent="$val"
+fi
+if ! [[ "$session_id" =~ ^[A-Za-z0-9-]+$ && -e "${facts_dir}/${session_id}.enabled" ]]; then
+    printf '{}\n'
+    exit 0
+fi
+ts=""
+if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 2) )); then
+    printf -v ts '%(%s)T' -1
+fi
+if ! [[ "$ts" =~ ^[0-9]+$ ]]; then
+    ts="$(date +%s 2>/dev/null)" || ts=""
+    [[ "$ts" =~ ^[0-9]+$ ]] || ts=0
+fi
+prefix="\"v\":1,\"ts\":${ts}"
+tail_fields="\"cwd\":\"${cwd}\",\"agent\":\"${agent}\""
+out=""
+flag=""
+writers="${PROVOST_REMINDER_ROLES:-implementer implementer-high implementer-sonnet implementer-deep mech-executor general-purpose}"
+
+case "$tool" in
+    Edit|Write|NotebookEdit)
+        key=file_path
+        [[ "$tool" == NotebookEdit ]] && key=notebook_path
+        if get "$body" "$key" && [[ -n "$val" ]]; then
+            out="{${prefix},\"k\":\"edit\",${tail_fields},\"tool\":\"${tool}\",\"p\":\"${val}\"}"$'\n'
+            # Mirrors facts.OUTSIDE_DEFAULT on the raw JSON text, where an
+            # escaped backslash pair is one path separator.
+            p="${val//\\\\//}"
+            p="${p//\\//}"
+            shopt -s nocasematch
+            case "${p}/" in
+                */.claude/jobs/*|*/.claude/projects/*|*/appdata/local/temp/*|*/tmp/*) ;;
+                *) [[ "$main_session" == true ]] && flag=pending-edit ;;
+            esac
+            shopt -u nocasematch
+        fi
+        ;;
+    Agent)
+        role="general-purpose"
+        if get "$body" subagent_type; then role="$val"; fi
+        if [[ "$role" =~ ^[A-Za-z0-9_.:-]+$ ]]; then
+            desc=""
+            get "$body" description && desc="${val:0:120}"
+            # Keep the clipped value valid JSON: drop a dangling backslash, a
+            # partial \uXXXX escape or a lone high surrogate from the tail, until
+            # none is left (cutting a partial low escape can expose its high one).
+            while :; do
+                if [[ "$desc" =~ (\\+)$ ]] && (( ${#BASH_REMATCH[1]} % 2 )); then
+                    desc="${desc%\\}"
+                elif [[ "$desc" =~ (\\+)(u[0-9A-Fa-f]{0,3}|u[dD][89abAB][0-9A-Fa-f]{2})$ ]] \
+                        && (( ${#BASH_REMATCH[1]} % 2 )); then
+                    desc="${desc%\\u*}"
+                else
+                    break
+                fi
+            done
+            # tool_input keeps the value as the model sent it: real dispatches pass the
+            # string "true", which Claude Code accepts like the boolean.
+            bg=false
+            [[ "$body" =~ \"run_in_background\"[[:space:]]*:[[:space:]]*(true([^A-Za-z0-9_]|$)|\"true\") ]] && bg=true
+            out="{${prefix},\"k\":\"agent\",${tail_fields},\"role\":\"${role}\",\"desc\":\"${desc}\",\"bg\":${bg}}"$'\n'
+            [[ " $writers " == *" $role "* ]] && flag=pending-dispatch
+        fi
+        ;;
+    EnterWorktree|ExitWorktree)
+        p=""
+        if get "$body" path || get "$body" name; then p="$val"; fi
+        out="{${prefix},\"k\":\"worktree\",${tail_fields},\"tool\":\"${tool}\",\"p\":\"${p}\"}"$'\n'
+        ;;
+    Bash|PowerShell)
+        if get "$body" command; then
+            cmd="$val"
+            # A directory is bare, \"double-quoted\" (escaped in the raw JSON) or
+            # 'single-quoted'; bare ends at whitespace, ; & | ) or an escaped quote.
+            lead='(^|[^A-Za-z0-9_./-]|\\[nrt])'
+            kw='(cd|git[[:space:]]+-C|Set-Location([[:space:]]+-(Path|LiteralPath))?)'
+            dq='\\"(([^"\\]|\\[^"])*)\\"'
+            sq="'([^']*)'"
+            bare='(([^[:space:];&|)\\"'"'"']|\\\\)+)'
+            re="${lead}${kw}[[:space:]]+(${dq}|${sq}|${bare})"
+            norm "$cwd"
+            cwd_norm="$normed"
+            count=0
+            while (( count < 3 )) && [[ "$cmd" =~ $re ]]; do
+                matched="${BASH_REMATCH[0]}"
+                d="${BASH_REMATCH[6]}${BASH_REMATCH[8]}${BASH_REMATCH[9]}"
+                cmd="${cmd#*"$matched"}"
+                if [[ -z "$d" || "$d" == -* || "$d" == *'$('* || "$d" == *'`'* ]]; then
+                    continue
+                fi
+                # The event's cwd already names this directory; relative targets are kept.
+                norm "$d"
+                same "$normed" "$cwd_norm" && continue
+                out+="{${prefix},\"k\":\"dir\",${tail_fields},\"p\":\"${d}\"}"$'\n'
+                count=$(( count + 1 ))
+            done
+        fi
+        ;;
+esac
+
+if [[ -n "$out" ]]; then
+    printf '%s' "$out" 2>/dev/null >> "${facts_dir}/${session_id}.jsonl" || true
+fi
+if [[ -n "$flag" ]]; then
+    : 2>/dev/null > "${facts_dir}/${session_id}.${flag}" || true
+fi
+printf '{}\n'
+exit 0

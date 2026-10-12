@@ -98,3 +98,18 @@ jobs:
           for manifest in .claude-plugin/plugin.json .claude-plugin/marketplace.json hooks/hooks.json; do
             python3 -m json.tool "$manifest" > /dev/null
           done
+
+  adaptive-runtime-checks:
+    name: Adaptive runtime (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.11'
+      - name: Exercise optional runtime in temporary workspaces
+        run: python -m unittest discover -s tests/adaptive -p "test_*.py" -v

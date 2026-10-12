@@ -95,3 +95,12 @@ Keep each pull request narrow. Explain the problem, scope and non-goals, affecte
 governance guarantees, and current verification evidence. Avoid unrelated
 formatting or refactors. A passing check is evidence for the behavior it covers,
 not proof of untested invariants.
+
+## Optional adaptive runtime checks
+
+Run `python -m unittest discover -s tests/adaptive -p "test_*.py" -v`
+with Python 3.11+ and Bash (Git for Windows on Windows). Fixtures use temporary
+workspaces; no real personal settings are required. Keep source workflow fixture
+checks separate from empirical model behavior claims. Run role, Markdown link
+and PowerShell syntax checks after packaging changes. Live compaction, notification
+and routing acceptance requires a separately authorized pilot.

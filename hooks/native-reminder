@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Deprecated: the handoff reminder moved to hooks/native-facts, which reminds at
+# the start of the next turn (UserPromptSubmit). This stub stays for one release
+# so stale PostToolUse/SubagentStop registrations keep working: it reads nothing
+# and always answers {}. Remove its registration from settings.json.
+printf '{}\n'
+exit 0

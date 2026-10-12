@@ -20,7 +20,7 @@ from a prompt collection.
 
 ## What works today
 
-- Six Claude Code role definitions under [`agents/`](agents/), installable as a
+- Seven Claude Code role definitions under [`agents/`](agents/), installable as a
   plugin — see [Install](#install).
 - The Tier 1 [orchestration policy](orchestration.md), including plan-first work,
   one active writer, and evidence-based completion discipline, supplied to each
@@ -100,7 +100,7 @@ claude plugin install provost@provost
 The same two steps are available in a session as `/plugin marketplace add` and
 `/plugin install`.
 
-That installs the six collaborator roles, the six methodology skills, and the
+That installs seven collaborator roles, six methodology skills, a handoff skill, and the
 orchestration policy. The policy reaches each session through a `SessionStart`
 hook, so there is nothing to merge into a `CLAUDE.md` by hand.
 
@@ -118,6 +118,7 @@ claude --plugin-dir .
 
 | Role | Model | Responsibility |
 |---|---|---|
+| `adaptive-implementer` | opus | Opt-in bounded implementation; high effort |
 | `explorer` | haiku | Read-only evidence gathering |
 | `implementer` / `implementer-deep` | sonnet / opus | Bounded TDD implementation |
 | `test-analyst` | haiku | Existing test execution without source edits |
@@ -130,6 +131,19 @@ Provost does not ship or certify a third-party gateway.
 Alongside the roles are six methodology skills — TDD, bug diagnosis, design
 grilling, two-axis review, and completion verification. Attribution for the
 vendored skills is in [`skills/NOTICE.md`](skills/NOTICE.md).
+
+## Optional adaptive orchestration and handoff
+
+The experimental adaptive mode uses personal global configuration with an exact
+workspace allowlist. It keeps legacy behavior as the default. Python 3.11+ is
+required only for the optional runtime. The new adaptive-implementer defaults to
+Opus/high; bounded known work may use a Sonnet override with high effort.
+Scheduling and writer limits are instructions, not engine enforcement. Project
+restrictions still win. Local handoff history lives outside the repository and is
+shared by a checkout and its worktrees; compact saving failures are nonblocking. Live host/model validation remains pending.
+
+See the [setup and pilot guide](docs/examples/adaptive-handoff-pilot.md) for config,
+source workflows, /provost:handoff, failure limits and rollback.
 
 ## Try it
 

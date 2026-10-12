@@ -1,0 +1,162 @@
+[
+  {
+    "workflow": "spec-kit",
+    "id": "two-features",
+    "input": "Two features have task T1; neither selected.",
+    "expected": "clarify",
+    "source": "spec-kit.md",
+    "reason": "Apply source gates, current evidence, task identity and write/resource ownership to: Two features have task T1; neither selected."
+  },
+  {
+    "workflow": "spec-kit",
+    "id": "parallel-marker",
+    "input": "Disjoint [P] tasks but project allows one writer.",
+    "expected": "serial",
+    "source": "spec-kit.md",
+    "reason": "Apply source gates, current evidence, task identity and write/resource ownership to: Disjoint [P] tasks but project allows one writer."
+  },
+  {
+    "workflow": "spec-kit",
+    "id": "checklist-gate",
+    "input": "Approved plan but required quality checklist blocked.",
+    "expected": "blocked",
+    "source": "spec-kit.md",
+    "reason": "Apply source gates, current evidence, task identity and write/resource ownership to: Approved plan but required quality checklist blocked."
+  },
+  {
+    "workflow": "spec-kit",
+    "id": "red-green",
+    "input": "Failing check and implementation for same acceptance.",
+    "expected": "one-brief",
+    "source": "spec-kit.md",
+    "reason": "Apply source gates, current evidence, task identity and write/resource ownership to: Failing check and implementation for same acceptance."
+  },
+  {
+    "workflow": "spec-kit",
+    "id": "converge",
+    "input": "Missing test within approved acceptance; feature metadata exists.",
+    "expected": "bounded-task-no-metadata-rewrite",
+    "source": "spec-kit.md",
+    "reason": "Apply source gates, current evidence, task identity and write/resource ownership to: Missing test within approved acceptance; feature metadata exists."
+  },
+  {
+    "workflow": "openspec",
+    "id": "delta-context",
+    "input": "Current spec differs from delta; custom contextFiles points to design gate.",
+    "expected": "read-all-sources",
+    "source": "openspec.md",
+    "reason": "Apply source gates, current evidence, task identity and write/resource ownership to: Current spec differs from delta; custom contextFiles points to design gate."
+  },
+  {
+    "workflow": "openspec",
+    "id": "blocked",
+    "input": "Incomplete interface dependency.",
+    "expected": "blocked",
+    "source": "openspec.md",
+    "reason": "Apply source gates, current evidence, task identity and write/resource ownership to: Incomplete interface dependency."
+  },
+  {
+    "workflow": "openspec",
+    "id": "archive",
+    "input": "Archived change has unfinished tasks and no evidence.",
+    "expected": "reconcile",
+    "source": "openspec.md",
+    "reason": "Apply source gates, current evidence, task identity and write/resource ownership to: Archived change has unfinished tasks and no evidence."
+  },
+  {
+    "workflow": "openspec",
+    "id": "moved-source",
+    "input": "Old delta missing; replacement path known.",
+    "expected": "read-replacement",
+    "source": "openspec.md",
+    "reason": "Apply source gates, current evidence, task identity and write/resource ownership to: Old delta missing; replacement path known."
+  },
+  {
+    "workflow": "openspec",
+    "id": "old-cli",
+    "input": "CLI lacks readiness field; actual tasks available.",
+    "expected": "inspect-not-invent",
+    "source": "openspec.md",
+    "reason": "Apply source gates, current evidence, task identity and write/resource ownership to: CLI lacks readiness field; actual tasks available."
+  },
+  {
+    "workflow": "matt",
+    "id": "provider-identity",
+    "input": "Local, GitHub and GitLab all have task 12 without selected source.",
+    "expected": "clarify",
+    "source": "matt.md",
+    "reason": "Apply source gates, current evidence, task identity and write/resource ownership to: Local, GitHub and GitLab all have task 12 without selected source."
+  },
+  {
+    "workflow": "matt",
+    "id": "blocked-by",
+    "input": "Blocked by unfinished issue 8.",
+    "expected": "blocked",
+    "source": "matt.md",
+    "reason": "Apply source gates, current evidence, task identity and write/resource ownership to: Blocked by unfinished issue 8."
+  },
+  {
+    "workflow": "matt",
+    "id": "unknown-dependency",
+    "input": "Dependencies unspecified and shared API unsettled.",
+    "expected": "inspect",
+    "source": "matt.md",
+    "reason": "Apply source gates, current evidence, task identity and write/resource ownership to: Dependencies unspecified and shared API unsettled."
+  },
+  {
+    "workflow": "matt",
+    "id": "no-paths",
+    "input": "Accepted ticket lacks write scope.",
+    "expected": "brief-first",
+    "source": "matt.md",
+    "reason": "Apply source gates, current evidence, task identity and write/resource ownership to: Accepted ticket lacks write scope."
+  },
+  {
+    "workflow": "matt",
+    "id": "closed-no-proof",
+    "input": "Issue closed; old worker running; no current evidence.",
+    "expected": "reconcile-before-dispatch",
+    "source": "matt.md",
+    "reason": "Apply source gates, current evidence, task identity and write/resource ownership to: Issue closed; old worker running; no current evidence."
+  },
+  {
+    "workflow": "shared",
+    "id": "two-ready",
+    "input": "Two disjoint scopes, no dependencies or shared mutable resources, settled interfaces.",
+    "expected": "parallel-two",
+    "source": "shared.md",
+    "reason": "Apply source gates, current evidence, task identity and write/resource ownership to: Two disjoint scopes, no dependencies or shared mutable resources, settled interfaces."
+  },
+  {
+    "workflow": "shared",
+    "id": "third-ready",
+    "input": "Third independent ready task; configured burst three normal two.",
+    "expected": "explain-burst",
+    "source": "shared.md",
+    "reason": "Apply source gates, current evidence, task identity and write/resource ownership to: Third independent ready task; configured burst three normal two."
+  },
+  {
+    "workflow": "shared",
+    "id": "same-file",
+    "input": "Two writers need same file.",
+    "expected": "serial",
+    "source": "shared.md",
+    "reason": "Apply source gates, current evidence, task identity and write/resource ownership to: Two writers need same file."
+  },
+  {
+    "workflow": "shared",
+    "id": "shared-browser",
+    "input": "Disjoint files but tests mutate same browser profile.",
+    "expected": "serialize-resource",
+    "source": "shared.md",
+    "reason": "Apply source gates, current evidence, task identity and write/resource ownership to: Disjoint files but tests mutate same browser profile."
+  },
+  {
+    "workflow": "shared",
+    "id": "already-done",
+    "input": "Current accepted evidence, no invalidating changes.",
+    "expected": "no-dispatch",
+    "source": "shared.md",
+    "reason": "Apply source gates, current evidence, task identity and write/resource ownership to: Current accepted evidence, no invalidating changes."
+  }
+]

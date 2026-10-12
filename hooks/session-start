@@ -1,18 +1,34 @@
 #!/usr/bin/env bash
 # SessionStart hook for the Provost plugin.
 #
-# Injects the Tier 1 orchestration policy into the session so that installing
-# the plugin is enough. Without this the policy has to be merged into the host
-# project's CLAUDE.md by hand, which was the largest install-time step.
-#
-# Tier 2 hooks are deliberately not registered here: they are opt-in and
-# require a governed workspace and the PROVOST_* environment.
+# With a personal config (PROVOST_CONFIG or ~/.claude/provost/config.json) the
+# event goes to the adaptive runtime (hooks/runtime hook), which injects the
+# adaptive policy and handoff context, or the legacy policy for workspaces not
+# opted in. Without a config, or when the runtime fails, it injects the Tier 1
+# orchestration.md policy itself (startup/clear/compact only; resume and fork get
+# nothing), adding a warning when the runtime was unavailable.
 
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 plugin_root="$(cd "${script_dir}/.." && pwd)"
 policy_file="${plugin_root}/orchestration.md"
+
+input="$(cat)"
+config="${PROVOST_CONFIG:-${HOME}/.claude/provost/config.json}"
+warning=""
+if [ -f "$config" ]; then
+    if output="$(printf '%s' "$input" | bash "${script_dir}/runtime" hook)"; then
+        printf '%s\n' "$output"
+        exit 0
+    fi
+    warning='"systemMessage":"Provost runtime unavailable; legacy policy retained.",'
+fi
+# These events were not handled by the legacy plugin.
+if [[ "$input" =~ \"source\"[[:space:]]*:[[:space:]]*\"(resume|fork)\" ]]; then
+    if [ -z "$warning" ]; then printf '{}\n'; else printf '{%s"continue":true}\n' "$warning"; fi
+    exit 0
+fi
 
 if [ ! -r "${policy_file}" ]; then
     exit 0
@@ -35,6 +51,6 @@ escape_for_json() {
 policy_escaped="$(escape_for_json "$(cat "${policy_file}")")"
 session_context="Provost Tier 1 orchestration policy, supplied by the provost plugin. Apply it to work in this session:\n\n${policy_escaped}"
 
-printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "SessionStart",\n    "additionalContext": "%s"\n  }\n}\n' "${session_context}"
+printf '{\n  %s"hookSpecificOutput": {\n    "hookEventName": "SessionStart",\n    "additionalContext": "%s"\n  }\n}\n' "${warning}" "${session_context}"
 
 exit 0
