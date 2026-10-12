@@ -96,7 +96,7 @@ class NativeTests(FixtureCase):
         self.assertEqual(json.loads(r.stdout)["adopted_from"],listed[0]["snapshot_id"])
 
     def test_guidance_points_record_at_input_file_not_stdin(self):
-        text=self.context(handle_event(self.event(),self.config_path,native=True))
+        text=self.context(handle_event(self.event(),self.config_path))
         self.assertIn("--input <payload-file>",text)
         self.assertNotIn("stdin",text)
 
@@ -116,7 +116,3 @@ class NativeTests(FixtureCase):
         self.assertEqual((len(example["assignments"]),len(example["evidence"])),(1,1))
         from provost_runtime.store import record
         self.assertEqual(record(self.root,"s1",example,None,"doc-example")["payload"],example)
-
-    def test_plugin_adapter_keeps_original_policy(self):
-        text=self.context(handle_event(self.event(),self.config_path))
-        self.assertIn("provost:adaptive-implementer",text)

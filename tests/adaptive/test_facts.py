@@ -372,7 +372,7 @@ class PreCompactTests(FactsCase):
 
     def precompact(self):
         from provost_runtime.hooks import handle_event
-        return json.dumps(handle_event(self.event(), self.config_path, native=True))
+        return json.dumps(handle_event(self.event(), self.config_path))
 
     def snapshots(self):
         from provost_runtime.store import latest
@@ -562,7 +562,7 @@ class RecoveryRefoldTests(FactsCase):
         event = {"session_id": SESSION, "cwd": str(self.root), "hook_event_name": name}
         if source:
             event["source"] = source
-        return handle_event(event, self.config_path, native=True)
+        return handle_event(event, self.config_path)
 
     def compact(self):
         output = self.handle("SessionStart", "compact")

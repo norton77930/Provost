@@ -102,11 +102,9 @@ class RecoveryPayloadInjection(FixtureCase):
         self.assertEqual(len(json.dumps(payload, ensure_ascii=False)), 4500)
         store.record(self.root, "s1", payload, None, "r1")
         stored = store.current(self.root, "s1")["payload"]
-        for native in (False, True):
-            output = handle_event({"session_id": "s1", "cwd": str(self.root),
-                                   "hook_event_name": "SessionStart", "source": "compact"},
-                                  self.config_path, native=native)
-            context = output["hookSpecificOutput"]["additionalContext"]
-            self.assertLessEqual(len(context), 8000)
-            self.assertIn("Observed payload: " + json.dumps(stored, ensure_ascii=False), context)
-            self.assertIn(INSTRUCTION, context)
+        output = handle_event({"session_id": "s1", "cwd": str(self.root),
+                               "hook_event_name": "SessionStart", "source": "compact"}, self.config_path)
+        context = output["hookSpecificOutput"]["additionalContext"]
+        self.assertLessEqual(len(context), 8000)
+        self.assertIn("Observed payload: " + json.dumps(stored, ensure_ascii=False), context)
+        self.assertIn(INSTRUCTION, context)

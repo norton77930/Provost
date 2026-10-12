@@ -38,6 +38,9 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 - An interpreter inside the project directory is no longer cached when the
   directory is reached through a symlink, junction or 8.3 short name.
 - `python -m` no longer imports modules from the project directory in hooks.
+- The interpreter's inside-the-project check restores the working directory,
+  `PWD` and `OLDPWD` even when changing back fails, and reads a parent
+  directory named `-` literally instead of jumping to `OLDPWD`.
 
 ### Removed
 
@@ -47,6 +50,10 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   (`policies/`), `docs/concepts.md`, and the plugin manifest and hooks
   (`.claude-plugin/`, `hooks/hooks.json`, `hooks/session-start`,
   `hooks/handoff-event`, `hooks/native-reminder`).
+- The runtime's plugin-mode path: the non-native SessionStart policy injection
+  and legacy fallback, the `hook` CLI entry (`native-hook` remains), and the
+  `native=` switch of `handle_event`. `runtime_hash` no longer lists
+  `hooks/native-reminder`, so its value changes.
 - The previous seven roles and the `tdd`, `diagnosing-bugs`, `grilling`,
   `grill-me` and `two-axis-review` skills; methodology now comes from the
   `mattpocock-skills` plugin.

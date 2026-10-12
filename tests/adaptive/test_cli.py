@@ -64,7 +64,7 @@ class CliTests(FixtureCase):
         self.cfg["workspace_roots"] = [str(main)]
         self.config_path.write_text(json.dumps(self.cfg), encoding="utf-8")
         output = handle_event({"hook_event_name": "SessionStart", "source": "startup", "session_id": "s1",
-                               "cwd": str(worktree)}, self.config_path, native=True)
+                               "cwd": str(worktree)}, self.config_path)
         self.assertIn("Native handoff runtime active", output.get("hookSpecificOutput", {}).get("additionalContext", ""))
         self.assertTrue((session_dir(main, "s1") / "binding.json").is_file())
         revision = record(main, "s1", self.payload("main"), None, "r1")["revision"]
@@ -93,7 +93,7 @@ class CliTests(FixtureCase):
         self.assertNoStore()
 
     def test_malformed_hook_is_nonblocking_and_does_not_echo_input(self):
-        result = self.run_cli("hook", data=["sensitive-marker"])
+        result = self.run_cli("native-hook", data=["sensitive-marker"])
         self.assertEqual(result.returncode, 0)
         self.assertNotIn("sensitive-marker", result.stdout)
         self.assertNotIn("block", json.loads(result.stdout).get("decision", ""))

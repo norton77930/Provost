@@ -17,8 +17,7 @@ This roadmap describes intended work, not promised dates. Items move to
 
 ## Next
 
-- Remove the unused plugin-mode SessionStart path and the stale
-  `native-reminder` entry from the runtime, then `legacy.py`.
+- Remove `legacy.py`, the read-only bridge to the v1 store.
 - Follow-ups from review: hold the session lock through POSIX prune removal,
   roll back `install.py` on interrupts, exercise junction escapes on Windows.
 - Bind policy statements to tests so the policy text, role table and README

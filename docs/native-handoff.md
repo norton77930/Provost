@@ -221,7 +221,6 @@ first (by the facts.json path), then a full checkpoint payload by its digest, th
 the activity section (its headline, which keeps the staleness line, and the
 facts.json path), then the checkpoint digest (only the checkpoint path), then the
 facts summary (by its path), and last the identity (paths and `status` usage only).
-In the plugin, the policy text yields to its short form before the checkpoint.
 
 The save status names a genuine failure as `previous handoff save failed; verify
 any older checkpoint`. When the last PreCompact found no record (`NO_CHECKPOINT`)
@@ -251,8 +250,8 @@ missing"), never an empty snapshot; a record older than the latest change is
 partial-stale. The fold and these save levels apply only to a session with the
 enablement marker `<provost dir>/cache/facts/<session_id>.enabled`, which the
 native SessionStart creates when adaptive mode resolves for the workspace and
-handoff is enabled. Without it (the plugin path, or a session started before the
-facts layer was installed) PreCompact only snapshots an existing record, or reports
+handoff is enabled. Without it (a session started before the facts layer was
+installed) PreCompact only snapshots an existing record, or reports
 `NO_CHECKPOINT`. Untracked (`??`) files are listed as dirty but never date a
 change, and file times in the future count as now. Startup/clear/fork do not adopt
 old tasks.
@@ -423,7 +422,6 @@ Do not register either hook for `SubagentStop`. That event's context is delivere
 to the subagent's own conversation and keeps the subagent running, so it would loop
 the worker instead of reaching main.
 
-`hooks/native-reminder` is deprecated. It used to remind on `PostToolUse(Agent)`
-synchronously, which cost every dispatch about 0.6 s. It now reads nothing and
-answers `{}`, and stays one release so stale registrations do not error; remove
-its registration.
+`hooks/native-reminder` has been removed. It used to remind on `PostToolUse(Agent)`
+synchronously, which cost every dispatch about 0.6 s; `native-facts` took over its
+reminders. Remove any registration that still points at it.

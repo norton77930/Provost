@@ -35,10 +35,10 @@ class RecoveryReviewFixTests(FixtureCase):
         self.assertTrue(any(e.get("snapshot_id") == good["snapshot_id"] for e in entries))
         self.assertTrue(any(e.get("error") == "CORRUPT_RECORD" for e in entries))
 
-    def test_allowlist_fallback_explains_why_without_workspace_writes(self):
+    def test_workspace_outside_allowlist_is_a_noop_without_workspace_writes(self):
         self.cfg["workspace_roots"] = []
         self.config_path.write_text(json.dumps(self.cfg))
         output = handle_event({"hook_event_name": "SessionStart", "source": "startup",
                                "session_id": "s", "cwd": str(self.root)}, self.config_path)
-        self.assertIn("not enabled", output.get("systemMessage", ""))
+        self.assertEqual(output, {})
         self.assertNoStore()
