@@ -13,91 +13,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  reference-checks:
-    name: Windows reference checks
+  docs-links:
+    name: Docs links
     runs-on: windows-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Validate PowerShell syntax
-        shell: powershell
-        run: powershell.exe -NoProfile -File .\tests\governance\Test-PowerShellSyntax.ps1
-
-      - name: Validate role definitions
-        shell: powershell
-        run: powershell.exe -NoProfile -File .\tests\roles\Test-RoleDefinitions.ps1
-
-      - name: Exercise governed write scope
-        shell: powershell
-        run: powershell.exe -NoProfile -File .\tests\governance\Test-WriteScope.ps1
-
-      - name: Exercise governed ref guard
-        shell: powershell
-        run: powershell.exe -NoProfile -File .\tests\governance\Test-RefGuard.ps1
-
-      - name: Exercise governed manifest pin
-        shell: powershell
-        run: powershell.exe -NoProfile -File .\tests\governance\Test-ManifestPin.ps1
-
-      - name: Exercise governed path custody
-        shell: powershell
-        run: powershell.exe -NoProfile -File .\tests\governance\Test-PathCustody.ps1
-
-      - name: Exercise governed completion gate
-        shell: powershell
-        run: powershell.exe -NoProfile -File .\tests\governance\Test-CompletionGate.ps1
-
-      - name: Exercise governed failure diagnosis
-        shell: powershell
-        run: powershell.exe -NoProfile -File .\tests\governance\Test-FailureDiagnosis.ps1
-
-      - name: Exercise governed audit artifacts
-        shell: powershell
-        run: powershell.exe -NoProfile -File .\tests\governance\Test-AuditArtifacts.ps1
-
-      - name: Exercise governed session liveness
-        shell: powershell
-        run: powershell.exe -NoProfile -File .\tests\governance\Test-SessionLiveness.ps1
-
-      - name: Exercise governed continuation enforcement
-        shell: powershell
-        run: powershell.exe -NoProfile -File .\tests\governance\Test-ContinuationEnforcement.ps1
-
-      - name: Exercise governed lifecycle actions
-        shell: powershell
-        run: powershell.exe -NoProfile -File .\tests\governance\Test-LifecycleActions.ps1
-
       - name: Validate relative Markdown links
         shell: powershell
         run: powershell.exe -NoProfile -File .\tests\docs\Test-MarkdownLinks.ps1
-
-  collaborator-tier-checks:
-    name: Linux collaborator-tier checks
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Session hook is executable
-        run: test -x hooks/session-start
-
-      - name: Session hook emits valid JSON under Linux bash
-        run: |
-          ./hooks/session-start > hook-output.json
-          python3 - <<'PY'
-          import json
-          context = json.load(open('hook-output.json'))['hookSpecificOutput']['additionalContext']
-          assert len(context.split(chr(10))) > 50, 'the injected policy looks truncated'
-          assert ')nn' not in context, 'newline escaping collapsed to bare "n"'
-          print('policy injected:', len(context), 'chars')
-          PY
-
-      - name: Plugin manifests parse
-        run: |
-          for manifest in .claude-plugin/plugin.json .claude-plugin/marketplace.json hooks/hooks.json; do
-            python3 -m json.tool "$manifest" > /dev/null
-          done
 
   adaptive-runtime-checks:
     name: Adaptive runtime (${{ matrix.os }})

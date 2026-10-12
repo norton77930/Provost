@@ -132,7 +132,7 @@ class CliTests(FixtureCase):
         (root / "hooks").mkdir()
         shutil.copytree(REPO / "scripts" / "provost_runtime", root / "scripts" / "provost_runtime",
                         ignore=shutil.ignore_patterns("__pycache__"))
-        for script in ("runtime", "native-event", "native-reminder", "_python.sh"):
+        for script in ("runtime", "native-event", "_python.sh"):
             shutil.copyfile(REPO / "hooks" / script, root / "hooks" / script)
         if newline:
             for path in [*(root / "scripts" / "provost_runtime").glob("*.py"), *(root / "hooks").iterdir()]:

@@ -2,13 +2,9 @@
 
 ## Supported versions
 
-Provost is pre-1.0. Fixes land on the latest tag; earlier `0.1.x` tags do not
-receive backports.
-
-| Version | Supported |
-|---|---|
-| Latest `0.1.x` tag | Yes |
-| Earlier tags | No |
+Provost is pre-1.0. Fixes land on `main`; earlier tags do not receive backports.
+The archived Tier 2 governance code (tag `archive/tier2-foreman`) is not
+maintained.
 
 ## Reporting a vulnerability
 
@@ -19,32 +15,34 @@ the issue publicly.
 Do not open a public issue for a suspected vulnerability, and do not include
 credentials, private paths, or private repository content in a report.
 
-A useful report names the affected tier, the documented guarantee you believe is
-broken, the smallest reproduction, and the expected and actual behavior.
+A useful report names the affected component, the behaviour you believe is
+unsafe, the smallest reproduction, and the expected and actual behaviour.
 
 This project is maintained in spare time. Expect an acknowledgement rather than a
 fix on a fixed schedule. There is no bounty.
 
 ## Scope
 
-In scope: a defect that lets a governed run bypass a guarantee the documentation
-claims — write-scope enforcement, ref-guard classification, manifest pinning,
-path custody, completion gating, or ledger and receipt integrity — in the
-reference helper and hooks under
-[`docs/governance/reference/`](docs/governance/reference/).
+In scope:
 
-Out of scope: behavior already recorded as a limitation in
-[`README.md`](README.md) or the
-[governance capability matrix](docs/governance/README.md); anything that
-presumes the operator has already removed the hooks or the required environment;
-and the security of third-party gateways, which Provost neither ships nor
-certifies.
+- The handoff runtime and hooks (`scripts/provost_runtime/`, `hooks/`): code
+  execution from the project directory (interpreter discovery, module
+  shadowing), writes or deletions outside the handoff store, records that can
+  be forged or silently corrupted, hook input that can break or block a Claude
+  Code session, and facts that capture command text or file contents.
+- `install.py`: writes outside the Claude config directory, loss of user content
+  outside the policy markers in `CLAUDE.md`, missing backups or incomplete
+  rollback, and any path by which a value from `settings.json` reaches output.
+
+Out of scope: behaviour already listed under Known limitations in
+[`README.md`](README.md); anything that presumes an attacker who can already
+write to `~/.claude` or the repository; model behaviour that ignores the
+orchestration policy (the policy is guidance, not enforcement); and third-party
+plugins or skills.
 
 ## What Provost does not claim
 
-Tier 2 is a reference implementation, not a hardened security boundary. It raises
-the cost of an unnoticed out-of-scope change. It does not defend against an
-operator who disables the hooks, an agent host that never invokes them, or anyone
-with write access to the workspace, the manifest, or the ledger. Hash checks
-detect modification after the fact; they do not prevent it, and the files are not
-made immutable by the operating system.
+The orchestration policy and role definitions are instructions to a model, not a
+security boundary. The runtime protects its own store and refuses unsafe paths,
+but it does not sandbox the agent, restrict what tools may write, or make any
+file immutable.

@@ -1,291 +1,197 @@
 # Provost
 
-**Match oversight to blast radius.** — graduated governance for AI coding agents.
+**Scale the ceremony to the task.** — an orchestration policy, role pack and
+handoff runtime for Claude Code.
 
 *[中文說明 →](README.zh-TW.md)*
 
-Provost is a governance framework for deciding how much oversight an AI coding
-task needs and making high-risk work more accountable. A typo does not need the
-same process as an authentication change, a migration, or a public API change.
-Provost provides three tiers so the process can rise with the potential damage.
+Provost is the source of truth for one Claude Code setup that is used every day.
+The main session classifies each request by difficulty and risk, keeps simple
+work for itself, hands bounded slices to cheaper implementer roles, and calls a
+fresh-context reviewer only when a failure would be invisible to tests and to a
+live run. A small runtime records decisions and dispatches so that work survives
+context compaction and session restarts.
 
-The governance model itself is host-agnostic; the current reference host is
-**Claude Code** and the shipped role files use Claude model identifiers, with
-support for other agent hosts planned rather than available today.
+It is published as it is used: tuned for one person's work, Windows first, and
+installed by copying files into the Claude config directory with a drift check.
 
-Tier 2 is a reference implementation in code, not prose: it contains lifecycle
-state, manifest hashing, write-gate decisions, workspace snapshots, custody
-records, failure signatures, and an audit ledger. That is what separates Provost
-from a prompt collection.
+## What is in the repository
 
-## What works today
-
-- Seven Claude Code role definitions under [`agents/`](agents/), installable as a
-  plugin — see [Install](#install).
-- The Tier 1 [orchestration policy](orchestration.md), including plan-first work,
-  one active writer, and evidence-based completion discipline, supplied to each
-  session by the plugin rather than merged in by hand.
-- Reusable methodology [skills](skills/) for TDD, diagnosis, review, and
-  verification, with third-party attribution preserved in
-  [`skills/NOTICE.md`](skills/NOTICE.md).
-- A Windows launcher that opens a governed session, registers the Tier 2 hooks
-  for it, and refuses when they could not enforce — with `Initialize` requiring
-  evidence the hooks actually ran.
-- Windows checks covering the decision logic of all seven Tier 2 governance
-  decisions, each with a demo walkthrough, plus a session-liveness check — see
-  [Tier 2 reference checks](#tier-2-reference-checks-windows).
-
-## Why this exists
-
-Prompt instructions are useful, but an agent can misunderstand or ignore them.
-For high-blast-radius work, Provost explores stronger controls: a plan is pinned
-to a manifest, file writes are checked against an approved set, handoffs retain
-path custody, and completion passes through declared verifier tasks.
-
-The current implementation is still described as a reference implementation. A
-launcher now ships and a governed session was verified enforcing end to end on
-Windows, but
-there is no turnkey installer, and Linux and macOS remain unenforced.
-
-## The dial
-
-| Tier | What it is | Use it for |
+| Path | What it is | Installed to (in `~/.claude`) |
 |---|---|---|
-| **0 · Bare** | Claude Code with local guardrails; no crew or governance runtime. | Throwaway edits, questions, and exploration. |
-| **1 · Collaborator** | A coordinated role pack, one-active-writer policy, and a finite Completion Contract. | Everyday features and bug fixes. |
-| **2 · Governed** | A hash-pinned manifest, hook-enforced write scope, path custody, verifier tasks, and an audit trail. | Auth, secrets, payments, migrations, public APIs, and other high-risk work. |
+| [`native/CLAUDE.native.md`](native/CLAUDE.native.md) | The orchestration policy | between the `claudex-native` markers in `CLAUDE.md` |
+| [`agents/`](agents/) | Eight subagent roles | `agents/` |
+| [`hooks/`](hooks/), [`scripts/provost_runtime/`](scripts/provost_runtime/) | Handoff runtime and its hooks | `provost/runtime/native-pilot-v1/` |
+| [`skills/verification-before-completion/`](skills/verification-before-completion/) | Completion-claim discipline | `skills/` |
+| [`skills/handoff/`](skills/handoff/) | Reference `/handoff` skill (not installed; keep your own) | — |
+| [`tools/dispatch-report.js`](tools/dispatch-report.js) | Cost and outcome report of past dispatches, from transcripts | `experiments/` |
+| [`install.py`](install.py) | Installer and read-only drift check | — |
 
-```mermaid
-flowchart TD
-    C(["A change to make"]) --> Q1{"Throwaway edit,<br/>question, or exploration?"}
-    Q1 -->|yes| T0["Tier 0 · Bare<br/>Claude Code + guardrails"]
-    Q1 -->|no| Q2{"Auth · secrets · payments ·<br/>migration · public API ·<br/>audit trail needed?"}
-    Q2 -->|yes| T2["Tier 2 · Governed<br/>hash-pinned manifest ·<br/>enforced scope · verifier gate"]
-    Q2 -->|no| T1["Tier 1 · Collaborator<br/>model-tiered crew · single writer"]
+Methodology skills (TDD, diagnosis, grilling, spec and tickets) come from the
+[`mattpocock-skills`](https://github.com/mattpocock/skills) plugin, which the
+policy refers to by name.
+
+## How the policy works
+
+Every non-trivial request starts with a one-line declaration:
+
+```text
+分類:<simple|moderate|mechanical|hard> / <no-risk|R1|R2> / evidence:<test|live|review|architecture> → <route>
 ```
 
-See [the concepts guide](docs/concepts.md) for the decision rule and the intended
-boundaries between tiers.
+- **Difficulty decides who implements.** Simple work stays in the main session.
+  Moderate slices go to `implementer-sonnet` (settled method, clear acceptance)
+  or `implementer` (design choices left to the worker; `effort: high` for
+  concurrency, lifecycle or security-adjacent code). Fully specified repetition
+  goes to `mech-executor`. Hard work needs an approved spec first.
+- **Risk decides which evidence closes a claim.** Pick the cheapest evidence that
+  would catch the failure: a focused test, a live run, or — only when the failure
+  is invisible to both — a `code-reviewer` (plus `architecture-reviewer` when an
+  exposed interface changes). File count, diff size and "looks complex" are
+  explicitly not reasons to review.
+- **R2 stops.** Auth, secrets, payments, migrations, breaking public APIs,
+  cross-repo or irreversible operations wait for the user's decision, and are
+  done only after review.
+- **Writers are budgeted.** Normally at most two concurrent writers, three when
+  the third is provably independent; ownership of files and shared resources is
+  checked before every wave.
+- **Completion is finite.** A Completion Contract lists the claims and their
+  evidence; once every claim passes, only the planned final verification runs.
 
-## Project status
+The full text is [`native/CLAUDE.native.md`](native/CLAUDE.native.md).
 
-What already works is listed under [What works today](#what-works-today) above.
-The rest of the Tier 2 surface is a reference implementation, and the known gaps
-are collected under [Roadmap / Known limitations](#roadmap--known-limitations)
-below.
+## Roles
 
-### Experimental / reference implementation
+| Role | Model | Effort | Tools | Used for |
+|---|---|---|---|---|
+| `Explore` | haiku | high | Read, Glob, Grep | Read-only reconnaissance |
+| `mech-executor` | haiku | high | + Write, Edit, Bash | Fully specified mechanical batches |
+| `test-analyst` | haiku | medium | Read, Glob, Grep, Bash | Running existing tests, regression analysis |
+| `implementer-sonnet` | sonnet | high | + Write, Edit, Bash | Default implementer for settled, bounded slices (TDD) |
+| `implementer` | opus | medium | + Write, Edit, Bash | Slices with real design choices; dispatched at `high` for hard ones |
+| `general-purpose` | opus | medium | all but Agent | Bounded non-code work no other role fits |
+| `code-reviewer` | fable | high | Read, Glob, Grep | Risk-triggered fresh-context review of a declared claim |
+| `architecture-reviewer` | fable | high | Read, Glob, Grep | Review when an exposed interface or boundary changes |
 
-- The Windows/PowerShell Tier 2 lifecycle helper and Claude Code hook scripts in
-  [`docs/governance/reference/`](docs/governance/reference/).
-- Hash checks detect changes to an approved manifest, and the helper requires a
-  new revision for changed intent; the file is not made immutable by the
-  operating system.
-- The `PreToolUse` write gate returns a machine-readable deny decision for an
-  `Edit`, `Write`, or `NotebookEdit` target outside a running task's literal
-  `write_set` when the hook is installed and the governed environment is active.
-- The helper implements workspace snapshots, path-custody hashes, task state,
-  failure-signature handling, verifier-task completion gates, helper-appended
-  JSONL events, and hashed terminal handoff receipts.
+Reviewers fall back to `opus` only when a run fails with an explicit Fable quota
+error.
+
+## Handoff runtime
+
+The runtime keeps a sealed, per-session chain of handoff records (sources,
+decisions, assignments, evidence, next step) under
+`~/.claude/provost/handoffs`, shared by a checkout and its worktrees. Hooks
+inject the latest checkpoint after compaction or resume, capture facts (edited
+paths, dispatches, commits — never command text or file contents) and remind the
+main session when a dispatch or edit has no record yet. Commands: `doctor`,
+`status`, `record`, `snapshot`, `list`, `resume`, `changes`, `search`, `prune`.
+See [`docs/native-handoff.md`](docs/native-handoff.md).
 
 ## Install
 
-Provost ships as a Claude Code plugin:
+Requirements: Claude Code, Python 3.11+, and on Windows Git Bash (the hooks are
+bash scripts).
+
+1. Add the markers to your `~/.claude/CLAUDE.md` where the policy should go. The
+   installer only ever replaces the text between them:
+
+   ```markdown
+   <!-- claudex-native:begin -->
+   <!-- claudex-native:end -->
+   ```
+
+2. Preview, install, and check:
+
+   ```bash
+   python install.py check              # read-only; exit 0 = no drift, 1 = drift
+   python install.py install --dry-run  # what would change
+   python install.py install            # backs up every changed file first
+   ```
+
+   Backups go to `~/.claude/provost/backups/install-<UTC time>/` with a
+   `manifest.json`; a failed install rolls back. `CLAUDE_CONFIG_DIR` and
+   `--config-dir` are honoured.
+
+3. Register the hooks in `~/.claude/settings.json` (the installer never edits
+   it; `check` reports whether they are registered). Replace `<runtime>` with
+   the absolute path of `~/.claude/provost/runtime/native-pilot-v1`:
+
+   ```json
+   "hooks": {
+     "SessionStart": [{"matcher": "startup|clear|compact|resume|fork", "hooks": [
+       {"type": "command", "command": "bash \"<runtime>/hooks/native-event\"", "timeout": 30}]}],
+     "PreCompact": [{"matcher": "manual|auto", "hooks": [
+       {"type": "command", "command": "bash \"<runtime>/hooks/native-event\"", "timeout": 30}]}],
+     "PostCompact": [{"matcher": "manual|auto", "hooks": [
+       {"type": "command", "command": "bash \"<runtime>/hooks/native-event\"", "timeout": 30}]}],
+     "PostToolUse": [{"matcher": "Edit|Write|NotebookEdit|Agent|Bash|PowerShell|EnterWorktree|ExitWorktree", "hooks": [
+       {"type": "command", "command": "bash \"<runtime>/hooks/native-facts\"", "async": true, "timeout": 20}]}],
+     "UserPromptSubmit": [{"hooks": [
+       {"type": "command", "command": "bash \"<runtime>/hooks/native-facts\"", "timeout": 10}]}]
+   }
+   ```
+
+4. Enable the runtime in `~/.claude/provost/config.json`, then confirm with
+   `bash <runtime>/hooks/runtime doctor`:
+
+   ```json
+   {
+     "schema_version": 1,
+     "mode": "adaptive",
+     "workspace_roots": [],
+     "all_workspaces": true,
+     "max_writers": 2,
+     "burst_writers": 3,
+     "handoff": true
+   }
+   ```
+
+   `exclude_roots` (a list of directories) turns handoff off below them. See
+   [`docs/native-handoff.md`](docs/native-handoff.md) for storage, retention
+   and recovery.
+
+After changing anything in the repository, run `python install.py check` to see
+what differs from the live setup, and `install` to apply it.
+
+## Evidence so far
+
+Single user, real work, not a controlled experiment:
+
+- `implementer-sonnet` was trialled against `implementer` on 34 slices across 5
+  repositories, including paired runs on the same brief, before becoming the
+  default implementer (2026-10-04).
+- Over two weeks (2026-09-28 to 10-12, 84 sessions) the main session wrote about
+  3% of changed code lines; implementer roles wrote the rest across 270
+  dispatches.
+
+## Tests
 
 ```bash
-claude plugin marketplace add norton77930/Provost
-claude plugin install provost@provost
+python -m unittest discover -s tests/adaptive -p "test_*.py"
 ```
 
-The same two steps are available in a session as `/plugin marketplace add` and
-`/plugin install`.
+CI runs the suite on Windows, Ubuntu and macOS, and checks Markdown links.
 
-That installs seven collaborator roles, six methodology skills, a handoff skill, and the
-orchestration policy. The policy reaches each session through a `SessionStart`
-hook, so there is nothing to merge into a `CLAUDE.md` by hand.
+## History
 
-The collaborator tier is plain Claude Code configuration. It runs wherever
-Claude Code runs and needs no proxy, gateway, or extra service. The Tier 2
-reference runtime described further down is Windows-only today.
+Provost started as a three-tier governance framework (Tier 0 bare, Tier 1
+collaborator, Tier 2 governed with hash-pinned manifests and a PowerShell write
+gate), shipped as a Claude Code plugin. That design is archived at tag
+[`archive/tier2-foreman`](https://github.com/norton77930/Provost/tree/archive/tier2-foreman)
+and is no longer maintained.
 
-To run against a local checkout instead of a release:
+## Known limitations
 
-```bash
-claude --plugin-dir .
-```
-
-### What the plugin ships
-
-| Role | Model | Responsibility |
-|---|---|---|
-| `adaptive-implementer` | opus | Opt-in bounded implementation; high effort |
-| `explorer` | haiku | Read-only evidence gathering |
-| `implementer` / `implementer-deep` | sonnet / opus | Bounded TDD implementation |
-| `test-analyst` | haiku | Existing test execution without source edits |
-| `code-reviewer` / `architecture-reviewer` | opus | Read-only assurance |
-
-These are configuration choices, not portable model abstractions. You can edit
-the role mapping for another model available to your Claude Code environment;
-Provost does not ship or certify a third-party gateway.
-
-Alongside the roles are six methodology skills — TDD, bug diagnosis, design
-grilling, two-axis review, and completion verification. Attribution for the
-vendored skills is in [`skills/NOTICE.md`](skills/NOTICE.md).
-
-## Optional adaptive orchestration and handoff
-
-The experimental adaptive mode uses personal global configuration with an exact
-workspace allowlist. It keeps legacy behavior as the default. Python 3.11+ is
-required only for the optional runtime. The new adaptive-implementer defaults to
-Opus/high; bounded known work may use a Sonnet override with high effort.
-Scheduling and writer limits are instructions, not engine enforcement. Project
-restrictions still win. Local handoff history lives outside the repository and is
-shared by a checkout and its worktrees; compact saving failures are nonblocking. Live host/model validation remains pending.
-
-See the [setup and pilot guide](docs/examples/adaptive-handoff-pilot.md) for config,
-source workflows, /provost:handoff, failure limits and rollback.
-
-## Try it
-
-Start with a plan and a finite Completion Contract. Delegate read-only
-exploration and review as needed, and keep exactly one active writer. The
-[orchestration policy](orchestration.md) is what the crew follows, and the
-[concepts guide](docs/concepts.md) explains when to move between tiers.
-
-## Open a governed session (Windows)
-
-```powershell
-.\docs\governance\reference\Start-GovernedSession.ps1 -WorkspaceRoot D:\path\to\repo
-```
-
-A throwaway workspace through a denied out-of-scope write and `Complete PASS`
-is the
-[governed session walkthrough](docs/examples/governed-session-walkthrough.md).
-
-The launcher sets the `PROVOST_*` environment the hooks read and registers the
-Tier 2 hooks for that session only, through `claude --settings`. They are not
-registered by the plugin on purpose: a hook costs a PowerShell process on every
-matching tool call, and the plugin installs for everyone, including the majority
-who never open a governed session. A project's own `PreToolUse` hooks still
-run: hooks supplied this way are added to them, not swapped for them.
-
-It refuses rather than proceeding when the workspace is not a Git repository,
-when a governance hook is missing or does not parse, or when no PowerShell
-interpreter is available. The last case is the one that matters: a hook whose
-interpreter cannot be found blocks nothing and reports nothing, so a session
-would call itself governed while enforcing nothing.
-
-`Initialize` makes the remaining check. It refuses to open a run unless the
-`SessionStart` hook has written a liveness marker naming that session. The
-marker is evidence that the hooks loaded and ran, not a credential: it is a
-plain file in the workspace, so anything that can write the workspace can write
-it. It catches a misconfigured session, not one that is lying on purpose.
-`StartTask`, `FinishTask`, `RecordRetry`, and `Complete` of an enforced lock
-then require the same Claude Code session that opened it; supplying a different
-helper `-SessionId` does not recover the refusal.
-
-## Tier 2 reference checks (Windows)
-
-Each governance decision also has a check that exercises it on its own, which is
-the quickest way to see one without opening a session. Every check builds an
-isolated workspace, drives the shipped hook or helper through its real
-interface, and leaves the repository unmodified.
-
-From the repository root on Windows:
-
-```powershell
-powershell.exe -NoProfile -File .\tests\governance\Test-WriteScope.ps1
-```
-
-| Decision | Check | Needs `git` | Walkthrough |
-|---|---|---|---|
-| Write scope | `Test-WriteScope.ps1` | no | [demo](docs/examples/governed-write-scope-demo.md) |
-| Ref guard | `Test-RefGuard.ps1` | no | [demo](docs/examples/governed-ref-guard-demo.md) |
-| Manifest pin | `Test-ManifestPin.ps1` | yes | [demo](docs/examples/governed-manifest-pin-demo.md) |
-| Path custody | `Test-PathCustody.ps1` | yes | [demo](docs/examples/governed-path-custody-demo.md) |
-| Completion gate | `Test-CompletionGate.ps1` | yes | [demo](docs/examples/governed-completion-gate-demo.md) |
-| Failure diagnosis | `Test-FailureDiagnosis.ps1` | yes | [demo](docs/examples/governed-failure-diagnosis-demo.md) |
-| Audit artifacts | `Test-AuditArtifacts.ps1` | yes | [demo](docs/examples/governed-audit-artifacts-demo.md) |
-| Session liveness | `Test-SessionLiveness.ps1` | yes | — |
-| Continuation enforcement | `Test-ContinuationEnforcement.ps1` | yes | — |
-
-Each walkthrough records the prerequisites, the expected output, and the
-limitations of what that check proves.
-
-## Tier 2 governance details
-
-The governed tier's reference design covers:
-
-- **Hash-pinned manifests:** approved content is hashed and checked through the
-  lifecycle; changed scope requires a new revision.
-- **Write-scope decisions:** the write hook fails closed and denies paths outside
-  a running task's literal `write_set`.
-- **Path custody:** shared writer paths require dependency ordering and recorded
-  content evidence at handoff.
-- **Completion gating:** a successful run requires every declared task, including
-  required verifier tasks, to have reached `PASS`.
-- **Failure control:** repeated failure signatures can require new diagnosis
-  evidence before another revision proceeds.
-- **Audit artifacts:** lifecycle actions append JSONL events; terminal handoff
-  receipts pin the manifest, ledger, and workspace snapshot by hash.
-
-These controls become engine-enforced when the hooks are registered with Claude
-Code and the required `PROVOST_*` environment is set. `Start-GovernedSession.ps1`
-does both for one session, and `Initialize` refuses to open a run that cannot
-show the hooks are live. Read the
-[governance documentation](docs/governance/README.md) before evaluating or
-adapting the reference implementation.
-
-## Running other models
-
-The governance concepts do not depend on a model's reasoning style. The shipped
-integration does depend on Claude Code interfaces. If you choose to place another
-model behind an Anthropic-compatible gateway, that gateway is an external part of
-your setup; Provost neither ships nor endorses one. Operational observations from
-such setups are recorded separately in [field notes](docs/field-notes.md).
-
-## Prior art and positioning
-
-Provost builds on native Claude Code primitives—subagents, hooks, and skills. The
-collaborator pattern is well explored elsewhere:
-
-- [pilotfish](https://github.com/Nanako0129/pilotfish) focuses on the cost split
-  between a frontier orchestrator and cheaper workers.
-- [claude-agent-team](https://github.com/ek33450505/claude-agent-team) focuses on
-  local session observability.
-
-Provost's focus is graduated governance: increasing oversight with blast radius
-and exploring enforceable scope, custody, verification, and auditability for the
-highest tier.
-
-## Roadmap / Known limitations
-
-- A packaged installer. The launcher registers hooks per session; it does not
-  write a persistent Claude Code configuration.
-- Fresh agent contexts per task, which the original launcher created and this one
-  does not.
-- A packaged runtime. Opening a governed session is documented in the
-  [session walkthrough](docs/examples/governed-session-walkthrough.md), but
-  everything around it is still assembled by hand.
-- Complete per-claim evidence binding. Acceptance entries are validated, and a
-  task may record a verification summary, but the helper does not yet require a
-  separate evidence record for every acceptance claim.
-- Linux/macOS support and adapters for additional coding-agent environments.
-
-See the [governance capability matrix](docs/governance/README.md) and
-[`ROADMAP.md`](ROADMAP.md) for the exact implementation boundary and next steps.
-
-## Contributing
-
-Bug reports, governance proposals, documentation improvements, tests, packaging,
-and cross-platform work are welcome. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md)
-and keep pull requests narrowly scoped. Changes must not silently weaken a stated
-governance guarantee. Notable changes are listed in [`CHANGELOG.md`](CHANGELOG.md).
-
-Report a suspected vulnerability through the private channel in
-[`SECURITY.md`](SECURITY.md) rather than a public issue.
+- Tuned for one user; model aliases (`fable`, `opus`, `sonnet`, `haiku`) resolve
+  to whatever your Claude Code version maps them to.
+- The runtime still contains the unused plugin-mode SessionStart path and lists
+  the removed `native-reminder` hook in `runtime_hash`; both are scheduled for
+  removal.
+- `legacy.py` (read-only bridge to the v1 store) is scheduled for removal.
+- Hooks spawn bash and Python on every call; on Windows that costs roughly a
+  second per hook.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE). Vendored skills retain their original MIT
-attribution in [`skills/NOTICE.md`](skills/NOTICE.md).
+[MIT](LICENSE). Third-party skill attribution is in
+[`skills/NOTICE.md`](skills/NOTICE.md).

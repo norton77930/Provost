@@ -5,9 +5,10 @@ title: "[Bug] "
 labels: bug
 ---
 
-## Affected tier and environment
+## Affected component and environment
 
-Tier, operating system, and relevant PowerShell or Claude Code version:
+Component (runtime, hooks, install.py, policy, roles), operating system, and
+Claude Code and Python versions:
 
 ## Reproduction
 
@@ -17,7 +18,7 @@ Provide the smallest safe reproduction. Remove secrets and private paths.
 
 What should have happened, and what happened instead?
 
-## Governance impact
+## Impact
 
-Does this affect write scope, manifest integrity, custody, verification, failure
-handling, or audit artifacts?
+Can this lose or corrupt handoff records or user configuration, block a Claude
+Code session, or run code from the project directory?

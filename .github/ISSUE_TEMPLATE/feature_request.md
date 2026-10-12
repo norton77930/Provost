@@ -1,6 +1,6 @@
 ---
-name: Governance feature
-about: Propose a governance, runtime, or compatibility improvement
+name: Proposal
+about: Propose a policy, runtime, installer, or compatibility improvement
 title: "[Proposal] "
 labels: enhancement
 ---
@@ -19,5 +19,5 @@ How can the behavior be reproduced or tested?
 
 ## Scope and tradeoffs
 
-Which tiers or environments are affected? Could this weaken an existing
-governance guarantee?
+Which components or environments are affected? Could this weaken an existing
+guarantee (fail-soft hooks, record integrity, installer backups)?

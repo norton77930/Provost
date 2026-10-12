@@ -18,8 +18,8 @@
 Repository-local 依據：
 
 - [README](../../README.md)：目前 Tier 1 提供角色、單一 writer 協調與完成證據；Tier 2 為較重的治理參考實作。
-- [orchestration.md](../../orchestration.md)：目前協調規則；本文不是其替代檔。
-- [grilling](../../skills/grilling/SKILL.md)：本 repo 採一題一題討論，使用者確認理解一致後才行動。
+- [orchestration.md](https://github.com/norton77930/Provost/blob/archive/tier2-foreman/orchestration.md)（已封存）：目前協調規則；本文不是其替代檔。
+- [grilling](https://github.com/norton77930/Provost/blob/archive/tier2-foreman/skills/grilling/SKILL.md)（已封存）：本 repo 採一題一題討論，使用者確認理解一致後才行動。
 
 先前唯讀分析發現，使用者的個人 Claude 設定與公開 repo 的預設不同。本設計整理未來政策，不將個人實驗設定描述成公開 repo 已有能力。
 

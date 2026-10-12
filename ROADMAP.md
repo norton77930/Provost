@@ -5,65 +5,32 @@ This roadmap describes intended work, not promised dates. Items move to
 
 ## Current
 
-- Tier 0/1/2 graduated-governance model and decision rule.
-- Tier 1 Claude Code collaborator roles and orchestration policy, installable
-  as a Claude Code plugin. The orchestration policy reaches a session through a
-  `SessionStart` hook rather than a manual merge into `CLAUDE.md`.
-- Methodology skills for TDD, diagnosis, review, and completion verification.
-- Windows/PowerShell Tier 2 reference helper and hook implementations.
-- Hook-level write-scope and ref-guard enforcement demos, helper-level
-  v1 manifest-pin, v2 path-custody, completion-gate, failure-diagnosis,
-  and audit-artifacts tests.
-- CI on Windows for the Tier 2 reference checks and on Linux for the
-  collaborator tier, so the claim that the collaborator tier runs wherever
-  Claude Code runs is checked rather than asserted.
-- A role-definition check that fails when the README role tables drift from the
-  shipped frontmatter.
-- Governance capability matrix that separates implemented behavior, design
-  intent, and limitations.
-- A Windows launcher that opens a governed session, registers the Tier 2 hooks
-  for that session alone, and refuses when they could not enforce. `Initialize`
-  will not open a run whose session shows no marker from the `SessionStart`
-  hook.
-- An enforcement record on every run — in the lock, the initialize ledger
-  event, and the terminal handoff receipt — and a continuation gate that
-  refuses to adopt work from a run that opened with nothing enforcing.
-- A running lock opened under enforcement is bound to the session that opened
-  it. `StartTask`, `FinishTask`, `RecordRetry`, and `Complete` refuse a caller
-  whose `CLAUDE_CODE_SESSION_ID` is not the recorded `enforcement.session_id`.
-  A `mode = 'none'` lock is unaffected. `RecoverLock` stays operator-driven.
-- Coverage for the two lifecycle actions no test had ever run. `RecordRetry`
-  and `RecoverLock` are exercised against the real helper, and `RecoverLock`'s
-  exemption from the session binding is asserted rather than assumed — a change
-  that routed it through the same gate would now fail CI instead of silently
-  closing the operator's escape hatch.
-- A published security policy with an explicit scope and a statement of what
-  Tier 2 does not claim to defend against.
-- An end-to-end governed session walkthrough
-  ([`docs/examples/governed-session-walkthrough.md`](docs/examples/governed-session-walkthrough.md)).
-  It runs from a throwaway Git workspace through a write-gate denial and a
-  `Complete PASS`. The seven isolated examples remain the fastest way to see
-  one decision without opening a session.
+- Orchestration policy with difficulty × risk classification, evidence-based
+  review triggers, an R2 stop, a writer budget and a finite Completion Contract
+  ([`native/CLAUDE.native.md`](native/CLAUDE.native.md)).
+- Eight roles across Haiku, Sonnet, Opus and Fable ([`agents/`](agents/)).
+- Handoff runtime: sealed per-session records shared across worktrees,
+  compaction recovery, facts capture and reminders, search, retention and
+  prune with archive.
+- `install.py` with backups, rollback and a read-only drift check.
+- CI on Windows, Ubuntu and macOS for the runtime and installer.
 
 ## Next
 
-- A recorded demo, sixty seconds, of the write gate denying a write. The
-  walkthrough covers the same ground in text; this is the artifact for people
-  who will not read a walkthrough before deciding whether to care. It needs a
-  screen recording, so it cannot be produced by an agent alone.
-- A listing in the Claude Code plugin marketplace.
-- Evidence records defined and enforced per acceptance claim.
-- A cross-platform Tier 2 runtime with equivalent fail-closed semantics for
-  Linux and macOS. The collaborator tier already runs on all three.
+- Remove the unused plugin-mode SessionStart path and the stale
+  `native-reminder` entry from the runtime, then `legacy.py`.
+- Follow-ups from review: hold the session lock through POSIX prune removal,
+  roll back `install.py` on interrupts, exercise junction escapes on Windows.
+- Bind policy statements to tests so the policy text, role table and README
+  cannot drift apart.
+- Re-measure how much the main session implements itself (next around
+  2026-11 mid) and publish de-identified results.
 
 ## Later / exploration
 
-- Define model-independent runtime interfaces separately from host adapters.
-- Explore compatibility with additional coding-agent environments.
-- Explore integrations for review, issue triage, and release-maintenance
-  workflows without making the governance model dependent on one provider.
-- Evaluate external or tamper-evident ledger backends for environments that need
-  stronger audit guarantees than local files provide.
+- Fixed verdict vocabulary for reviewer reports so outcomes can be counted
+  across sessions.
+- A plan challenge before hard or R2 work, using the existing reviewer.
 
 This project has no official OpenAI, Anthropic, or other vendor partnership or
 integration unless explicitly documented in the future.

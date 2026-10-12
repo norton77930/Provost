@@ -7,80 +7,53 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+The repository is now the source of truth for the setup in daily use: the
+orchestration policy, its roles and the handoff runtime, installed by copying
+into the Claude config directory. The graduated-governance design (Tier 0/1/2)
+and the plugin distribution are archived at tag `archive/tier2-foreman`.
+
 ### Added
 
-- Coverage for `RecordRetry` and `RecoverLock`, the two lifecycle actions that
-  no test had ever called. `RecordRetry` is checked for its running-task
-  precondition, the ledger event it appends, the one-retry-per-task rule, and
-  its session binding; `RecoverLock` for the `-Acknowledge` requirement, the
-  collision-resistant archive name, and — the reason the check exists — that it
-  still succeeds from a session other than the one that opened an enforced
-  lock. That exemption is deliberate and nothing was holding it in place.
+- Native handoff runtime (`scripts/provost_runtime/`, `hooks/native-event`,
+  `hooks/native-facts`): sealed per-session record chains shared by a checkout
+  and its worktrees, compaction recovery, facts capture and reminders, decision
+  search, retention, and prune that archives the newest record per work item.
+- `install.py`: installs the runtime, roles, policy section, skill and tool into
+  the Claude config directory with backups, a manifest and rollback; `check` is
+  a read-only drift report that also says whether the hooks are registered.
+- `native/CLAUDE.native.md`: the orchestration policy (difficulty × risk
+  classification, evidence-based review, R2 stop, writer budget, Completion
+  Contract), installed between markers in `CLAUDE.md`.
+- Eight roles in `agents/`: `Explore`, `mech-executor`, `test-analyst`,
+  `implementer-sonnet`, `implementer`, `general-purpose`, `code-reviewer`,
+  `architecture-reviewer`.
+- `tools/dispatch-report.js`: cost and outcome report of past dispatches.
+- CI for the runtime and installer on Windows, Ubuntu and macOS, and a Markdown
+  link check.
 
-- An end-to-end governed session walkthrough. It opens a launcher session on a
-  throwaway Git workspace, shows a `Write` outside the running task's
-  `write_set` denied by the hook, and completes `PASS`. It is documentation of
-  a path the existing twelve checks already cover in pieces; it does not add a
-  thirteenth CI step.
+### Fixed
 
-- A running lock opened under enforcement can only be advanced by the session
-  that opened it. `StartTask`, `FinishTask`, `RecordRetry`, and `Complete` now
-  refuse when `CLAUDE_CODE_SESSION_ID` is not the `enforcement.session_id`
-  recorded at `Initialize`. The helper `-SessionId` is agent-supplied and does
-  not recover the refusal. A lock opened with `mode = 'none'` is unchanged.
-  `RecoverLock` stays operator-driven and does not go through this check.
+- Hooks run on macOS `/bin/bash` 3.2.
+- `facts.json` never exceeds its size cap when the omitted counters grow.
+- An interpreter inside the project directory is no longer cached when the
+  directory is reached through a symlink, junction or 8.3 short name.
+- `python -m` no longer imports modules from the project directory in hooks.
 
-- An enforcement record on every run. `Initialize` writes whether the run
-  opened under hook enforcement — and the session that proved it — into the
-  lock, the `run_initialized` ledger event, and the terminal handoff receipt.
-  An enforced run then refuses to adopt continuation work from a run recorded
-  as unenforced, or from a receipt carrying no record at all. The adoption path
-  had no test of any kind before this; it now has both directions. The record
-  is open-time truth: it says the hooks were live when the run began, not that
-  every write in it was policed.
+### Removed
 
-- Coverage for the producer half of the liveness contract. The `SessionStart`
-  hook is now driven for real rather than the marker being hand-written, so a
-  change to its path or payload handling fails the suite instead of silently
-  refusing every session. A companion check asserts the launcher sets every
-  `PROVOST_*` variable the hooks read.
-
-- `Start-GovernedSession.ps1`, a launcher that opens a governed session. It sets
-  the `PROVOST_*` environment the hooks read, registers the Tier 2 hooks for
-  that session only through `claude --settings`, and refuses when they could not
-  enforce — a workspace that is not a Git repository, a hook that is missing or
-  does not parse, or no PowerShell interpreter at all. It restores the caller's
-  environment and location when the session ends, so a shell is not left marked
-  governed.
-- A session liveness marker. The `SessionStart` hook records the session it ran
-  in, and `Initialize` refuses to open a governed run unless a marker names that
-  same session. A hook whose interpreter cannot be found blocks nothing and
-  reports nothing, so without this a governed run could proceed with no write
-  gate and no warning. The marker is evidence that the hooks loaded, not a
-  credential: it is a plain file in the workspace, so anything that can write
-  the workspace can write it.
-- `Test-SessionLiveness.ps1`, covering the refusal, a marker left by another
-  session, and the accepting case, with CI coverage.
-- Ref-guard coverage for several declared read roots, and a check tying the
-  separator the launcher joins them with to the one the hook splits on. A
-  mismatch there left the guard silent on every command.
-
-### Changed
-
-- The launcher records what `claude --settings` actually does with hooks,
-  because the liveness proof depends on it. Measured: hooks supplied that way
-  are added to a project's own rather than replacing them, and
-  `disableAllHooks` suppresses everything including `SessionStart`, so the
-  marker is absent and `Initialize` refuses. No combination leaves the marker
-  present while the write gate is gone.
-
-- The Tier 2 hooks are registered per launch rather than by the plugin. Each
-  costs a PowerShell process on every matching tool call — around two seconds on
-  a normal Windows machine — and the plugin installs for everyone, including the
-  majority who never open a governed session.
-- Documentation no longer says the launcher is absent. What remains missing is
-  narrower: a packaged installer, and the fresh per-task agent contexts the
-  original launcher created.
+- Tier 2 governance reference implementation, its launcher, hooks, tests and
+  demos (`docs/governance/`, `tests/governance/`, `docs/examples/`).
+- Tier 1 orchestration policy (`orchestration.md`), the adaptive plugin policy
+  (`policies/`), `docs/concepts.md`, and the plugin manifest and hooks
+  (`.claude-plugin/`, `hooks/hooks.json`, `hooks/session-start`,
+  `hooks/handoff-event`, `hooks/native-reminder`).
+- The previous seven roles and the `tdd`, `diagnosing-bugs`, `grilling`,
+  `grill-me` and `two-axis-review` skills; methodology now comes from the
+  `mattpocock-skills` plugin.
+- Tier 2 additions previously listed here as unreleased (lifecycle-action
+  coverage, governed-session walkthrough, launcher, session liveness and
+  enforcement records) were never released; they are preserved at
+  `archive/tier2-foreman`.
 
 ## [0.2.0] - 2026-09-02
 
