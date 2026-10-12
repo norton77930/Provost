@@ -48,7 +48,7 @@ def digest(data):
 
 
 def source_targets(source):
-    """Every managed (source file, target rel path) pair; a missing source is an error."""
+    """Every managed (source file, target rel path) pair; a missing source or empty policy is an error."""
     pairs = [(f"hooks/{name}", f"{RUNTIME}/hooks/{name}") for name in HOOKS]
     pairs += [(f"scripts/provost_runtime/{p.name}", f"{RUNTIME}/scripts/provost_runtime/{p.name}")
               for p in _glob(source, "scripts/provost_runtime", "*.py")]
@@ -69,6 +69,8 @@ def source_targets(source):
     policy = source / POLICY_SOURCE
     if not policy.is_file():
         raise InstallError(f"source file missing: {POLICY_SOURCE}")
+    if not policy.read_bytes().strip():  # installing it would silently empty the user's section
+        raise InstallError(f"source file is empty: {POLICY_SOURCE}")
     targets.append(Target(POLICY_TARGET, policy, policy=True))
     return targets
 
@@ -271,8 +273,10 @@ def install(config, changes):
                 directory.mkdir()
                 new_dirs.append(directory)
             mode = stat.S_IMODE((path if target.policy else target.source).stat().st_mode)
-            atomic_write(path, target.desired, mode)
+            # Record first: an interrupt after os.replace must still roll this target back.
+            # Rolling back a target that was never written is harmless (restore or unlink a no-op).
             written.append(target.rel)
+            atomic_write(path, target.desired, mode)
     except BaseException as exc:  # includes KeyboardInterrupt: never leave a half-written config
         failed = rollback(config, backup, written, set(changed), new_dirs)
         reason = str(exc) if isinstance(exc, OSError) else type(exc).__name__

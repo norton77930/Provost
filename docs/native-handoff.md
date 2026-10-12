@@ -287,7 +287,9 @@ move, re-check and delete steps as below; a session that became fresh or locked 
 between is moved back. Skipped: the `--session` dir and its `.pruning-` leftover, a
 dir whose lock is held (`STORE_BUSY`), a dir with unexpected content
 (`UNEXPECTED_CONTENT`), and a dir whose stored `workspace_id` belongs to another
-repo (`FOREIGN_REPO`). Nothing is deleted automatically, and legacy `.provost`
+repo (`FOREIGN_REPO`). Under `--apply`, an expired session kept because removal or
+archiving was refused is listed only in `skipped`, not under `expired`; the dry run
+lists it under `expired`. Nothing is deleted automatically, and legacy `.provost`
 stores are never pruned.
 
 Decisions outlive expiry. Before an expired session (or a reclaimable `.pruning-`

@@ -262,6 +262,26 @@ class InstallTests(InstallCase):
         self.assertFalse((self.config / RUNTIME).exists())
         self.assertFalse(any(p.name.startswith(".pending-") for p in self.config.rglob("*")))
 
+    def test_interrupt_right_after_replace_restores_that_target(self):
+        write(self.config / "agents/implementer.md", "previous implementer\n")
+        before = self.snapshot()
+        real_write = install.atomic_write
+
+        def interrupted_after(path, data, mode=None):  # the replace landed, the bookkeeping did not
+            real_write(path, data, mode)
+            if Path(path).name == "implementer.md":
+                raise KeyboardInterrupt
+
+        err = io.StringIO()
+        with mock.patch.object(install, "atomic_write", interrupted_after), redirect_stderr(err):
+            with self.assertRaises(KeyboardInterrupt):
+                install.main(["install", "--source", str(self.source), "--config-dir", str(self.config)])
+        self.assertIn("all changes rolled back", err.getvalue())
+        self.assertEqual((self.config / "agents/implementer.md").read_bytes(), b"previous implementer\n")
+        after = {k: v for k, v in self.snapshot().items() if not k.startswith("provost/backups/")}
+        self.assertEqual(after, before)
+        self.assertFalse((self.config / RUNTIME).exists())
+
     def test_backup_phase_failure_says_nothing_changed(self):
         write(self.config / "agents/implementer.md", "previous implementer\n")
         before = self.snapshot()
@@ -388,12 +408,18 @@ class PolicySectionTests(InstallCase):
         self.assertEqual((self.config / "CLAUDE.md").read_bytes(),
                          f"{BEGIN}\n# Policy\n\nline two\n{END}\n".encode())
 
-    def test_empty_policy_source_empties_the_section(self):
-        write(self.source / "native/CLAUDE.native.md", b"")
-        self.assertEqual(self.run_cli("install")[0], 0)
-        self.assertEqual((self.config / "CLAUDE.md").read_bytes(),
-                         claude_md(body=""))
-        self.assertEqual(self.check_json()[0], 0)
+    def test_empty_policy_source_is_refused(self):
+        for data in (b"", b" \r\n\t\n"):
+            write(self.source / "native/CLAUDE.native.md", data)
+            for command in ("check", "install"):
+                with self.subTest(data=data, command=command):
+                    before = self.snapshot()
+                    code, _, err = self.run_cli(command)
+                    self.assertEqual(code, 2)
+                    self.assertIn("CLAUDE.native.md", err)
+                    self.assertIn("empty", err)
+                    self.assertEqual(self.snapshot(), before)
+                    self.assertEqual(self.backups(), [])
 
     def test_mixed_line_endings_outside_the_section_are_preserved(self):
         for begin_eol, body_eol in ((b"\n", b"\n"), (b"\r\n", b"\r\n")):

@@ -1139,10 +1139,15 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
                     "archive": sorted(plan), **({"archive_skipped": unusable} if unusable else {}),
                     **({"facts_cache": [str(p) for p in cached]} if cached else {})})
                 if apply:
-                    _archive(home, ws, archive, plan)  # raises, keeping the session, unless archived
-                if apply and _remove_expired(home, entry, staging, expiry_cutoff, ws.repo_key):
-                    result["expired_removed"] += 1
-                    _drop_cache(result, entry.name, cached)
+                    try:
+                        _archive(home, ws, archive, plan)  # raises, keeping the session, unless archived
+                        removed = _remove_expired(home, entry, staging, expiry_cutoff, ws.repo_key)
+                    except StoreError:
+                        result["expired"].pop()  # a kept session is listed once: under skipped
+                        raise
+                    if removed:
+                        result["expired_removed"] += 1
+                        _drop_cache(result, entry.name, cached)
                 continue
             binding, info = found
             try:
