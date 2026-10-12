@@ -38,6 +38,9 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 - An interpreter inside the project directory is no longer cached when the
   directory is reached through a symlink, junction or 8.3 short name.
 - `python -m` no longer imports modules from the project directory in hooks.
+- `install.py` rolls back on an interrupt (not only on write errors) and names the backup dir, says
+  nothing changed when the backup step fails, hints at BOM or stray whitespace on policy markers,
+  and rejects `check --dry-run`.
 
 ### Removed
 
