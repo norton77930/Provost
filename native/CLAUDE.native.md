@@ -2,7 +2,7 @@
 
 Roles are named jobs; each agent file supplies its default model and effort. The user selects the main model/effort. Role frontmatter supplies worker defaults. The only per-dispatch model override is the code-reviewer fallback in §10.
 
-**Session scope.** This section governs native `claude` sessions only. In any Claudex bridge session (`claudex`, `claudex-cli`, `claudex-foreman`), this section is inert — the session's injected orchestration (or its minimal default) is authoritative; do not classify, do not dispatch these roles, and do not apply any rule from this section there.
+**Session scope.** This section governs native `claude` sessions only. In any Claudex bridge session (`claudex`, `claudex-cli`, `claudex-foreman`), this section is inert — the session's injected orchestration (or its minimal default) is authoritative; do not classify, do not dispatch these roles, and do not apply any rule from this section there except §11.
 
 **Subagents.** This section is the main session's dispatch policy. A subagent follows its role file and the brief it received; it does not classify, declare, or dispatch.
 
@@ -168,4 +168,16 @@ A worktree and its main checkout share one handoff store; work in a different
 repository than the supplied identity is a mismatch to report before recording.
 After compact or resume, re-check sources and live workers before acting on a
 handoff, and never redispatch work that may still be running.
+
+## 11. Compact instructions
+
+This section applies in every session, Claudex bridge sessions and subagents
+included. When compacting, keep the default summary sections and also state:
+
+- Verification: which claims were actually checked (the command and its
+  result) and which changes are done but unverified. Never merge the two.
+- Still running or unsettled: background tasks and subagents, dev servers,
+  uncommitted or unpushed changes, temporary files.
+- Questions waiting for the user: each with its background, the options and
+  your recommendation, so it can be answered without the earlier conversation.
 
