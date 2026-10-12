@@ -2,10 +2,11 @@
 
 What does this change address? List important non-goals.
 
-## Governance guarantees
+## Behaviour for existing installs
 
-Which documented guarantees are affected? State explicitly if none are affected.
-Do any controls become weaker or move from enforced behavior to convention?
+What changes for someone who runs `install.py install` after this? Does any hook,
+record format, or installer guarantee (fail-soft hooks, record integrity,
+backups and rollback) become weaker? State explicitly if nothing changes.
 
 ## Verification
 

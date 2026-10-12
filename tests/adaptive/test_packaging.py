@@ -1,4 +1,3 @@
-import json
 import re
 import unittest
 from _support import REPO
@@ -22,18 +21,15 @@ BASH4_ONLY = {
 
 class PackagingTests(unittest.TestCase):
     def test_entrypoints_and_guides_ship(self):
-        for path in ("hooks/runtime", "hooks/handoff-event", "skills/handoff/SKILL.md",
+        for path in ("hooks/runtime", "hooks/native-event", "hooks/native-facts", "hooks/_python.sh",
+                     "skills/handoff/SKILL.md", "docs/native-handoff.md",
                      "docs/compatibility/spec-kit.md", "docs/compatibility/openspec.md",
-                     "docs/compatibility/matt-workflow.md", "docs/examples/adaptive-handoff-pilot.md"):
+                     "docs/compatibility/matt-workflow.md"):
             self.assertTrue((REPO / path).is_file(), path)
-        for name in ("README.md", "README.zh-TW.md"):
-            text = (REPO / name).read_text(encoding="utf-8")
-            for term in ("adaptive-implementer", "Python", "adaptive-handoff-pilot.md"):
-                self.assertIn(term, text)
 
     def test_hooks_run_on_bash_3_2(self):
-        scripts = sorted(p for p in (REPO / "hooks").iterdir() if p.is_file() and p.suffix != ".json")
-        self.assertIn("native-facts", [p.name for p in scripts])
+        scripts = sorted(p for p in (REPO / "hooks").iterdir() if p.is_file())
+        self.assertTrue({"native-facts", "native-event", "runtime", "_python.sh"} <= {p.name for p in scripts})
         found = []
         for path in scripts:
             lines = path.read_text(encoding="utf-8").splitlines()
@@ -46,12 +42,3 @@ class PackagingTests(unittest.TestCase):
                 if re.search(r"%\([^)]*\)T", line) and "BASH_VERSINFO" not in lines[number - 2]:
                     found.append("%s:%d unguarded printf %%(...)T" % (path.name, number))
         self.assertEqual(found, [])
-
-    def test_hook_contract(self):
-        hooks = json.loads((REPO / "hooks/hooks.json").read_text())["hooks"]
-        self.assertEqual(set(hooks), {"SessionStart", "PreCompact", "PostCompact"})
-        for name in ("SessionStart", "PreCompact", "PostCompact"):
-            hook = hooks[name][0]["hooks"][0]
-            self.assertFalse(hook["async"])
-            self.assertEqual(hook["timeout"], 30)
-            self.assertTrue(hook["command"].startswith('bash "${CLAUDE_PLUGIN_ROOT}/hooks/'), hook["command"])

@@ -1,106 +1,53 @@
 # Contributing to Provost
 
-Provost is a young project. Focused bug reports, governance proposals,
-documentation improvements, tests, packaging work, and cross-platform ports are
-welcome.
+Provost is one person's working Claude Code setup, published as it is used.
+Bug reports, runtime fixes, tests, cross-platform work and documentation
+improvements are welcome. Policy changes are welcome as proposals; the policy
+reflects how its maintainer works, so expect discussion before a change lands.
 
 ## Report a bug
 
-Use the bug-report template and include the affected tier, operating system,
-PowerShell or Claude Code version where relevant, the smallest reproduction, and
-the expected and actual result. Redact credentials, private paths, and private
-repository content.
+Use the bug-report template and include the operating system, Claude Code and
+Python versions, the smallest reproduction, and the expected and actual result.
+Redact credentials, private paths, and private repository content.
 
 Do not report a suspected vulnerability in a public issue. Use the private
-channel described in [`SECURITY.md`](SECURITY.md), which also records what is in
-scope and what Provost does not claim to defend against.
+channel described in [`SECURITY.md`](SECURITY.md).
 
-## Propose a governance feature
+## Changing things
 
-Describe the risk being controlled, the invariant that should hold, where it is
-enforced, its failure mode, and how it can be tested. Clearly separate a design
-goal from behavior implemented by the current reference runtime.
-
-Changes must not silently weaken a documented guarantee. If a tradeoff requires
-weaker enforcement, call it out in the proposal, tests, documentation, and pull
-request description.
-
-## Documentation and runtime contributions
-
-- Documentation changes should keep `README.md`, the core status section in
-  `README.zh-TW.md`, and the governance capability matrix consistent.
-- If you add or remove a methodology skill directory, update the install
-  command lists in both `README.md` and `README.zh-TW.md`.
-- If you change a role model in `agents/`, update the role table in both
-  `README.md` and `README.zh-TW.md`. `Test-RoleDefinitions.ps1` fails on drift
-  between the shipped frontmatter and either table.
-- Vendored skills stay pinned to the snapshot recorded in
-  [`skills/NOTICE.md`](skills/NOTICE.md). Do not auto-follow upstream. Adopt a
-  later change only when it is a safety or methodology fix that does not change
-  Provost's public contract (tiers, roles, schemas, or install surface). Record
-  the source commit and any deliberately skipped upstream edits in NOTICE.
-- Windows reference-runtime changes should include a focused failing check first,
-  the smallest coherent fix, and relevant regression coverage.
-- Cross-platform work should preserve fail-closed behavior and literal path
-  semantics unless a proposal explicitly changes the contract.
-- Do not remove third-party attribution from `skills/NOTICE.md`.
-
-## Work on Provost with Provost
-
-This repository is itself the plugin, so load the working copy rather than an
-installed release:
-
-```bash
-claude --plugin-dir .
-```
-
-That session gets the six roles, the six skills, and the orchestration policy
-from the files you are editing. Confirm what a change ships with:
-
-```bash
-claude plugin validate .
-claude --plugin-dir . plugin details provost
-```
+- **Runtime and hooks** (`scripts/provost_runtime/`, `hooks/`): start with a
+  focused failing test in `tests/adaptive/`, make the smallest coherent fix, and
+  keep hooks fail-soft — a hook must never block or break a session. Hooks must
+  run on bash 3.2 (macOS); `test_packaging` scans for newer constructs.
+- **Installer** (`install.py`): never write outside the config directory, never
+  touch `settings.json`, back up before writing, and keep `check` read-only.
+- **Policy and roles** (`native/`, `agents/`): update the role table in both
+  `README.md` and `README.zh-TW.md` when a model, effort or tool list changes.
+- **Skills**: vendored skills stay pinned to the snapshot recorded in
+  [`skills/NOTICE.md`](skills/NOTICE.md). Do not remove third-party attribution.
+- Keep `README.md` and `README.zh-TW.md` consistent.
 
 ## Run the checks
 
-From the repository root on Windows:
+```bash
+python -m unittest discover -s tests/adaptive -p "test_*.py"
+```
+
+On Windows, also run the link check:
 
 ```powershell
-powershell.exe -NoProfile -File .\tests\governance\Test-PowerShellSyntax.ps1
-powershell.exe -NoProfile -File .\tests\roles\Test-RoleDefinitions.ps1
-powershell.exe -NoProfile -File .\tests\governance\Test-WriteScope.ps1
-powershell.exe -NoProfile -File .\tests\governance\Test-RefGuard.ps1
-powershell.exe -NoProfile -File .\tests\governance\Test-ManifestPin.ps1
-powershell.exe -NoProfile -File .\tests\governance\Test-PathCustody.ps1
-powershell.exe -NoProfile -File .\tests\governance\Test-CompletionGate.ps1
-powershell.exe -NoProfile -File .\tests\governance\Test-FailureDiagnosis.ps1
-powershell.exe -NoProfile -File .\tests\governance\Test-AuditArtifacts.ps1
-powershell.exe -NoProfile -File .\tests\governance\Test-SessionLiveness.ps1
-powershell.exe -NoProfile -File .\tests\governance\Test-ContinuationEnforcement.ps1
-powershell.exe -NoProfile -File .\tests\governance\Test-LifecycleActions.ps1
 powershell.exe -NoProfile -File .\tests\docs\Test-MarkdownLinks.ps1
 ```
 
-The checks have no package dependencies. `Test-ManifestPin.ps1`,
-`Test-PathCustody.ps1`, `Test-CompletionGate.ps1`,
-`Test-FailureDiagnosis.ps1`, and `Test-AuditArtifacts.ps1` also require
-`git`. Tier 2 is Windows-specific today;
-contributors working on other platforms can still review and improve Tier 1 and
-documentation, but should state which checks they could not run.
+To see how your working copy differs from your own live setup:
+
+```bash
+python install.py check
+```
 
 ## Pull requests
 
-Keep each pull request narrow. Explain the problem, scope and non-goals, affected
-governance guarantees, and current verification evidence. Avoid unrelated
-formatting or refactors. A passing check is evidence for the behavior it covers,
-not proof of untested invariants.
-
-## Optional adaptive runtime checks
-
-Run `python -m unittest discover -s tests/adaptive -p "test_*.py" -v`
-with Python 3.11+ and Bash (Git for Windows on Windows). Fixtures use temporary
-workspaces; no real personal settings are required. Keep source workflow fixture
-checks separate from empirical model behavior claims. Run role, Markdown link
-and PowerShell syntax checks after packaging changes. Live compaction, notification
-and routing acceptance requires a separately authorized pilot.
+Describe the change, the evidence (tests run, live check), and any behaviour
+that changes for existing installs. CI must pass on all three operating
+systems.

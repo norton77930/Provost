@@ -19,7 +19,7 @@ or a general reliability claim.
 1. **Plan the whole execution *before* you start, and make "done" enumerable.** The
    biggest lever — one mechanism doing two jobs. Sol drifts when the goal is vague
    and the steps are improvised mid-run. Provost requires a **Completion Contract in
-   the Plan before any implementation** (see [`orchestration.md`](../orchestration.md)):
+   the Plan before any implementation** (see [`orchestration.md`](https://github.com/norton77930/Provost/blob/archive/tier2-foreman/orchestration.md), archived):
    a finite list of required claims, the specific evidence for each, the roles that
    will resolve them, and *one* planned final verification. That pre-declared route
    stops the drift; the finite, enumerable claim list gives it a wall to stop at

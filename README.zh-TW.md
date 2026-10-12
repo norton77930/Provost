@@ -1,190 +1,115 @@
 # Provost
 
-**Match oversight to blast radius.**（依風險調節監督強度）— AI coding agents 的分級治理框架。
+**流程輕重跟著任務走。** —— Claude Code 的編排政策、角色組與 handoff runtime。
 
 *[English →](README.md)*
 
-Provost 用來判斷一次 AI coding 任務需要多少監督，並讓高風險工作更可問責。修 typo 不需要和 auth 改動、migration 或 public API 變更一樣的流程；Provost 提供三個 tier，讓治理成本跟著可能造成的損害上升。
+Provost 是一套每天實際在用的 Claude Code 設定的正本。主 session 先依難度和風險為每個請求分類：簡單的工作自己做，有界的 slice 交給比較便宜的 implementer 角色，只有在失敗「測試和實機都看不出來」時才找全新 context 的 reviewer。一個小型 runtime 會記下決策和派工，讓工作撐過 context 壓縮和 session 重啟。
 
-治理模型本身是 host-agnostic；目前的 reference host 是 **Claude Code**，交付的 role files 也使用 Claude model identifiers，對其他 agent host 的支援是規劃方向，不是現在已可用的能力。
+它照實際使用的樣子公開：為一個人的工作調校、以 Windows 為主，用「複製檔案到 Claude 設定目錄＋漂移檢查」的方式安裝。
 
-Tier 2 是寫成 code 的 reference implementation，不是一份說明：其中包含 lifecycle state、manifest hashing、write-gate decisions、workspace snapshots、custody records、failure signatures 與 audit ledger。這是它和「一包 prompts」的差別。
+## Repo 內容
 
-## 現在可用
-
-- [`agents/`](agents/) 下的七個 Claude Code role definitions，可用 plugin 安裝（見下方「安裝」）。
-- Tier 1 [`orchestration.md`](orchestration.md)：plan-first、單一 active writer 與 evidence-based completion discipline，由 plugin 直接送進每個 session，不需手動合併。
-- [`skills/`](skills/) 中的 TDD、診斷、review 與完成前驗證方法；第三方歸屬保留於 [`skills/NOTICE.md`](skills/NOTICE.md)。
-- Windows launcher：開啟治理 session、為該 session 註冊 Tier 2 hooks、在無法執行 enforcement 時拒絕啟動；`Initialize` 會要求 hooks 確實執行過的證據。
-- Windows 上涵蓋全部七項 Tier 2 治理決策的 decision test，每項都有 demo walkthrough，另加一項 session-liveness 檢查（見下方「Tier 2 reference 檢查」）。
-
-## 為什麼需要 Provost
-
-Prompt 指示很有用，但 agent 可能誤解或忽略。對高 blast-radius 工作，Provost 探索更強的控制：把核准計畫釘在 manifest、依允許清單檢查檔案寫入、在交接時保留 path custody，並讓完成狀態經過宣告好的 verifier tasks。
-
-目前仍應把它視為 reference implementation。launcher 已交付，治理 session 在 Windows 上已驗證可端到端執行，但沒有 turnkey installer，Linux 與 macOS 仍不執行 enforcement。
-
-## 三級治理
-
-| Tier | 是什麼 | 適用情境 |
+| 路徑 | 內容 | 安裝到（`~/.claude` 底下） |
 |---|---|---|
-| **0 · Bare** | Claude Code 加上本機 guardrails；沒有 crew 或 governance runtime。 | 拋棄式小改、問答與探索。 |
-| **1 · Collaborator** | 一組協作 roles、單一 active writer policy 與有限的 Completion Contract。 | 日常 feature 與 bug fix。 |
-| **2 · Governed** | Hash-pinned manifest、hook-enforced write scope、path custody、verifier tasks 與 audit trail。 | Auth、secret、payment、migration、public API 等高風險工作。 |
+| [`native/CLAUDE.native.md`](native/CLAUDE.native.md) | 編排政策 | `CLAUDE.md` 中 `claudex-native` 標記之間 |
+| [`agents/`](agents/) | 8 個 subagent 角色 | `agents/` |
+| [`hooks/`](hooks/)、[`scripts/provost_runtime/`](scripts/provost_runtime/) | handoff runtime 與 hook | `provost/runtime/native-pilot-v1/` |
+| [`skills/verification-before-completion/`](skills/verification-before-completion/) | 宣告完成前的驗證紀律 | `skills/` |
+| [`skills/handoff/`](skills/handoff/) | `/handoff` skill 參考版（不安裝，保留你自己的） | — |
+| [`tools/dispatch-report.js`](tools/dispatch-report.js) | 從 transcript 統計過往派工的成本與結果 | `experiments/` |
+| [`install.py`](install.py) | 安裝程式與唯讀漂移檢查 | — |
 
-```mermaid
-flowchart TD
-    C(["一個要做的改動"]) --> Q1{"拋棄式小改、<br/>問答或探索？"}
-    Q1 -->|是| T0["Tier 0 · Bare<br/>Claude Code + guardrails"]
-    Q1 -->|否| Q2{"auth · secret · payment ·<br/>migration · public API ·<br/>或需要 audit trail？"}
-    Q2 -->|是| T2["Tier 2 · Governed<br/>hash-pinned manifest ·<br/>enforced scope · verifier gate"]
-    Q2 -->|否| T1["Tier 1 · Collaborator<br/>model-tiered crew · single writer"]
+方法論 skill（TDD、除錯、grilling、spec 與 ticket）由 [`mattpocock-skills`](https://github.com/mattpocock/skills) plugin 提供，政策直接引用它們的名稱。
+
+## 政策怎麼運作
+
+每個非瑣碎的請求先宣告一行分類：
+
+```text
+分類:<簡單|中等|機械|困難> / <無風險|R1|R2> / 證據:<測試|實機|審查|架構> → <路徑>
 ```
 
-完整決策規則與各 tier 邊界見 [`docs/concepts.md`](docs/concepts.md)。
+- **難度決定誰來實作。** 簡單的留在主 session；中等的交給 `implementer-sonnet`（方法已定、驗收清楚）或 `implementer`（還有設計選擇；concurrency、lifecycle、安全相關則用 `effort: high`）；完全指定的重複工作交給 `mech-executor`；困難的工作要先有核准的 spec。
+- **風險決定用什麼證據結案。** 選「最便宜、但真的抓得到失敗」的證據：聚焦測試、實機執行，或只在兩者都看不出來時派 `code-reviewer`（動到對外介面再加 `architecture-reviewer`）。檔案數、diff 大小、「看起來很複雜」明文不是審查的理由。
+- **R2 先停。** 認證、密鑰、金流、migration、破壞性 public API、跨 repo 或不可逆操作，等使用者決定，並且要審查通過後才算完成。
+- **writer 有預算。** 平常最多 2 個同時寫入，第 3 個要證明完全獨立；每一波派工前都檢查檔案和共用資源的歸屬。
+- **完成是有限的。** Completion Contract 列出要證明的事和證據；全部通過後只跑預定的最後驗證。
 
-## 專案狀態
+完整內容見 [`native/CLAUDE.native.md`](native/CLAUDE.native.md)。
 
-現在已經可用的部分列在上方「現在可用」一節；Tier 2 其餘部分屬於 reference implementation，已知落差集中在下方「Roadmap／已知限制」。
+## 角色
 
-### Experimental／reference implementation
+| 角色 | 模型 | Effort | 工具 | 用途 |
+|---|---|---|---|---|
+| `Explore` | haiku | high | Read, Glob, Grep | 唯讀偵查 |
+| `mech-executor` | haiku | high | + Write, Edit, Bash | 完全指定的機械性批次修改 |
+| `test-analyst` | haiku | medium | Read, Glob, Grep, Bash | 跑既有測試、回歸分析 |
+| `implementer-sonnet` | sonnet | high | + Write, Edit, Bash | 預設 implementer：方法已定的有界 slice（TDD） |
+| `implementer` | opus | medium | + Write, Edit, Bash | 有設計選擇的 slice；困難的以 `high` 派 |
+| `general-purpose` | opus | medium | Agent 以外全部 | 其他角色都不適合的有界非程式工作 |
+| `code-reviewer` | fable | high | Read, Glob, Grep | 風險觸發的全新 context 審查 |
+| `architecture-reviewer` | fable | high | Read, Glob, Grep | 對外介面或邊界改變時的審查 |
 
-- [`docs/governance/reference/`](docs/governance/reference/) 中的 Windows/PowerShell Tier 2 lifecycle helper 與 Claude Code hook scripts。
-- Hash checks 能偵測已核准 manifest 被變更；變更 intent 必須建立新 revision，但作業系統並沒有把檔案設成不可修改。
-- 當 hook 已安裝且 governed environment 啟用時，`PreToolUse` write gate 會對不在 running task literal `write_set` 內的 `Edit`、`Write` 或 `NotebookEdit` target 回傳 machine-readable deny。
-- Helper 實作 workspace snapshots、path-custody hashes、task state、failure-signature handling、verifier-task completion gates、由 helper append 的 JSONL events，以及 hashed terminal handoff receipts。
+reviewer 只有在明確遇到 Fable 額度用完的錯誤時，才改用 `opus`。
+
+## Handoff runtime
+
+runtime 在 `~/.claude/provost/handoffs` 為每個 session 保存一條 sealed 的 handoff 紀錄鏈（來源、決策、派工、證據、下一步），主 checkout 和它的 worktree 共用。hook 會在壓縮或 resume 後注入最新 checkpoint、收集事實（改過的路徑、派工、commit——絕不存指令文字或檔案內容），並在派工或改檔還沒有紀錄時提醒主 session。指令：`doctor`、`status`、`record`、`snapshot`、`list`、`resume`、`changes`、`search`、`prune`。詳見 [`docs/native-handoff.md`](docs/native-handoff.md)。
 
 ## 安裝
 
-Provost 以 Claude Code plugin 形式交付：
+需求：Claude Code、Python 3.11 以上；Windows 需要 Git Bash（hook 是 bash 腳本）。
+
+1. 在 `~/.claude/CLAUDE.md` 想放政策的位置加上標記。安裝程式只會替換兩行之間的內容：
+
+   ```markdown
+   <!-- claudex-native:begin -->
+   <!-- claudex-native:end -->
+   ```
+
+2. 預覽、安裝、檢查：
+
+   ```bash
+   python install.py check              # 唯讀；exit 0 = 無漂移，1 = 有漂移
+   python install.py install --dry-run  # 列出會改什麼
+   python install.py install            # 每個要改的檔案都先備份
+   ```
+
+   備份在 `~/.claude/provost/backups/install-<UTC 時間>/`，附 `manifest.json`；安裝失敗會自動回滾。支援 `CLAUDE_CONFIG_DIR` 和 `--config-dir`。
+
+3. 在 `~/.claude/settings.json` 註冊 hook（安裝程式不會改這個檔；`check` 會回報有沒有註冊）。設定內容見 [README.md 的 Install 第 3 步](README.md#install)，`<runtime>` 換成 `~/.claude/provost/runtime/native-pilot-v1` 的絕對路徑。
+
+4. 在 `~/.claude/provost/config.json` 啟用 runtime（範例見 [README.md 的 Install 第 4 步](README.md#install)），再用 `bash <runtime>/hooks/runtime doctor` 確認。
+
+之後 repo 有任何變動，先跑 `python install.py check` 看和實際設定差在哪，再用 `install` 套用。
+
+## 目前的證據
+
+單一使用者、真實工作，不是受控實驗：
+
+- `implementer-sonnet` 在 5 個 repo、34 個 slice 上和 `implementer` 對照試驗（含同一份 brief 的配對），2026-10-04 起成為預設 implementer。
+- 兩週內（2026-09-28 到 10-12，84 個 session），主 session 只寫了約 3% 的程式碼行數，其餘由 implementer 角色透過 270 次派工完成。
+
+## 測試
 
 ```bash
-claude plugin marketplace add norton77930/Provost
-claude plugin install provost@provost
+python -m unittest discover -s tests/adaptive -p "test_*.py"
 ```
 
-在 session 內也可以用 `/plugin marketplace add` 與 `/plugin install`。
+CI 在 Windows、Ubuntu、macOS 上跑這套測試，並檢查 Markdown 連結。
 
-安裝後會得到七個 collaborator roles、六個 methodology skills、一個 handoff skill 與 orchestration policy。policy 透過 `SessionStart` hook 進入每個 session，不需要手動合併進 `CLAUDE.md`。
+## 歷史
 
-Collaborator tier 就是單純的 Claude Code 設定：Claude Code 能跑的地方它就能跑，不需要 proxy、gateway 或額外服務。下方的 Tier 2 reference runtime 目前僅支援 Windows。
+Provost 最早是三層治理框架（Tier 0 Bare、Tier 1 Collaborator、Tier 2 Governed：hash 綁定的 manifest 與 PowerShell 寫入檢查），以 Claude Code plugin 發佈。那套設計封存在 tag [`archive/tier2-foreman`](https://github.com/norton77930/Provost/tree/archive/tier2-foreman)，不再維護。
 
-若要改用本機工作副本而非發布版：
+## 已知限制
 
-```bash
-claude --plugin-dir .
-```
-
-### plugin 交付的內容
-
-| Role | Model | 職責 |
-|---|---|---|
-| `adaptive-implementer` | opus | Opt-in bounded implementation; high effort |
-| `explorer` | haiku | 唯讀 evidence gathering |
-| `implementer` / `implementer-deep` | sonnet / opus | 有界的 TDD implementation |
-| `test-analyst` | haiku | 不改 source 的既有測試執行 |
-| `code-reviewer` / `architecture-reviewer` | opus | 唯讀 assurance |
-
-這些是設定選擇，不是 portable model abstractions。你可以依 Claude Code environment 可用的 model 調整 mapping；Provost 不交付或認證第三方 gateway。
-
-隨附的六個 methodology skills 涵蓋 TDD、bug 診斷、design grilling、two-axis review 與完成前驗證。第三方歸屬見 [`skills/NOTICE.md`](skills/NOTICE.md)。
-
-## 選配 adaptive orchestration 與 handoff
-
-新模式採個人全域設定與精確 workspace allowlist，預設維持舊行為。
-選配 runtime 需要 Python 3.11+。adaptive-implementer 預設 Opus/high；
-方法已確定且範圍明確時，可用 Sonnet override 並維持 high effort。
-排程與 writer 上限是指令政策，專案較嚴格的限制仍優先。
-交接歷史保留於本機並排除於 Git。實際壓縮通知與模型路由仍待試行。
-
-設定、工作流程、限制與回退方式見[試行指南](docs/examples/adaptive-handoff-pilot.md)。
-
-## 如何試用
-
-從一份計畫與有限的 Completion Contract 開始。視需要委派唯讀的探索與審查，並保持恰好一位 active writer。crew 遵循的是 [orchestration policy](orchestration.md)，[concepts guide](docs/concepts.md) 說明何時該在 tier 之間移動。
-
-## 開啟治理 session（Windows）
-
-```powershell
-.\docs\governance\reference\Start-GovernedSession.ps1 -WorkspaceRoot D:\path\to\repo
-```
-
-從 throwaway workspace 走到 write_set 外寫入被拒絕、以及 `Complete PASS`，見
-[治理 session walkthrough](docs/examples/governed-session-walkthrough.md)。
-
-launcher 會設好 hooks 讀取的 `PROVOST_*` environment，並透過 `claude --settings` **只為該 session** 註冊 Tier 2 hooks。刻意不由 plugin 註冊：每個 hook 在每次符合的工具呼叫都要啟動一個 PowerShell 行程，而 plugin 是裝給所有人的，其中多數人不會開治理 session。專案自己的 `PreToolUse` hooks 仍會執行——這樣注入的 hooks 是「附加」而非「取代」。
-
-遇到 workspace 不是 Git repository、治理 hook 缺失或無法解析、或沒有 PowerShell 直譯器時，它會拒絕而不是繼續。最後一項最關鍵:找不到直譯器的 hook 不會擋任何東西也不會報錯，session 會自稱受治理卻什麼都沒執行。
-
-剩下的檢查在 `Initialize`：除非 `SessionStart` hook 已寫下標記該 session 的 liveness marker，否則拒絕開啟 run。這個 marker 是「hooks 確實載入並執行過」的證據，不是憑證——它是 workspace 裡的一個純文字檔，任何能寫入 workspace 的東西都寫得出來。它擋的是設定錯誤的 session，不是刻意說謊的 session。對以 enforcement 開啟的 lock 做 `StartTask`、`FinishTask`、`RecordRetry` 與 `Complete`，必須由開啟它的同一個 Claude Code session 執行；改傳 helper 的 `-SessionId` 無法繞過。
-
-## Tier 2 reference 檢查（Windows）
-
-每項治理決策也各有一個獨立檢查，是不開 session 就能觀察單一決策的最快方式。每項檢查都會建立隔離的 workspace，透過真實介面驅動所交付的 hook 或 helper，且不修改 repository。
-
-在 repo 根目錄、Windows 上：
-
-```powershell
-powershell.exe -NoProfile -File .\tests\governance\Test-WriteScope.ps1
-```
-
-| 決策 | 檢查 | 需要 `git` | 說明 |
-|---|---|---|---|
-| Write scope | `Test-WriteScope.ps1` | 否 | [demo](docs/examples/governed-write-scope-demo.md) |
-| Ref guard | `Test-RefGuard.ps1` | 否 | [demo](docs/examples/governed-ref-guard-demo.md) |
-| Manifest pin | `Test-ManifestPin.ps1` | 是 | [demo](docs/examples/governed-manifest-pin-demo.md) |
-| Path custody | `Test-PathCustody.ps1` | 是 | [demo](docs/examples/governed-path-custody-demo.md) |
-| Completion gate | `Test-CompletionGate.ps1` | 是 | [demo](docs/examples/governed-completion-gate-demo.md) |
-| Failure diagnosis | `Test-FailureDiagnosis.ps1` | 是 | [demo](docs/examples/governed-failure-diagnosis-demo.md) |
-| Audit artifacts | `Test-AuditArtifacts.ps1` | 是 | [demo](docs/examples/governed-audit-artifacts-demo.md) |
-| Session liveness | `Test-SessionLiveness.ps1` | 是 | — |
-| Continuation enforcement | `Test-ContinuationEnforcement.ps1` | 是 | — |
-
-每份 walkthrough 記錄該檢查的前置條件、預期輸出，以及它能證明與不能證明的界線。
-
-## Tier 2 治理細節
-
-Governed tier 的 reference design 包含：
-
-- **Hash-pinned manifests：** lifecycle 會檢查核准內容的 hash；scope 變更需要新 revision。
-- **Write-scope decisions：** write hook fail closed，拒絕 running task literal `write_set` 外的 target。
-- **Path custody：** 共用 writer path 需要 dependency ordering，交接時記錄 content evidence。
-- **Completion gating：** 成功完成要求所有宣告的 tasks（包含 required verifier tasks）都達到 `PASS`。
-- **Failure control：** 重複的 failure signature 可要求新的 diagnosis evidence 才能繼續下一個 revision。
-- **Audit artifacts：** lifecycle actions append JSONL events；terminal handoff receipt 以 hash 釘住 manifest、ledger 與 workspace snapshot。
-
-hooks 註冊到 Claude Code 且必要的 `PROVOST_*` environment 就緒時，這些 controls 就是 engine-enforced 行為。`Start-GovernedSession.ps1` 為單一 session 完成這兩件事，而 `Initialize` 會拒絕開啟無法證明 hooks 生效的 run。評估或移植前請先讀 [governance documentation](docs/governance/README.md)。
-
-## 其他模型
-
-治理概念不依賴特定模型的 reasoning style，但目前交付的 integration 依賴 Claude Code interfaces。若你自行在 Anthropic-compatible gateway 後方使用其他模型，gateway 是外部 setup；Provost 不交付也不背書。相關實務觀察另記於 [field notes](docs/field-notes.md)。
-
-## 相關工作與定位
-
-Provost 建在 Claude Code 的 subagents、hooks 與 skills 上。Collaborator pattern 也有其他成熟方向：
-
-- [pilotfish](https://github.com/Nanako0129/pilotfish) 聚焦 frontier orchestrator 與較便宜 workers 的成本拆分。
-- [claude-agent-team](https://github.com/ek33450505/claude-agent-team) 聚焦 local session observability。
-
-Provost 聚焦 graduated governance：依 blast radius 提高監督強度，並在最高 tier 探索可強制的 scope、custody、verification 與 auditability。
-
-## Roadmap／已知限制
-
-- 打包好的 installer。launcher 以 session 為單位註冊 hooks，不寫入常駐設定。
-- 每個 task 的全新 agent context——原始 launcher 有做，這一版沒有。
-- 打包好的 runtime。開啟治理 session 的過程已寫在
-  [session walkthrough](docs/examples/governed-session-walkthrough.md)，但周圍一切仍須手動組裝。
-- 完整逐 claim evidence binding。目前 acceptance entries 會被驗證，task 也可以記錄整體 verification summary，但 helper 不要求每個 acceptance claim 都有獨立 evidence record。
-- Linux/macOS support，以及其他 coding-agent environment adapters。
-
-精確能力邊界與下一步見 [governance capability matrix](docs/governance/README.md) 與 [`ROADMAP.md`](ROADMAP.md)。
-
-## 貢獻
-
-歡迎 bug reports、governance proposals、文件、測試、packaging 與 cross-platform work。請先讀 [`CONTRIBUTING.md`](CONTRIBUTING.md)，保持 PR scope 精簡，且不得無聲削弱已宣告的治理保證。顯著變更見 [`CHANGELOG.md`](CHANGELOG.md)。
-
-疑似安全漏洞請透過 [`SECURITY.md`](SECURITY.md) 的私密管道回報，不要開公開 issue。
+- 為單一使用者調校；模型別名（`fable`、`opus`、`sonnet`、`haiku`）實際對應哪個模型取決於你的 Claude Code 版本。
+- runtime 裡還留著沒在用的 plugin 模式 SessionStart 路徑，`runtime_hash` 也還列著已移除的 `native-reminder` hook，兩者都排定移除。
+- `legacy.py`（v1 store 的唯讀橋接）排定移除。
+- hook 每次都會啟動 bash 和 Python；在 Windows 上每個 hook 約花一秒。
 
 ## 授權
 
-MIT — 見 [`LICENSE`](LICENSE)。Vendored skills 的原始 MIT 歸屬保留於 [`skills/NOTICE.md`](skills/NOTICE.md)。
+[MIT](LICENSE)。第三方 skill 的出處見 [`skills/NOTICE.md`](skills/NOTICE.md)。
