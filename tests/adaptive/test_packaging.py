@@ -51,3 +51,13 @@ class PackagingTests(unittest.TestCase):
         found = ["%s: %s" % (path.name, name) for path in runtime
                  for name in removed if name in path.read_text(encoding="utf-8")]
         self.assertEqual(found, [])
+
+    def test_runtime_has_no_legacy_store_bridge(self):
+        # The read-only bridge to <workspace>/.provost/handoffs/v1 was removed; config `mode: "legacy"` is unrelated.
+        package = REPO / "scripts" / "provost_runtime"
+        self.assertFalse((package / "legacy.py").exists())
+        patterns = (r"\bimport\b[^\n]*\blegacy\b", r"\blegacy\.[A-Za-z_]", r"\.provost[/\\\"' ]",
+                    r"handoffs[/\\\"' ]+v1\b")
+        found = ["%s: %s" % (path.name, pattern) for path in sorted(package.glob("*.py"))
+                 for pattern in patterns if re.search(pattern, path.read_text(encoding="utf-8"))]
+        self.assertEqual(found, [])

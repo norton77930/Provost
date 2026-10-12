@@ -74,6 +74,11 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   coverage, governed-session walkthrough, launcher, session liveness and
   enforcement records) were never released; they are preserved at
   `archive/tier2-foreman`.
+- `legacy.py`, the read-only bridge to the pre-relocation
+  `<workspace>/.provost/handoffs/v1` stores: `status`, compact/resume recovery,
+  `record`/`snapshot` (legacy binding), `resume` and `doctor` no longer read
+  them; the `list --legacy` flag and the `legacy`, `legacy_path`,
+  `legacy_binding` and `legacy_store_present` output fields are gone.
 
 ## [0.2.0] - 2026-09-02
 

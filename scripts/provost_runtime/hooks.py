@@ -3,7 +3,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import facts, legacy
+from . import facts
 from .config import ConfigError, handoff_home, load_config, resolve_mode, workspace_key
 from .notifications import PARTIAL, notice
 from .store import (CACHE_SESSION, FACTS_MARKER, StoreError, _base, as_workspace, atomic_write, current, digest,
@@ -162,19 +162,12 @@ def _recovery(root, session):
     data = current(root, session)
     if data is None:
         data = latest(root, session)
-    source = ""
     if data is None:
-        # Only a session with nothing in the new store may read the old per-repo store.
-        found = legacy.checkpoint(root, session)
-        if found is None:
-            return "No checkpoint for this session. Verify current sources before continuing.", None, None, None
-        data, path = found
-        source = "Checkpoint source: legacy store (read-only); the first record starts a fresh chain in the new store.\n"
-    else:
-        kind = "records" if data["kind"] == "record" else "snapshots"
-        ident = data["revision"] if kind == "records" else data["snapshot_id"]
-        path = session_dir(root, session) / kind / (ident + ".json")
-    return (source + "Saved observations, not current facts. Verify sources, code, evidence and worker state before acting. "
+        return "No checkpoint for this session. Verify current sources before continuing.", None, None, None
+    kind = "records" if data["kind"] == "record" else "snapshots"
+    ident = data["revision"] if kind == "records" else data["snapshot_id"]
+    path = session_dir(root, session) / kind / (ident + ".json")
+    return ("Saved observations, not current facts. Verify sources, code, evidence and worker state before acting. "
             "Do not duplicate a possibly running worker. Checkpoints can lag later decisions.\n"
             + "Checkpoint: " + str(path) + "\nRevision: " + data["revision"]
             + "\nTranscript cursor: " + ("available (not a freshness guarantee)" if data.get("transcript_cursor") else "unavailable; gaps must be checked")
@@ -184,9 +177,9 @@ def _recovery(root, session):
 
 
 def _never_recorded(root, session):
-    """True when the session has no record, snapshot or legacy checkpoint; unreadable counts as False."""
+    """True when the session has no record or snapshot; unreadable counts as False."""
     try:
-        return current(root, session) is None and latest(root, session) is None and legacy.checkpoint(root, session) is None
+        return current(root, session) is None and latest(root, session) is None
     except (StoreError, OSError):
         return False
 
