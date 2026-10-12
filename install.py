@@ -69,10 +69,18 @@ def source_targets(source):
     policy = source / POLICY_SOURCE
     if not policy.is_file():
         raise InstallError(f"source file missing: {POLICY_SOURCE}")
-    if not policy.read_bytes().strip():  # installing it would silently empty the user's section
+    if _is_blank(policy.read_bytes()):  # installing it would silently empty the user's section
         raise InstallError(f"source file is empty: {POLICY_SOURCE}")
     targets.append(Target(POLICY_TARGET, policy, policy=True))
     return targets
+
+
+def _is_blank(data):
+    """True when the bytes hold only a BOM and/or (Unicode) whitespace; undecodable bytes are not blank."""
+    try:
+        return not data.decode("utf-8-sig").strip()
+    except UnicodeDecodeError:
+        return not data.strip()
 
 
 def _glob(source, directory, pattern):
