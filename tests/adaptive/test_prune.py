@@ -524,6 +524,24 @@ class ExpiredPruneTests(FixtureCase):
         self.assertIsNone(store.current(self.root, "orphan"))
         self.assertIsNotNone(record(self.root, "orphan", self.payload(), None, "retry"))
 
+    def test_a_deleted_lock_file_never_names_a_new_one_that_reused_its_inode_number(self):
+        """After a prune deletes a session, the recreated .lock may get the freed inode number
+        (ext4): a writer still holding the deleted file must not match it by (dev, ino) alone."""
+        from unittest import mock
+        from provost_runtime import store
+        lock = self.session("reused", 90) / ".lock"
+        real_fstat = os.fstat
+
+        def unlinked(fd):
+            fields = list(real_fstat(fd)[:10])
+            fields[3] = 0  # st_nlink: the held file has no name left; dev and ino still match the path
+            return os.stat_result(fields)
+
+        with lock.open("a+b") as stream:
+            self.assertTrue(store._names(stream, lock))
+            with mock.patch.object(store.os, "fstat", unlinked):
+                self.assertFalse(store._names(stream, lock))
+
     def test_missing_or_unreadable_timestamps_fall_back_to_file_mtime(self):
         old = self.session("old", 0)
         for path in (old / "records").glob("*.json"):

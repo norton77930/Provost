@@ -272,13 +272,14 @@ def _unlock(stream):
 
 def _names(stream, path):
     """True when path still names the open file: prune can move a session's lock file
-    away (with its dir) between a writer's open and its lock (POSIX only)."""
+    away (with its dir) between a writer's open and its lock (POSIX only). A deleted file
+    never does, even when a new one at path reused its inode number."""
     try:
         here = os.stat(path, follow_symlinks=False)
     except FileNotFoundError:
         return False
     there = os.fstat(stream.fileno())
-    return (here.st_dev, here.st_ino) == (there.st_dev, there.st_ino)
+    return there.st_nlink > 0 and (here.st_dev, here.st_ino) == (there.st_dev, there.st_ino)
 
 
 @contextmanager
@@ -776,6 +777,10 @@ def _remove_expired(home, entry, staging, cutoff, repo_key):
     session-file write (binding, compaction) before the move, fails the re-check and the
     dir is moved back. If the original name was recreated after the move, nothing is
     deleted: FileExistsError leaves the dir at the staging name for a later run.
+    On Windows a record completed in the release gap, with the original name then
+    recreated by a third writer before the move back, leaves the session (with that
+    fresh record) parked at the staging name: the failed move back is reported with
+    left_at, and a leftover is never deleted while it holds fresh activity.
     Returns True when removed.
     """
     lock = entry / ".lock"
