@@ -419,6 +419,27 @@ class ExpiredPruneTests(FixtureCase):
         self.assertTrue((busy / "records").is_dir())
         self.assertFalse(gone.exists())
 
+    def test_a_session_whose_removal_raises_oserror_is_listed_only_as_an_error(self):
+        from unittest import mock
+        from provost_runtime import store
+        bad, gone = self.session("bad", 90), self.session("gone", 90)
+        real_remove = store._remove_expired
+
+        def denied(home, entry, *args):
+            if entry == bad:
+                raise PermissionError("denied")
+            return real_remove(home, entry, *args)
+
+        with mock.patch.object(store, "_remove_expired", denied):
+            result = prune(self.root, apply=True)
+        self.assertEqual(self.expired(result), [gone.name])
+        self.assertEqual(result["expired_removed"], 1)
+        self.assertEqual(result["errors"], [{"session_dir": bad.name, "error": "PermissionError", "left_at": None}])
+        self.assertEqual(result["skipped"], [])
+        self.assertTrue((bad / "records").is_dir())
+        self.assertFalse(gone.exists())
+        self.assertEqual(self.expired(prune(self.root)), [bad.name])  # still expired; the dry run lists it
+
     def test_dry_run_and_probe_create_no_lock_file(self):
         old = self.session("old", 90)
         (old / ".lock").unlink(missing_ok=True)

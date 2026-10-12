@@ -409,7 +409,9 @@ class PolicySectionTests(InstallCase):
                          f"{BEGIN}\n# Policy\n\nline two\n{END}\n".encode())
 
     def test_empty_policy_source_is_refused(self):
-        for data in (b"", b" \r\n\t\n"):
+        bom = b"\xef\xbb\xbf"
+        nbsp = " ".encode()
+        for data in (b"", b" \r\n\t\n", bom, bom + b" \r\n\t\n", nbsp, bom + nbsp + b"\n" + " ".encode()):
             write(self.source / "native/CLAUDE.native.md", data)
             for command in ("check", "install"):
                 with self.subTest(data=data, command=command):
@@ -420,6 +422,12 @@ class PolicySectionTests(InstallCase):
                     self.assertIn("empty", err)
                     self.assertEqual(self.snapshot(), before)
                     self.assertEqual(self.backups(), [])
+
+    def test_policy_source_starting_with_a_bom_still_installs(self):
+        write(self.source / "native/CLAUDE.native.md", b"\xef\xbb\xbf# Policy\n")
+        self.assertEqual(self.run_cli("install")[0], 0)
+        self.assertEqual(self.run_cli("check")[0], 0)
+        self.assertIn(b"# Policy", (self.config / "CLAUDE.md").read_bytes())
 
     def test_mixed_line_endings_outside_the_section_are_preserved(self):
         for begin_eol, body_eol in ((b"\n", b"\n"), (b"\r\n", b"\r\n")):

@@ -1165,6 +1165,7 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
         except StoreError as exc:
             result["skipped"].append({"entry": entry.name, "reason": str(exc)})
         except OSError as exc:
+            result["expired"] = [item for item in result["expired"] if item["session_dir"] != entry.name]
             result["errors"].append({"session_dir": entry.name, "error": type(exc).__name__,
                                      "left_at": staging.name if staging.exists() else None})
     if facts_cache is not None:

@@ -13,7 +13,7 @@ Thumbs.db
 .claude/shell-snapshots/
 .claude/worktrees/
 
-# Legacy in-repo handoff store (read-only bridge); holds session IDs and local paths
+# Old in-repo handoff store (no longer read); holds session IDs and local paths
 .provost/
 
 # Backups, logs, scratch, browser-automation dumps

@@ -51,6 +51,9 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   emptying the installed section, and an interrupt right after a target is
   replaced still rolls that target back; `prune --apply` lists a session kept
   as `skipped` (for example `STORE_BUSY`) only there, no longer also under `expired`.
+- `install.py` also refuses a policy source holding only a BOM or Unicode
+  whitespace (such as NBSP); `prune --apply` lists a session kept by an OS error
+  only under `errors`, no longer also under `expired`.
 
 ### Removed
 

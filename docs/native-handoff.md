@@ -278,8 +278,9 @@ between is moved back. Skipped: the `--session` dir and its `.pruning-` leftover
 dir whose lock is held (`STORE_BUSY`), a dir with unexpected content
 (`UNEXPECTED_CONTENT`), and a dir whose stored `workspace_id` belongs to another
 repo (`FOREIGN_REPO`). Under `--apply`, an expired session kept because removal or
-archiving was refused is listed only in `skipped`, not under `expired`; the dry run
-lists it under `expired`. Nothing is deleted automatically.
+archiving was refused is listed only in `skipped`, and one kept by an OS error
+(for example a permission error or a recreated dir) only in `errors`, not under
+`expired`; the dry run lists it under `expired`. Nothing is deleted automatically.
 
 Decisions outlive expiry. Before an expired session (or a reclaimable `.pruning-`
 leftover) is moved aside or deleted, `--apply` preserves its newest record for each
