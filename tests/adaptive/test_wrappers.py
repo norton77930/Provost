@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import subprocess
+import unittest
 from pathlib import Path
 from _support import BASH, FixtureCase, REPO
 
@@ -165,14 +166,62 @@ class InterpreterCacheTests(FixtureCase):
         cached = self.cache_file.read_text(encoding="utf-8").strip()
         self.assertTrue(cached.endswith("/bin/python3") and ".venv" not in cached, cached)
 
+    def assert_venv_on_path_is_not_cached(self, project, path_dir):
+        venv_log = self.root / "venv.log"
+        self.fake_interpreter(project / ".venv" / "bin", "python3", venv_log)
+        result = self.run_bash(REPO / "hooks" / "runtime", "status", path_dirs=[path_dir], cwd=project)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.probes(venv_log)), 1)
+        self.assertFalse(self.cache_file.exists(), self.cache_file.read_text(encoding="utf-8")
+                         if self.cache_file.exists() else "")
+
+    def test_interpreter_inside_cwd_through_a_link_is_not_cached(self):
+        # macOS: PATH says /var/folders/..., the shell's PWD says /private/var/folders/...
+        project = self.root / "project"
+        (project / ".venv" / "bin").mkdir(parents=True)
+        alias = self.root / "alias"
+        try:
+            os.symlink(project, alias, target_is_directory=True)
+        except OSError:
+            try:
+                import _winapi
+                _winapi.CreateJunction(str(project), str(alias))
+            except (ImportError, AttributeError, OSError):
+                self.skipTest("OS permits neither symlinks nor junctions")
+        self.assert_venv_on_path_is_not_cached(project, alias / ".venv" / "bin")
+
+    @unittest.skipUnless(os.name == "nt", "8.3 short names exist only on Windows")
+    def test_interpreter_inside_cwd_by_short_name_is_not_cached(self):
+        # Windows runners: Python's temp path says RUNNER~1, the shell's PWD the long name.
+        import ctypes
+        project = self.root / "project with a long name"
+        (project / ".venv" / "bin").mkdir(parents=True)
+        def spelled(api, path):
+            buffer = ctypes.create_unicode_buffer(32768)
+            return buffer.value if api(str(path), buffer, len(buffer)) else None
+        long_project = spelled(ctypes.windll.kernel32.GetLongPathNameW, project)
+        short_bin = spelled(ctypes.windll.kernel32.GetShortPathNameW, project / ".venv" / "bin")
+        if not short_bin or "~" not in short_bin or not long_project:
+            self.skipTest("8.3 short names are disabled on this volume")
+        self.assert_venv_on_path_is_not_cached(Path(long_project), short_bin)
+
     def test_inside_cwd_check_matches_whole_directories_only(self):
-        # PWD is set by hand: the helper is a pure string check (no spawn on the cached path).
-        cases = [("/w/proj", "/w/proj/.venv/bin/python3", True), ("/w/proj", "/w/proj2/bin/python3", False),
-                 ("/w/proj", "/w/bin/python3", False), ("/", "/usr/bin/python3", False)]
+        # PWD is set by hand (no spawn on the cached path): inside is a string match, and an
+        # outside answer is confirmed physically, so those directories exist. One that does
+        # not resolve counts as inside (fail-safe: never cached).
+        w = self.root / "w"
+        for sub in ("proj/.venv/bin", "proj2/bin", "bin"):
+            (w / sub).mkdir(parents=True)
+        base = w.as_posix()
+        proj = base + "/proj"
+        cases = [(proj, proj + "/.venv/bin/python3", True), (proj, base + "/proj2/bin/python3", False),
+                 (proj, base + "/bin/python3", False), ("/", "/usr/bin/python3", False),
+                 (proj, base + "/gone/bin/python3", True)]
         if os.name == "nt":  # Git Bash: drive spelling and case-insensitivity
-            cases += [("/c/Work/proj", "C:/work/PROJ/.venv/Scripts/python.exe", True),
-                      ("/c/Work/proj", "C:\\Work\\proj\\venv\\python.exe", True),
-                      ("/c/Work/proj", "D:/Work/proj/python.exe", False)]
+            drive_form = "/" + proj[0].lower() + proj[2:]  # C:/x -> /c/x
+            cases += [(drive_form, proj.swapcase() + "/.venv/Scripts/python.exe", True),
+                      (drive_form, (proj + "/venv/python.exe").replace("/", "\\"), True),
+                      (drive_form, base + "/proj2/bin/python.exe", False)]
         script = ('source "$1"; shift; while (( $# )); do PWD="$1"; '
                   'if _provost_in_cwd "$2"; then echo 1; else echo 0; fi; shift 2; done')
         args = [part for pwd, path, _ in cases for part in (pwd, path)]
@@ -180,6 +229,23 @@ class InterpreterCacheTests(FixtureCase):
                                 capture_output=True, text=True, encoding="utf-8", timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.split(), ["1" if inside else "0" for *_, inside in cases])
+
+    def test_physical_check_leaves_the_shell_where_it_was(self):
+        project, other = self.root / "project", self.root / "other" / "bin"
+        project.mkdir()
+        other.mkdir(parents=True)
+        # The temp root's logical spelling (Windows 8.3 names, macOS /var) is what `cd -P` rewrites.
+        script = ('source "$1"; cd "$2" || exit 9; OLDPWD=before; start="$PWD"; '
+                  'for path in "$3/python3" "$2/gone/python3"; do _provost_in_cwd "$path"; echo "rc=$?"; done; '
+                  '[[ "$PWD" == "$start" ]] && echo pwd-kept; [[ "$OLDPWD" == before ]] && echo oldpwd-kept; '
+                  '[[ "$(pwd -P)" -ef "$2" ]] && echo cwd-kept; '
+                  'unset OLDPWD; _provost_in_cwd "$3/python3"; [[ -z "${OLDPWD+set}" ]] && echo oldpwd-unset')
+        result = subprocess.run([BASH, "-c", script, "probe", (REPO / "hooks" / "_python.sh").as_posix(),
+                                 project.as_posix(), other.as_posix()],
+                                capture_output=True, text=True, encoding="utf-8", timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split(),
+                         ["rc=1", "rc=0", "pwd-kept", "oldpwd-kept", "cwd-kept", "oldpwd-unset"])
 
     def test_provost_python_overrides_cache_and_probe(self):
         override_log = self.root / "override.log"

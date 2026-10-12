@@ -9,6 +9,10 @@ from _support import FixtureCase, REPO
 from provost_runtime.hooks import bind
 from provost_runtime.store import StoreError, digest, prune, record, session_dir, snapshot as store_snapshot
 
+# A directory created where a regular file stands: Windows reports the file as existing,
+# POSIX reports the path as not a directory.
+BLOCKED_DIR_ERROR = "FileExistsError" if os.name == "nt" else "NotADirectoryError"
+
 DAY = 86400
 
 
@@ -597,7 +601,7 @@ class ArchivePruneTests(FixtureCase):
         archive.write_text("not a dir", encoding="utf-8")
         result = prune(self.root, apply=True)
         self.assertEqual((result["expired_removed"], result["errors"]),
-                         (0, [{"session_dir": old.name, "error": "FileExistsError", "left_at": None}]))
+                         (0, [{"session_dir": old.name, "error": BLOCKED_DIR_ERROR, "left_at": None}]))
         self.assertTrue((old / "records").is_dir())
         archive.unlink()
         with mock.patch("provost_runtime.store.atomic_write", side_effect=StoreError("WRITE_FAILED")):
@@ -651,7 +655,7 @@ class ArchivePruneTests(FixtureCase):
         archive.write_text("not a dir", encoding="utf-8")
         result = prune(self.root, apply=True)
         self.assertEqual((result["reclaimed"], result["errors"]),
-                         (0, [{"session_dir": leftover.name, "error": "FileExistsError", "left_at": leftover.name}]))
+                         (0, [{"session_dir": leftover.name, "error": BLOCKED_DIR_ERROR, "left_at": leftover.name}]))
         self.assertTrue((leftover / "records").is_dir())
         archive.unlink()
         with mock.patch("provost_runtime.store.atomic_write", side_effect=StoreError("WRITE_FAILED")):

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Handoff facts layer hook. Pure bash builtins on every path: no interpreter, no
 # external command, no command substitution, no pipe (each process costs about
-# 0.5 s on Windows). Never blocks and always exits 0. It never creates the facts
+# 0.5 s on Windows). The one exception is bash < 4.2 (macOS /bin/bash 3.2), which
+# lacks printf %(...)T and forks `date` for the timestamp; the script otherwise
+# runs on bash 3.2. Never blocks and always exits 0. It never creates the facts
 # directory (the runtime side does) and never stores command text, file
 # contents, prompts or responses.
 # The authoritative gate is the session's enablement marker <session_id>.enabled,
@@ -62,15 +64,23 @@ get() {
     return 1
 }
 
-# norm <raw JSON path>: sets normed to a comparable form: escaped or plain
-# backslashes become /, lowercase, no trailing /, and Git Bash /x/... becomes x:/...
+# norm <raw JSON path>: sets normed to a comparable form (compare it with same):
+# escaped or plain backslashes become /, no trailing /, and Git Bash /x/... becomes x:/...
 norm() {
     local p="${1//\\\\//}"
     p="${p//\\//}"
-    p="${p,,}"
     while [[ ${#p} -gt 1 && "$p" == */ ]]; do p="${p%/}"; done
-    [[ "$p" =~ ^/([a-z])(/.*)?$ ]] && p="${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"
+    [[ "$p" =~ ^/([A-Za-z])(/.*)?$ ]] && p="${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"
     normed="$p"
+}
+
+# same <a> <b>: equal ignoring case. nocasematch is bash 3.1+; ${x,,} needs bash 4.
+same() {
+    local rc=1
+    shopt -s nocasematch
+    [[ "$1" == "$2" ]] && rc=0
+    shopt -u nocasematch
+    return "$rc"
 }
 
 val=""
@@ -148,7 +158,14 @@ if ! [[ "$session_id" =~ ^[A-Za-z0-9-]+$ && -e "${facts_dir}/${session_id}.enabl
     printf '{}\n'
     exit 0
 fi
-printf -v ts '%(%s)T' -1
+ts=""
+if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 2) )); then
+    printf -v ts '%(%s)T' -1
+fi
+if ! [[ "$ts" =~ ^[0-9]+$ ]]; then
+    ts="$(date +%s 2>/dev/null)" || ts=""
+    [[ "$ts" =~ ^[0-9]+$ ]] || ts=0
+fi
 prefix="\"v\":1,\"ts\":${ts}"
 tail_fields="\"cwd\":\"${cwd}\",\"agent\":\"${agent}\""
 out=""
@@ -165,10 +182,12 @@ case "$tool" in
             # escaped backslash pair is one path separator.
             p="${val//\\\\//}"
             p="${p//\\//}"
-            case "${p,,}/" in
+            shopt -s nocasematch
+            case "${p}/" in
                 */.claude/jobs/*|*/.claude/projects/*|*/appdata/local/temp/*|*/tmp/*) ;;
                 *) [[ "$main_session" == true ]] && flag=pending-edit ;;
             esac
+            shopt -u nocasematch
         fi
         ;;
     Agent)
@@ -226,7 +245,7 @@ case "$tool" in
                 fi
                 # The event's cwd already names this directory; relative targets are kept.
                 norm "$d"
-                [[ "$normed" == "$cwd_norm" ]] && continue
+                same "$normed" "$cwd_norm" && continue
                 out+="{${prefix},\"k\":\"dir\",${tail_fields},\"p\":\"${d}\"}"$'\n'
                 count=$(( count + 1 ))
             done

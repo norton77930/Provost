@@ -55,7 +55,8 @@ unset _provost_here _provost_module_root
 PROVOST_PY=()
 
 # True when $1 lies inside the current working directory tree. No spawn: compares
-# against $PWD and, under Git Bash, its drive form (/c/x == C:/x, case-insensitive).
+# against $PWD and, under Git Bash, its drive form (/c/x == C:/x, case-insensitive);
+# a path that looks outside is compared again in physical form.
 _provost_in_cwd() {
     local path="${1//\\//}" dir="${PWD%/}" native="" restore="" rc=1
     if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
@@ -64,9 +65,34 @@ _provost_in_cwd() {
     fi
     if [[ -n "$dir" && "$path" == "$dir"/* ]] || [[ -n "$native" && "$path" == "$native"/* ]]; then
         rc=0
+    elif ! _provost_physically_outside "$path"; then
+        rc=0
     fi
     [[ -z "$restore" ]] || shopt -u nocasematch
     return "$rc"
+}
+
+# Succeeds only when $1's directory provably lies outside $PWD once both are
+# resolved by `builtin cd -P` in this shell (no spawn): symlinks (macOS /var is
+# /private/var) and, under Git Bash, 8.3 short names (RUNNER~1) and mounts (/tmp)
+# become one spelling. The cwd, PWD and OLDPWD are put back. Fail-safe: anything
+# that does not resolve counts as inside, so it is never cached.
+_provost_physically_outside() {
+    local here="$PWD" parent="${1%/*}" had_old="${OLDPWD+1}" old="${OLDPWD:-}" CDPATH="" home="" target=""
+    [[ "$here" != / ]] || return 0 # as above: nothing counts as inside a cwd of /
+    [[ "$1" == */* && -n "$here" ]] || return 1
+    [[ -n "$parent" ]] || parent=/
+    builtin cd -P -- "$here" 2>/dev/null || return 1
+    home="${PWD%/}"
+    if builtin cd -P -- "$parent" 2>/dev/null; then
+        target="$PWD"
+        builtin cd -P -- "${home:-/}" 2>/dev/null || return 1
+    fi
+    PWD="$here"
+    if [[ -n "$had_old" ]]; then OLDPWD="$old"; else unset OLDPWD; fi
+    [[ -n "$target" ]] || return 1
+    [[ -n "$home" && ( "$target" == "$home" || "$target" == "$home"/* ) ]] && return 1
+    return 0
 }
 
 provost_find_python() {

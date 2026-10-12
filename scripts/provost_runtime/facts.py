@@ -323,21 +323,30 @@ def summarize(ws, session, state, git, now):
 
 
 def _cap(data):
-    """Drop oldest files, then oldest agents, then trailing dirty entries until the sealed file fits."""
+    """Drop oldest files, then oldest agents, then trailing dirty entries until the sealed file fits.
+
+    Per-entry sizes only estimate the saving: an omitted counter can gain digits and an emptied
+    list keeps no comma to lose, so each estimated fit is re-measured before it is accepted.
+    """
     def excess():
         return len(encoded(data)) + CHECKSUM_BYTES - MAX_BYTES
 
     for key, counter in (("files", "files_omitted"), ("agents", "agents_omitted")):
+        items, omitted = data[key], data[counter]
         over, drop = excess(), 0
-        while over > 0 and drop < len(data[key]):
-            over -= len(encoded(data[key][drop])) + 1
+        while over > 0 and drop < len(items):
+            over -= len(encoded(items[drop])) + 1
             drop += 1
-        data[key] = data[key][drop:]
-        data[counter] += drop
+            if over <= 0:
+                data[key], data[counter] = items[drop:], omitted + drop
+                over = excess()
+        data[key], data[counter] = items[drop:], omitted + drop
     for repo in reversed(data["repos"]):
         over = excess()
         while over > 0 and repo["dirty"]:
             over -= len(encoded(repo["dirty"].pop())) + 1
+            if over <= 0:
+                over = excess()
     return data
 
 

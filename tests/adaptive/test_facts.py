@@ -342,6 +342,25 @@ class FoldTests(FactsCase):
         self.assertTrue(data["files"][-1]["path"].endswith("f0399-" + "n" * 150))
         self.assertEqual(data["agents_omitted"], 0)
 
+    def test_size_cap_is_exact_when_the_omitted_counter_grows(self):
+        # Overshoot by exactly 100 entries: dropping them turns the counter 0 into 100, two
+        # bytes the per-entry estimate does not see, so it alone ends over the cap.
+        from provost_runtime.store import _seal, encoded
+        for key, counter in (("files", "files_omitted"), ("agents", "agents_omitted")):
+            with self.subTest(key=key):
+                entry = lambda i: {"path": "p%03d" % i, "ts": 1000 + i}
+                data = {"files": [], "files_omitted": 0, "agents": [], "agents_omitted": 0,
+                        "repos": [{"dirty": [], "dirty_total": 0}], "pad": ""}
+                data[key] = [entry(i) for i in range(200)]
+                drift = 100 * (len(encoded(entry(0))) + 1)
+                size = lambda: len(encoded(_seal(data)))
+                data["pad"] = "x" * (facts.MAX_BYTES - size() + drift)
+                self.assertEqual(size() - facts.MAX_BYTES, drift)
+                capped = facts._cap(data)
+                self.assertLessEqual(len(encoded(_seal(capped))), facts.MAX_BYTES)
+                self.assertEqual(capped[counter], 101)
+                self.assertEqual(capped[key], [entry(i) for i in range(101, 200)])
+
 
 class PreCompactTests(FactsCase):
     def event(self):
