@@ -377,7 +377,9 @@ remove records; a reader that overlaps a trim can see a transient
 covers the newest trimmed id of each chain and on-disk leftovers, while an older trimmed id
 reused against the current head records a new entry (the chain stays valid); a session
 with cards of several works cannot be read by a runtime older than per-work cards
-(`AMBIGUOUS_CHAIN`, or `CORRUPT_RECORD` once several chains were cut); submodules, bare-backed and
+(`AMBIGUOUS_CHAIN`, or `CORRUPT_RECORD` once several chains were cut); leftovers of
+an interrupted trim stay on disk until that work's chain is trimmed again, so a chain
+never written again keeps them (reads skip them); submodules, bare-backed and
 separate-git-dir checkouts are refused (`REPO_KEY_UNRESOLVED`); Git older than
 2.31 is refused (`GIT_UNSUPPORTED`); on Windows without long-path support a long
 user or `PROVOST_HOME` path can exceed 260 characters.

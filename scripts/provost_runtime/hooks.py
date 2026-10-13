@@ -436,12 +436,15 @@ def handle_event(event, config_path):
             if enabled:
                 info += ("\nOperations guide: " + str(PLUGIN / "docs/native-handoff.md")
                          + "\nUse Bash: bash <quoted-runtime-path> status --workspace <quoted-workspace> --session <quoted-session>."
-                         + "\nStatus is read-only and returns expected revision, checkpoint and a complete template."
+                         + "\nStatus is read-only and returns expected revision, checkpoint and a complete template;"
+                         + " other_works lists the session's other work_ids."
                          + "\nFill the template with actual sources/decisions, then record --workspace <root> --session <id>"
                          + " --expected <revision-or-null> --request-id <unique-milestone-id> --input <payload-file>."
+                         + "\nExpected is per work_id: when the payload's work_id is not the checkpoint's, take expected"
+                         + " from status --work <quoted-work-id> (null starts that work's chain)."
                          + "\nRecord at plan approval, dispatch, result receipt or changed decisions/blockers."
                          + " Use snapshot for explicit /handoff. Never treat an unfilled template as saved work."
-                         + "\nOn conflict rerun status and reconcile; do not force overwrite. A worktree and its main checkout share one handoff store.")
+                         + "\nOn conflict rerun status (with --work for that work_id) and reconcile; do not force overwrite. A worktree and its main checkout share one handoff store.")
             # Keep identity and restrictions; never slice a decision halfway.
             short = "Native handoff runtime. Personal policy remains authoritative."
             shortest = (short + "\nRuntime: " + runtime + "\nWorkspace: " + str(root.root) + "\nSession: " + session + "\n"

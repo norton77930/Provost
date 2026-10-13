@@ -4,7 +4,7 @@ import os
 import subprocess
 from _support import BASH, FixtureCase, REPO
 from provost_runtime.config import handoff_home
-from provost_runtime.hooks import bind
+from provost_runtime.hooks import bind, handle_event
 from provost_runtime.store import _seal, as_workspace, atomic_write, digest, session_dir
 
 RUNTIME = REPO / "hooks" / "runtime"
@@ -158,3 +158,101 @@ class WorkCardTests(FixtureCase):
         self.assertEqual(self.status("B")["checkpoint"]["parent_record"], legacy[-1]["revision"])
         self.assertEqual(self.status()["expected"], b["revision"])
         self.assertEqual(self.record("A", "a0", None, "a0"), "REQUEST_ID_EXPIRED")
+
+    def cli(self, session, *args, data=None):
+        """(exit code, parsed JSON output) of `bash hooks/runtime <args>` for another session."""
+        env = dict(os.environ, PROVOST_CONFIG=str(self.config_path), PYTHONDONTWRITEBYTECODE="1")
+        env.pop("PROVOST_PYTHON", None)
+        result = subprocess.run([BASH, str(RUNTIME), *args, "--workspace", str(self.root), "--session", session],
+                                input=json.dumps(data) if data is not None else "", capture_output=True,
+                                text=True, encoding="utf-8", env=env, timeout=60)
+        return result.returncode, json.loads(result.stdout or "null")
+
+    def reseal(self, card, **changes):
+        """Write a stored record with changes, checksum-valid, under its (possibly changed) revision."""
+        body = {k: v for k, v in card.items() if k != "checksum"} | changes
+        path = session_dir(self.root, "s1") / "records" / (body["revision"] + ".json")
+        path.write_text(json.dumps(_seal(body)), encoding="utf-8")
+
+    def horizon(self):
+        return json.loads((session_dir(self.root, "s1") / "horizon.json").read_text(encoding="utf-8"))["records"]
+
+    def test_equal_recorded_at_is_resolved_by_the_current_index(self):
+        a = self.record("A", "a", None, "a1")
+        b = self.record("B", "b", None, "b1")
+        self.reseal(b, recorded_at=a["recorded_at"])
+        index = session_dir(self.root, "s1") / "current.json"
+        for card in (b, a):  # one of the two orders contradicts revision order
+            atomic_write(handoff_home(), index, {"revision": card["revision"]})
+            self.assertEqual(self.status()["expected"], card["revision"])
+
+    def test_interrupted_trim_with_a_list_horizon(self):
+        records = session_dir(self.root, "s1") / "records"
+        heads, written = {}, {"A": [], "B": []}
+
+        def write(work):
+            name = "%s%d" % (work, len(written[work]))
+            card = self.record(work, name, heads.get(work), name)
+            heads[work] = card["revision"]
+            written[work].append(card)
+
+        def ids(a, b):
+            return sorted([written["A"][a]["revision"], written["B"][b]["revision"]])
+        for _ in range(6):
+            write("A")
+            write("B")
+        self.assertEqual(self.horizon(), ids(0, 0))
+        write("A")
+        # The process died after the horizon write, before deleting A1.
+        leftover = records / (written["A"][1]["revision"] + ".json")
+        leftover.write_text(json.dumps(written["A"][1]), encoding="utf-8")
+        self.assertEqual(self.horizon(), ids(1, 0))
+        self.assertEqual((self.status("A")["expected"], self.status("B")["expected"]), (heads["A"], heads["B"]))
+        write("B")  # trimming the other chain leaves A's leftover
+        self.assertTrue(leftover.exists())
+        self.assertEqual(self.horizon(), ids(1, 1))
+        write("A")  # A's own next trim removes it
+        self.assertEqual(self.horizon(), ids(2, 1))
+        self.assertEqual(self.cards(), {work: {card["revision"] for card in written[work][-5:]} for work in "AB"})
+        self.assertEqual((self.status("A")["expected"], self.status("B")["expected"]), (heads["A"], heads["B"]))
+
+    def test_resume_into_a_session_holding_other_works(self):
+        for session in ("s2", "s3"):
+            bind(self.root, session, {})
+        self.record("A", "a", None, "a1")
+        code, taken = self.runtime("snapshot", "--request-id", "e1")
+        self.assertEqual(code, 0, taken)
+        code, _ = self.cli("s2", "record", "--expected", "null", "--request-id", "b1", data=self.card("B", "b"))
+        self.assertEqual(code, 0)
+        code, adopted = self.cli("s2", "resume", "--from", taken["snapshot_id"])
+        self.assertEqual((code, adopted.get("adopted_from")), (0, taken["snapshot_id"]), adopted)
+        code, status = self.cli("s2", "status")
+        self.assertEqual((status["expected"], [item["work_id"] for item in status["other_works"]]),
+                         (adopted["revision"], ["B"]))
+        code, _ = self.cli("s3", "record", "--expected", "null", "--request-id", "a1", data=self.card("A", "own"))
+        self.assertEqual(code, 0)
+        self.assertEqual(self.cli("s3", "resume", "--from", taken["snapshot_id"]), (1, {"error": "REVISION_CONFLICT"}))
+
+    def test_snapshot_and_precompact_capture_the_most_recently_written_card(self):
+        a = self.record("A", "a1", None, "a1")
+        b = self.record("B", "b1", None, "b1")
+        self.record("A", "a2", a["revision"], "a2")
+        code, taken = self.runtime("snapshot", "--request-id", "e1")
+        self.assertEqual((code, taken["payload"]["next"]), (0, "a2"), taken)
+        self.record("B", "b2", b["revision"], "b2")
+        handle_event({"hook_event_name": "PreCompact", "trigger": "auto", "session_id": "s1",
+                      "cwd": str(self.root)}, self.config_path)
+        code, listing = self.runtime("list")
+        self.assertEqual([item["work_id"] for item in listing if item["parent_snapshot"] == taken["snapshot_id"]],
+                         ["B"])
+
+    def test_heads_of_different_works_sharing_a_live_ancestor_are_ambiguous(self):
+        a1 = self.record("A", "a1", None, "a1")
+        self.record("A", "a2", a1["revision"], "a2")
+        self.reseal(a1, revision=digest("s1\0record\0fork"), parent_record=a1["revision"],
+                    payload=self.card("B", "fork"))
+        for args in ((), ("--work", "B")):
+            self.assertEqual(self.runtime("status", *args), (1, {"error": "AMBIGUOUS_CHAIN"}))
+
+    def test_empty_work_is_an_invalid_argument(self):
+        self.assertEqual(self.runtime("status", "--work", ""), (1, {"error": "INVALID_ARGUMENTS"}))
