@@ -387,9 +387,14 @@ def _read(root, path, session, kind):
 
 
 def _check_other_cards(ws, data, session):
-    """A snapshot_version 2 snapshot's other_cards: sealed cards of this repo and session, one per work_id."""
+    """A snapshot_version 2 snapshot's other_cards: sealed cards of this repo and session, one per work_id.
+
+    A newer snapshot_version is read as its top-level card only (see snapshot_cards); a version
+    below 2, or other_cards without a version, is corrupt."""
     if "snapshot_version" not in data and "other_cards" not in data:
         return  # a single-card snapshot written before multi-card snapshots
+    if _newer_snapshot(data):
+        return
     others = data.get("other_cards")
     if (type(data.get("snapshot_version")) is not int or data["snapshot_version"] != SNAPSHOT_VERSION
             or not isinstance(others, list)):
@@ -421,11 +426,18 @@ SNAPSHOT_KEYS = ("checksum", "snapshot_id", "captured_at", "parent_snapshot", "s
 SNAPSHOT_VERSION = 2  # absent: one card (written before multi-card snapshots); 2: plus other_cards
 
 
+def _newer_snapshot(data):
+    """True for a snapshot_version newer than this runtime writes (read as its top-level card only)."""
+    version = data.get("snapshot_version")
+    return type(version) is int and version > SNAPSHOT_VERSION
+
+
 def snapshot_cards(data):
     """The cards a validated snapshot holds, sealed as stored in records/: its current card (the
-    top-level copy) first, then its other_cards (none in a snapshot written before them)."""
+    top-level copy) first, then its other_cards (none in a snapshot written before them, and
+    none read from a newer snapshot_version)."""
     top = _seal({k: v for k, v in data.items() if k not in SNAPSHOT_KEYS} | {"kind": "record"})
-    return [top] + copy.deepcopy(data.get("other_cards", []))
+    return [top] + ([] if _newer_snapshot(data) else copy.deepcopy(data.get("other_cards", [])))
 
 
 def _seal(data):
@@ -901,8 +913,11 @@ def list_snapshots(root, snapshot_id=None):
                 continue
             result.append({k: data[k] for k in ("snapshot_id", "session_id", "captured_at", "parent_snapshot")}
                           | {"work_id": data["payload"]["work_id"], "phase": data["payload"]["phase"],
-                             "works": [{"work_id": card["payload"]["work_id"], "phase": card["payload"]["phase"]}
-                                       for card in snapshot_cards(data)]})
+                             "works": [{k: card["payload"][k] for k in ("work_id", "phase")}
+                                       | {k: card[k] for k in ("recorded_at", "revision")}
+                                       for card in snapshot_cards(data)]}
+                          | ({"note": "snapshot_version %d is newer than this runtime: only its current card "
+                                      "is read" % data["snapshot_version"]} if _newer_snapshot(data) else {}))
     return result
 
 
@@ -947,13 +962,22 @@ def resume(root, session, snapshot_id, works=None):
     request = {card["revision"]: "adopt:" + snapshot_id if len(held) == 1
                else "adopt:%s:%s" % (snapshot_id, digest(card["payload"]["work_id"])) for card in chosen}
     records = session_dir(root, session) / "records"
-    for card in chosen:  # refuse before adopting anything: no partial adoption on a conflict
+    for card in chosen:  # an existing chain of any named work refuses the whole set before anything is adopted
         path = records / (digest(session + "\0record\0" + request[card["revision"]]) + ".json")
         guard(handoff_home(), path)
         if not path.exists() and current(root, session, card["payload"]["work_id"]) is not None:
-            raise StoreError("REVISION_CONFLICT")
+            raise StoreError("REVISION_CONFLICT", None, {"work_id": card["payload"]["work_id"]})
     # Oldest first, so the snapshot's most recently written chosen card becomes the session's current card.
-    adopted = [adopt(root, session, card, snapshot_id, request[card["revision"]]) for card in reversed(chosen)]
+    # A record or lock racing in between can stop the loop after some adoptions: replaying the same set
+    # returns those (idempotent per request id) and adopts the rest.
+    adopted = []
+    for card in reversed(chosen):
+        try:
+            adopted.append(adopt(root, session, card, snapshot_id, request[card["revision"]]))
+        except StoreError as exc:
+            if str(exc) == "REVISION_CONFLICT":
+                raise StoreError("REVISION_CONFLICT", None, {"work_id": card["payload"]["work_id"]}) from exc
+            raise
     adopted.reverse()
     return adopted[0] if len(adopted) == 1 else {"adopted_from": snapshot_id, "cards": adopted}
 

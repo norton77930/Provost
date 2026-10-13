@@ -481,10 +481,12 @@ def show(ws, ref, *, all_repos=False):
     try:
         data = (_archive_file(home, repo, found) if letter == "a"
                 else _session_file(home, repo, folder, found, kind))
-        if letter == "s":  # the snapshot's current card, or with a card suffix one of its other cards
+        if letter == "s":  # the snapshot's current card, or with a card suffix the held card it names
             held = snapshot_cards(data)
-            cards = held[:1] if card_prefix is None else [c for c in held[1:] if c["revision"].startswith(card_prefix)]
-            if len(cards) != 1:
+            cards = held[:1] if card_prefix is None else [c for c in held if c["revision"].startswith(card_prefix)]
+            if len(cards) > 1:
+                raise StoreError("REF_AMBIGUOUS")
+            if not cards:
                 raise StoreError("REF_NOT_FOUND")
             data = cards[0]
         _when(data.get("recorded_at"))

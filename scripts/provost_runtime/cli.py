@@ -221,7 +221,7 @@ def main(argv=None):
         return 0
     except (ConfigError, StoreError) as exc:
         detail = getattr(exc, "detail", None)
-        extra = getattr(exc, "extra", None) or {}
+        extra = search.redact(getattr(exc, "extra", None) or {})  # choices quote card text
         print(json.dumps({"error": str(exc), **({"detail": detail} if detail else {}), **extra}))
         return 1
     except (OSError, UnicodeError, json.JSONDecodeError):

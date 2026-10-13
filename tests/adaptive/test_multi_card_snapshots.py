@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 from _support import BASH, FixtureCase, REPO
 from provost_runtime import store
 from provost_runtime.config import handoff_home
@@ -59,9 +60,11 @@ class MultiCardSnapshotTests(FixtureCase):
         taken = self.three_open_one_done()
         self.assertEqual((taken["snapshot_version"], taken["payload"]["work_id"]), (2, "C"))  # the current card
         self.assertEqual([card["payload"]["work_id"] for card in taken["other_cards"]], ["B", "A"])
+        held = [taken] + taken["other_cards"]
         self.assertEqual(self.listing(taken["snapshot_id"])["works"],
-                         [{"work_id": "C", "phase": "implementation"}, {"work_id": "B", "phase": "implementation"},
-                          {"work_id": "A", "phase": "implementation"}])
+                         [{"work_id": card["payload"]["work_id"], "phase": "implementation",
+                           "recorded_at": card["recorded_at"], "revision": card["revision"]} for card in held])
+        self.assertEqual([card["payload"]["work_id"] for card in held], ["C", "B", "A"])
         self.assertEqual(self.snapshot(), taken)  # idempotent per request id
 
     def test_a_done_current_card_is_not_held_unless_nothing_is_open(self):
@@ -119,7 +122,7 @@ class MultiCardSnapshotTests(FixtureCase):
                          (1, {"error": "SAME_SESSION_ADOPTION"}))
         self.write("A", "own A", session="s4")
         self.assertEqual(self.runtime("resume", "--from", taken["snapshot_id"], "--work", "B", "--work", "A",
-                                      session="s4"), (1, {"error": "REVISION_CONFLICT"}))
+                                      session="s4"), (1, {"error": "REVISION_CONFLICT", "work_id": "A"}))
         self.assertEqual([card["payload"]["work_id"] for card in store.cards(self.root, "s4")], ["A"])  # B not adopted
         self.assertEqual(self.runtime("status", "--work", "A", "--work", "B", session="s4"),
                          (1, {"error": "INVALID_ARGUMENTS"}))
@@ -161,7 +164,9 @@ class MultiCardSnapshotTests(FixtureCase):
         card = self.record_v1(self.root, "s1", legacy, None, "old")
         ident = self.old_snapshot(card)
         self.drop_records()
-        self.assertEqual(self.listing(ident)["works"], [{"work_id": "L", "phase": "implementation"}])
+        self.assertEqual(self.listing(ident)["works"], [{"work_id": "L", "phase": "implementation",
+                                                         "recorded_at": card["recorded_at"],
+                                                         "revision": card["revision"]}])
         code, found = self.runtime("search", "--query", "OLDSNAP", session=None)
         self.assertEqual([(hit["source"], hit["work_id"]) for hit in found["results"]], [("snapshot", "L")], found)
         code, shown = self.runtime("search", "--show", found["results"][0]["ref"], session=None)
@@ -239,3 +244,103 @@ class MultiCardSnapshotTests(FixtureCase):
         archived = json.loads(store._archive_path(archive, "A").read_text(encoding="utf-8"))
         shifted = datetime.fromisoformat(archived["recorded_at"]) + timedelta(days=40)
         self.assertLess(abs((shifted - datetime.now(timezone.utc)).total_seconds()), 600)  # the backdated copy
+
+    def rewrite(self, taken, **changes):
+        """Replace fields of a stored snapshot of s1 and reseal it (its other_cards are left as given)."""
+        path = store.session_dir(self.root, "s1") / "snapshots" / (taken["snapshot_id"] + ".json")
+        data = {k: v for k, v in json.loads(path.read_text(encoding="utf-8")).items() if k != "checksum"}
+        path.write_text(json.dumps(store._seal(data | changes)), encoding="utf-8")
+
+    def test_a_partial_adoption_completes_by_replaying_the_same_set(self):
+        taken = self.three_open_one_done()
+        real, calls = store.adopt, []
+
+        def flaky(*args, **kwargs):  # the second adoption meets a busy lock
+            calls.append(args[2]["payload"]["work_id"])
+            if len(calls) == 2:
+                raise store.StoreError("STORE_BUSY")
+            return real(*args, **kwargs)
+        with mock.patch.object(store, "adopt", flaky), self.assertRaises(store.StoreError) as caught:
+            store.resume(self.root, "s2", taken["snapshot_id"], ["A", "B", "C"])
+        self.assertEqual((str(caught.exception), calls), ("STORE_BUSY", ["A", "B"]))
+        first = store.cards(self.root, "s2")
+        self.assertEqual([card["payload"]["work_id"] for card in first], ["A"])
+        done = store.resume(self.root, "s2", taken["snapshot_id"], ["A", "B", "C"])
+        self.assertEqual([card["payload"]["work_id"] for card in done["cards"]], ["C", "B", "A"])
+        self.assertEqual(done["cards"][2], first[0])  # the earlier adoption is returned, not repeated
+        self.assertEqual([card["payload"]["work_id"] for card in store.cards(self.root, "s2")], ["C", "B", "A"])
+
+    def test_a_record_racing_a_multi_adoption_names_its_work(self):
+        taken = self.three_open_one_done()
+        real = store.adopt
+
+        def racing(*args, **kwargs):
+            if args[2]["payload"]["work_id"] == "B":
+                self.write("B", "written meanwhile", session="s3")
+            return real(*args, **kwargs)
+        with mock.patch.object(store, "adopt", racing), self.assertRaises(store.StoreError) as caught:
+            store.resume(self.root, "s3", taken["snapshot_id"], ["A", "B"])
+        self.assertEqual((str(caught.exception), caught.exception.extra), ("REVISION_CONFLICT", {"work_id": "B"}))
+        self.assertEqual(store.current(self.root, "s3", "A")["adopted_from"], taken["snapshot_id"])
+
+    def test_the_adoption_marker_survives_trimming(self):
+        self.write("A", "a next")
+        taken = self.snapshot()
+        adopted = store.resume(self.root, "s2", taken["snapshot_id"])
+        for step in range(6):
+            self.write("A", "step %d" % step, session="s2")
+        records = store.session_dir(self.root, "s2") / "records"
+        self.assertFalse((records / (adopted["revision"] + ".json")).exists())
+        self.assertEqual(store.current(self.root, "s2", "A")["adopted_at"], adopted["adopted_at"])
+
+    def test_corrupt_other_cards_fail_reads_and_hooks_degrade(self):
+        self.write("A", "a next")
+        self.write("B", "b next")
+        taken = self.snapshot()
+        tampered = dict(taken["other_cards"][0], payload=dict(taken["other_cards"][0]["payload"], next="forged"))
+        self.rewrite(taken, other_cards=[tampered])  # the snapshot is sealed, its card's checksum is not
+        self.assertEqual(self.listing(taken["snapshot_id"]), {"snapshot_id": taken["snapshot_id"],
+                                                               "error": "CORRUPT_RECORD"})
+        self.drop_records()
+        text = self.inject("s1")
+        self.assertIn("Checkpoint unavailable; verify current sources. Error: CORRUPT_RECORD", text)
+        self.write("C", "c next")
+        result = handle_event({"hook_event_name": "PreCompact", "trigger": "auto", "session_id": "s1",
+                               "cwd": str(self.root)}, self.config_path)
+        self.assertIsInstance(result, dict)
+        snapshots = store.session_dir(self.root, "s1") / "snapshots"
+        self.assertEqual([path.stem for path in snapshots.glob("*.json")], [taken["snapshot_id"]])
+
+    def test_search_shows_each_card_of_a_schema_2_snapshot_by_its_ref(self):
+        self.write("A", "ANEXT marker")
+        self.write("B", "BNEXT marker")
+        taken = self.snapshot()
+        self.drop_records()
+        code, found = self.runtime("search", "--query", "ANEXT", session=None)
+        ref = found["results"][0]["ref"]
+        self.assertEqual((found["results"][0]["source"], ref.count(":")), ("snapshot", 4), found)
+        code, shown = self.runtime("search", "--show", ref, session=None)
+        self.assertEqual((code, shown["work_id"], shown["payload"]["next"]), (0, "A", "ANEXT marker"), shown)
+        top = ref.rsplit(":", 1)[0]
+        code, shown = self.runtime("search", "--show", top + ":" + taken["revision"][:12], session=None)
+        self.assertEqual((code, shown["work_id"]), (0, "B"), shown)  # the suffix form also names the top card
+        twin = store._seal({k: v for k, v in taken["other_cards"][0].items() if k != "checksum"}
+                           | {"revision": taken["revision"][:12] + "0" * 52})
+        self.rewrite(taken, other_cards=[twin])
+        self.assertEqual(self.runtime("search", "--show", top + ":" + taken["revision"][:12], session=None),
+                         (1, {"error": "REF_AMBIGUOUS"}))
+
+    def test_a_newer_snapshot_version_is_read_as_its_current_card(self):
+        self.write("A", "AFUTURE next")
+        self.write("B", "b next")
+        taken = self.snapshot()
+        self.drop_records()
+        self.rewrite(taken, snapshot_version=3, other_cards="a future format")
+        listed = self.listing(taken["snapshot_id"])
+        self.assertEqual(([work["work_id"] for work in listed["works"]], "newer" in listed["note"]), (["B"], True))
+        code, found = self.runtime("search", "--query", "AFUTURE", session=None)
+        self.assertEqual((code, found["results"]), (0, []), found)
+        code, adopted = self.runtime("resume", "--from", taken["snapshot_id"], session="s2")
+        self.assertEqual((code, adopted["payload"]["work_id"]), (0, "B"), adopted)
+        self.rewrite(taken, snapshot_version=1)
+        self.assertEqual(self.listing(taken["snapshot_id"])["error"], "CORRUPT_RECORD")

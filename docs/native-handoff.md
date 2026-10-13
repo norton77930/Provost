@@ -258,7 +258,9 @@ entries.)
 opaque (`r:`, `s:` or `a:` prefix) and returned as before: the full `payload` with
 `ref`, `source`, `recorded_at`, `worktree_path`, `work_id` and `phase`. A snapshot ref
 names the snapshot's current card; each other card it holds has its own ref, the
-snapshot ref plus `:` and the first 12 characters of that card's revision. A log entry's
+snapshot ref plus `:` and the first 12 characters of that card's revision. The suffix
+form is matched against every card the snapshot holds, the current one included;
+a prefix matching several is `REF_AMBIGUOUS`. A log entry's
 ref is `<work_id>:<entry id>`, for example `hook-perf:D2` (the entry id is the part after
 the last `:`, so a work_id may contain colons). Outside the workspace's repo (with
 `--all-repos`) it carries the repo dir as a prefix, `@<repo dir>:<work_id>:<entry id>`,
@@ -307,11 +309,16 @@ with its own checksum). The top-level copy marks the snapshot's current card.
 Snapshots written before multi-card snapshots have neither `snapshot_version` nor
 `other_cards` and hold their one card; every reader accepts both. A snapshot whose
 `other_cards` are not cards of the same repo and session, one per work_id, is
-unreadable like any other damaged snapshot.
+unreadable (`CORRUPT_RECORD` or `RECORD_IDENTITY_MISMATCH`) like any other damaged
+snapshot, as is one with `other_cards` but no `snapshot_version` or with a
+`snapshot_version` below 2. A `snapshot_version` above 2 (written by a newer runtime)
+is read as its current card only: its `other_cards` are ignored, not checked.
 
 `list` returns, per snapshot, `snapshot_id`, `session_id`, `captured_at`,
 `parent_snapshot`, the current card's `work_id` and `phase`, and `works`: every
-held card as `{work_id, phase}`, current card first.
+held card as `{work_id, phase, recorded_at, revision}`, current card first. A
+snapshot of a newer `snapshot_version` also has a `note` saying only its current card
+is read.
 
 `resume --from <snapshot-id>` adopts the snapshot's only card. When the snapshot
 holds several, it adopts nothing and fails with `WORK_CHOICE_REQUIRED`, returning
@@ -327,9 +334,14 @@ any decision log, and the card records `adopted_from` (the snapshot id) and
 `adopted_at` (the adoption time). The adopted works keep the snapshot's order, so its
 most recently written chosen card becomes the session's current card. Adopting into
 the snapshot's own session is `SAME_SESSION_ADOPTION`; naming a work the session
-already has a chain for is `REVISION_CONFLICT`, checked for every named work before
-any is adopted, so a conflict adopts nothing. Replaying the same resume returns the
-cards it adopted.
+already has a chain for is `REVISION_CONFLICT` with that `work_id`. Existing chains
+are checked for every named work before any is adopted, so a conflict that exists
+when resume starts adopts nothing. A record of a named work written concurrently
+(`REVISION_CONFLICT` with its `work_id`) or a busy session lock (`STORE_BUSY`) can
+stop resume after some works were adopted: replaying the same resume (same snapshot,
+same `--work` set) returns the cards already adopted and adopts the rest. Replaying a
+completed resume returns the cards it adopted. Error results quote card text
+(`choices`) through the same secret redaction as search.
 
 `adopted_at` is the join marker of an adopted work: every later card of that chain
 inherits it (a card that was not adopted has none), so it survives trimming.
@@ -495,7 +507,13 @@ reused against the current head records a new entry (the chain stays valid); a s
 with cards of several works cannot be read by a runtime older than per-work cards
 (`AMBIGUOUS_CHAIN`, or `CORRUPT_RECORD` once several chains were cut); a runtime older
 than multi-card snapshots reads only the current card of a `snapshot_version` 2
-snapshot and ignores its `other_cards`; leftovers of
+snapshot and ignores its `other_cards`, and its prune archives that current card with
+`snapshot_version` and `other_cards` left inside the archived record (this runtime
+still reads such an archive file); a record written by such an older runtime on an
+adopted chain drops `adopted_at`, and the marker is not restored after upgrading
+again; record fields must never use the names a snapshot reserves (`snapshot_id`,
+`captured_at`, `parent_snapshot`, `snapshot_version`, `other_cards`), since they are
+dropped when a snapshot's current card is read back; leftovers of
 an interrupted trim stay on disk until that work's chain is trimmed again, so a chain
 never written again keeps them (reads skip them); submodules, bare-backed and
 separate-git-dir checkouts are refused (`REPO_KEY_UNRESOLVED`); Git older than

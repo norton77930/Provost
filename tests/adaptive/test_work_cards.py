@@ -231,7 +231,8 @@ class WorkCardTests(FixtureCase):
                          (adopted["revision"], ["B"]))
         code, _ = self.cli("s3", "record", "--expected", "null", "--request-id", "a1", data=self.card("A", "own"))
         self.assertEqual(code, 0)
-        self.assertEqual(self.cli("s3", "resume", "--from", taken["snapshot_id"]), (1, {"error": "REVISION_CONFLICT"}))
+        self.assertEqual(self.cli("s3", "resume", "--from", taken["snapshot_id"]),
+                         (1, {"error": "REVISION_CONFLICT", "work_id": "A"}))
 
     def test_snapshot_and_precompact_capture_the_most_recently_written_card(self):
         a = self.record("A", "a1", None, "a1")
