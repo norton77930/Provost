@@ -583,7 +583,8 @@ def latest(root, session):
 LOG_SCHEMA = 1
 LOG_ENTRY_ID = re.compile(r"^([DE])([1-9][0-9]*)$")
 LOG_KINDS = {"decision": "D", "evidence": "E"}
-LOG_RUNTIME_FIELDS = ("id", "kind", "at", "session", "record", "migrated")  # migrated: true, set by migrate
+# migrated: true, set by migrate; redacted_at (ISO time) and the optional redaction_reason, set by redact
+LOG_RUNTIME_FIELDS = ("id", "kind", "at", "session", "record", "migrated", "redacted_at", "redaction_reason")
 LOG_LOCK_WAIT = 10.0  # seconds a record waits for another session's append to the same work
 
 
@@ -627,10 +628,14 @@ def _parse_log(ws, work_id, raw):
                 or not isinstance(entry.get("session"), str) or not entry["session"]
                 or not isinstance(entry.get("record", ""), str)
                 or entry.get("migrated", True) is not True
+                or not isinstance(entry.get("redaction_reason", ""), str)
+                or ("redaction_reason" in entry and "redacted_at" not in entry)
                 or not (_valid_decision if kind == "decision" else _valid_evidence)(fields)):
             raise StoreError("CORRUPT_LOG")
         try:
             _when(entry.get("at"))
+            if "redacted_at" in entry:
+                _when(entry["redacted_at"])
         except StoreError as exc:
             raise StoreError("CORRUPT_LOG") from exc
         last[match[1]] = int(match[2])

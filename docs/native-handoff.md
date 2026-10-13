@@ -419,6 +419,61 @@ bash "<runtime>/hooks/runtime" prune --workspace "<root>" --session "<session>"
 Show the listed candidates to the user before running the same command with
 `--apply`.
 
+## Redact
+
+Maintainer only. Removes the content of one decision log entry, for example a
+decision or claim that accidentally holds a secret:
+
+```bash
+! bash "<runtime>/hooks/runtime" redact --workspace "<root>" --work "<work_id>" \
+  --entry "<id>" [--reason "<text>"]
+```
+
+A decision's `text`, or an evidence entry's `claim` and `ref`, becomes `[removed]`.
+Everything else stays: `id`, `kind`, `at`, `session`, `record`, a decision's `refs`
+and `supersedes`, an evidence entry's `state` and `updates`. The entry gains
+`redacted_at` (ISO-8601) and, with `--reason`, `redaction_reason` (1 to 1000
+characters; it is stored and printed, so never put the secret in it). Links from or to
+the entry still resolve, and `status` shows the marker instead of the content.
+Redacting an entry that is already redacted succeeds without any change (`changed`
+false; the first reason stays). Output: `work_id`, `entry` (the redacted entry) and
+`changed`. Errors: `ENTRY_NOT_FOUND` (no such id, or the work has no log),
+`INVALID_REASON`, `INVALID_ARGUMENTS` (`--work` or `--entry` missing), `STORE_BUSY`,
+`CORRUPT_LOG`/`FOREIGN_REPO` (a log that fails closed is not rewritten) and
+`WRITE_FAILED`.
+
+This is the one rewrite of a log. It runs under the work's log lock (the lock
+`record` appends under, waiting up to 10 seconds, `STORE_BUSY` after) and takes no
+session lock. Committed lines are copied unchanged except the redacted one; a torn
+tail is dropped. The new log is written to a temporary `.pending-*` file in `logs/`,
+fsynced, then moved over the log in one `os.replace`, so a crash leaves either the
+old log or the new one, never a mix, and the result ends with a newline as appends
+require. A crash before the move can leave the `.pending-*` file; it holds the
+redacted log, and can be deleted. On Windows the move fails while another process has
+the log open (a `status`, `search` or hook reading it): that is `WRITE_FAILED`, the
+log is unchanged, and running the same command again is safe.
+
+Replaying a `record` request whose entries were redacted returns `REQUEST_ID_REUSED`,
+even when the earlier attempt was interrupted before its card was written: the log
+no longer holds what the request sent. Write a new request ID instead. Redaction only
+rewrites the log: copies elsewhere (session transcripts, schema 1 cards, snapshots,
+archive files, migrate backups and output already shown) keep the content.
+
+The model must not run this command. Deny it in the Claude Code settings with a
+permission rule rather than relying on instructions, and run it yourself with the `!`
+prefix, which runs the command directly in your shell and not as a model tool call,
+so the deny rule does not apply to it. Example for the `permissions` object of
+`~/.claude/settings.json` (this repository does not install it):
+
+```json
+{"permissions": {"deny": ["Bash(*runtime* redact*)"]}}
+```
+
+`*` matches any characters, so the rule covers the quoted wrapper path
+(`bash "<runtime>/hooks/runtime" redact`), both path separators and the module form
+(`python -m provost_runtime.cli redact`). A Bash rule matches the command text, so it
+blocks the documented invocation, not every conceivable way of rewriting the file.
+
 ## Reminder hook
 
 `hooks/native-facts` captures facts and reminds the main session, which otherwise
