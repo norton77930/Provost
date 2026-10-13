@@ -37,16 +37,21 @@ and pruning session directories never touches it. Line 1 is a header (`kind: "lo
 - decision: `{id, kind: "decision", at, session, record, text, refs?, supersedes?}`
 - evidence: `{id, kind: "evidence", at, session, record, claim, state, ref, updates?}`
 
-`id` (`D1, D2, …` and `E1, E2, …`, sequential per work and kind), `kind`, `at`,
-`session` and `record` (the revision of the card written with the entry) are filled
-by the runtime. Ids are assigned and lines appended under a per-work lock
+`id` (`D1, D2, …` and `E1, E2, …`, sequential per work and kind), `kind`, `at`
+(ISO-8601), `session` and `record` (the revision of the card written with the
+entry) are filled by the runtime; entries imported by `migrate` also carry
+`migrated: true` and may lack `record`. Ids are unique references, not time order
+(migrated entries can take later ids than newer entries): every view orders entries
+by `at`, and entries with the same `at` keep their log order (ids ascending per
+kind). Ids are assigned and lines appended under a per-work lock
 (`logs/<sha256(work_id)>.lock`) that a `record` waits for up to 10 seconds
 (`STORE_BUSY` after), so concurrent writers from any session or worktree never
 reuse an id. Entries are never rewritten. A line exists only once its terminating
 newline is written: all lines of one `record` go out in one write followed by
 fsync. Bytes after the last newline are a torn append (a crash mid-write): readers
 ignore them and the next append cuts them off. A newline-terminated line that is
-not a valid entry, or a header naming another repo or work, makes the log fail
+not a valid entry (including an `at` that is not an ISO-8601 time or a `migrated`
+other than `true`), or a header naming another repo or work, makes the log fail
 closed (`CORRUPT_LOG`, `FOREIGN_REPO`): `status` reports the error and `record`
 refuses to append. A `record` appends its entries before it writes its card; if it
 is interrupted in between, replaying the same request appends only what is missing.
@@ -90,7 +95,7 @@ bash "<runtime>/hooks/runtime" status --workspace "<root>" --session "<session>"
 Output: expected (revision or null), checkpoint (complete current record or null),
 facts (summary of the session's `facts.json`, or null before the first PreCompact),
 template (all request fields) and log (the decision log of the shown work: `total`
-entries and the `newest` 10, oldest first; `{"error": <code>}` when the log is
+entries and the `newest` 10 by `at`, oldest first; `{"error": <code>}` when the log is
 unreadable; `total` 0 when no work is shown). Read-only. SESSION_NOT_BOUND means fix the
 session startup/workspace configuration; do not fabricate binding files.
 
@@ -184,6 +189,10 @@ substitution, env-var prefix or line continuation, because worktree guards refus
 
 Use a new request ID for new content; retry the same ID only with identical content
 (card and new entries): a replay returns the stored card and appends nothing.
+One window cannot be enforced: while a request whose entries were logged has no card
+yet (it was interrupted between the two writes), a replay is checked only against
+the entries already logged, so one that adds further entries or carries a different
+card is accepted and appends the extra entries.
 `--expected` is the head of the payload's work chain: when switching to another
 work, read it with `status --work "<work_id>"` first.
 After REVISION_CONFLICT rerun status and reconcile. Never force an overwrite.
@@ -208,7 +217,10 @@ The corpus is each session's newest valid record (a session's decision list is
 cumulative, so older records add nothing), every valid snapshot, and every valid file
 in `archive/`. Unreadable, checksum-invalid or foreign files are skipped and counted
 under `skipped`, never fatal. Searched items are each decision, each blocker, `next`
-and each evidence `claim`. An item matches when every whitespace-separated query
+and each evidence `claim` of those records. Only schema 1 cards hold decisions and
+evidence; for schema 2 cards they live in the decision log, which search does not
+read yet, so only their blockers and `next` are searched. Use `status --work
+<work_id>` (its `log` field) for a work's newest log entries. An item matches when every whitespace-separated query
 term (case-insensitive substring) appears in the item text or in its record's
 `work_id` or `phase`. Identical (`work_id`, `field`, text) hits are reported once, for
 the newest record. Results rank by how often the terms occur in the item text, then by
@@ -259,7 +271,8 @@ uncommitted count, session commit count; a subagent count by role; edits outside
 repos; a `Facts capture:` line when spool lines were unreadable or the session
 compacted with zero captured events, which means capture may be failing; omitted
 without `facts.json`), the checkpoint (payload, or its digest when
-over 4,500 characters), the activity since the last record, and the edited repo
+over 4,500 characters; a schema 2 card adds one line pointing to the work's decision
+log through `status --work <work_id>`), the activity since the last record, and the edited repo
 files, most recent first (at most 10, then `N more not listed` with the facts.json
 path; N also counts the oldest files the facts size cap dropped, which are in
 neither the list nor facts.json: `N more not listed: K in <facts.json>, D older not
@@ -382,7 +395,9 @@ an interrupted trim stay on disk until that work's chain is trimmed again, so a 
 never written again keeps them (reads skip them); submodules, bare-backed and
 separate-git-dir checkouts are refused (`REPO_KEY_UNRESOLVED`); Git older than
 2.31 is refused (`GIT_UNSUPPORTED`); on Windows without long-path support a long
-user or `PROVOST_HOME` path can exceed 260 characters.
+user or `PROVOST_HOME` path can exceed 260 characters; `search` does not read the
+decision log yet, so decisions and evidence recorded in schema 2 are found only
+through `status --work <work_id>`.
 Pass `--session <current-id>` to keep the running session. Directories with any
 record, snapshot, lock or other file, linked or reparse-point entries, and names
 that are not session digests are never candidates. With `--apply`, each candidate

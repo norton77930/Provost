@@ -178,7 +178,8 @@ LOG_FIELDS = ("new_decisions", "new_evidence")
 EVIDENCE_STATES = ("pass-observed", "fail", "unverified", "stale")
 LEGACY_GUIDANCE = ("record payloads no longer carry decisions or evidence: put only what is new since this "
                    "work's last record in new_decisions ([{text, refs?, supersedes?}]) and new_evidence "
-                   "([{claim, state, ref, updates?}]); earlier entries stay in the work's decision log")
+                   "([{claim, state, ref, updates?}]). Decisions and evidence of earlier schema 1 cards "
+                   "remain in those cards until migrate imports them; re-log any that still matter as new entries")
 
 
 def validate_payload(payload, version=RECORD_SCHEMA):
@@ -582,7 +583,7 @@ def latest(root, session):
 LOG_SCHEMA = 1
 LOG_ENTRY_ID = re.compile(r"^([DE])([1-9][0-9]*)$")
 LOG_KINDS = {"decision": "D", "evidence": "E"}
-LOG_RUNTIME_FIELDS = ("id", "kind", "at", "session", "record")
+LOG_RUNTIME_FIELDS = ("id", "kind", "at", "session", "record", "migrated")  # migrated: true, set by migrate
 LOG_LOCK_WAIT = 10.0  # seconds a record waits for another session's append to the same work
 
 
@@ -609,7 +610,8 @@ def _parse_log(ws, work_id, raw):
         entries = [json.loads(line.decode("utf-8")) for line in lines[1:]]
     except (UnicodeError, ValueError) as exc:
         raise StoreError("CORRUPT_LOG") from exc
-    if not isinstance(header, dict) or header.get("kind") != "log" or header.get("schema_version") != LOG_SCHEMA:
+    if (not isinstance(header, dict) or header.get("kind") != "log"
+            or type(header.get("schema_version")) is not int or header["schema_version"] != LOG_SCHEMA):
         raise StoreError("CORRUPT_LOG")
     if header.get("workspace_id") != ws.repo_key:
         raise StoreError("FOREIGN_REPO")
@@ -622,12 +624,24 @@ def _parse_log(ws, work_id, raw):
         match = LOG_ENTRY_ID.fullmatch(entry.get("id")) if isinstance(entry.get("id"), str) else None
         kind, fields = _log_entry_fields(entry)
         if (match is None or match[1] != LOG_KINDS[kind] or int(match[2]) <= last[match[1]]
-                or not all(isinstance(entry.get(k), str) and entry[k] for k in ("at", "session"))
+                or not isinstance(entry.get("session"), str) or not entry["session"]
                 or not isinstance(entry.get("record", ""), str)
+                or entry.get("migrated", True) is not True
                 or not (_valid_decision if kind == "decision" else _valid_evidence)(fields)):
             raise StoreError("CORRUPT_LOG")
+        try:
+            _when(entry.get("at"))
+        except StoreError as exc:
+            raise StoreError("CORRUPT_LOG") from exc
         last[match[1]] = int(match[2])
     return entries, end
+
+
+def newest_entries(entries, count):
+    """The `count` newest of a log's entries, oldest first. Ids are references, not time order:
+    entries order by `at`, and entries with the same `at` keep their log order (ids ascending per kind)."""
+    order = sorted(range(len(entries)), key=lambda i: (_when(entries[i]["at"]), i))
+    return [entries[i] for i in order[-count:]] if count > 0 else []
 
 
 def read_log(root, work_id):
@@ -653,15 +667,20 @@ def _log_lock(ws, work_id):
     lock.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + LOG_LOCK_WAIT
     try:
-        with ExitStack() as held:
-            while True:
-                try:
-                    held.enter_context(_locked(lock))
-                    break
-                except StoreError as exc:
-                    if str(exc) != "STORE_BUSY" or time.monotonic() >= deadline:
-                        raise
-                time.sleep(0.02)
+        while True:
+            held = ExitStack()
+            try:
+                stream = held.enter_context(_locked(lock))
+                # A lock on a moved-away or deleted file excludes no writer that opens the path now.
+                if os.name != "nt" and not _names(stream, lock):
+                    held.close()
+                    raise StoreError("STORE_BUSY")
+                break
+            except StoreError as exc:
+                if str(exc) != "STORE_BUSY" or time.monotonic() >= deadline:
+                    raise
+            time.sleep(0.02)
+        with held:
             yield
     except OSError as exc:
         raise StoreError("WRITE_FAILED") from exc

@@ -156,6 +156,11 @@ def _payload_text(payload):
     return _digest_text(payload)
 
 
+# Schema 2 cards hold no decisions or evidence; the work_id is in the payload shown after this line.
+LOG_POINTER = ("Decisions and evidence are in the work's decision log, not in this card: "
+               "status --work <work_id> shows its newest entries (log field).\n")
+
+
 def _recovery(root, session):
     """(header, payload, checkpoint path, checkpoint) of the newest checkpoint, or (message, None, None, None)."""
     # The latest milestone may be newer than the last compaction snapshot.
@@ -174,7 +179,8 @@ def _recovery(root, session):
             + "\nTranscript cursor: " + ("available (not a freshness guarantee)" if data.get("transcript_cursor") else "unavailable; gaps must be checked")
             + "\nRead this JSON file for the complete checkpoint.\n"
             + "If any assignment is not marked completed, verify that worker's actual state before dispatching; "
-            + "read the checkpoint file for full details.\n"), data["payload"], path, data
+            + "read the checkpoint file for full details.\n"
+            + (LOG_POINTER if data.get("schema_version") == 2 else "")), data["payload"], path, data
 
 
 def _never_recorded(root, session):

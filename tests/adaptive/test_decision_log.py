@@ -257,3 +257,100 @@ class DecisionLogTests(FixtureCase):
         self.assertIn("Observed payload digest", text)
         digest = json.loads(text.split("Observed payload digest (full JSON in the checkpoint file): ", 1)[1])
         self.assertNotIn("decisions", digest)
+
+    def log_path(self, work="A"):
+        """The documented log location: <home>/v2/repos/<repo_key[:16]>/logs/<sha256(work_id)>.jsonl."""
+        key = store.as_workspace(self.root).repo_key
+        return (self.store_home / "v2" / "repos" / key[:16] / "logs"
+                / (hashlib.sha256(work.encode("utf-8")).hexdigest() + ".jsonl"))
+
+    def append_lines(self, *items, work="A"):
+        path = self.log_path(work)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("ab") as stream:
+            for item in items:
+                stream.write((item if isinstance(item, bytes) else json.dumps(item).encode()) + b"\n")
+
+    def entry(self, ident, at, **extra):
+        return dict({"id": ident, "kind": "decision", "at": at, "session": "old", "text": "t " + ident}, **extra)
+
+    def test_a_header_of_another_repo_fails_closed(self):
+        self.append_lines({"kind": "log", "schema_version": 1, "workspace_id": "0" * 64, "work_id": "A"})
+        self.assertEqual(self.status("A")["log"], {"error": "FOREIGN_REPO"})
+        self.assertEqual(self.record(self.request(decisions=[{"text": "x"}])), "FOREIGN_REPO")
+        self.assertIsNone(self.status()["checkpoint"])
+
+    def test_a_header_with_a_bool_schema_version_fails_closed(self):
+        key = store.as_workspace(self.root).repo_key
+        self.append_lines({"kind": "log", "schema_version": True, "workspace_id": key, "work_id": "A"})
+        self.assertEqual(self.status("A")["log"], {"error": "CORRUPT_LOG"})
+
+    def test_a_torn_header_is_rewritten_by_the_first_append(self):
+        path = self.log_path()
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b'{"kind":"log","sche')  # a crash while creating the log
+        self.assertEqual(self.status("A")["log"], {"total": 0, "newest": []})
+        self.assertEqual(self.record(self.request(decisions=[{"text": "first"}]))["log_entries"], ["D1"])
+        header, line = path.read_bytes().splitlines()
+        self.assertEqual(json.loads(header)["kind"], "log")
+        self.assertEqual(json.loads(line)["id"], "D1")
+
+    def test_replay_after_another_session_appended_keeps_its_ids(self):
+        bind(self.root, "s2", {})
+        data = self.request(decisions=[{"text": "from s1"}])
+        real = store.atomic_write
+
+        def fail_card(base, path, payload):
+            if path.parent.name == "records":
+                raise store.StoreError("WRITE_FAILED")
+            return real(base, path, payload)
+        with mock.patch.object(store, "atomic_write", fail_card):
+            with self.assertRaises(store.StoreError):
+                store.record(self.root, "s1", data, None, "r1")
+        other = self.record(self.request(decisions=[{"text": "from s2"}]), session="s2")
+        self.assertEqual(other["log_entries"], ["D2"])
+        replay = self.record(data)
+        self.assertEqual(replay["log_entries"], ["D1"])
+        self.assertEqual(self.record(data), replay)
+        self.assertEqual([(e["id"], e["session"]) for e in self.status("A")["log"]["newest"]],
+                         [("D1", "s1"), ("D2", "s2")])
+
+    def test_a_held_log_lock_times_out_as_store_busy(self):
+        _, lock = store._log_paths(store.as_workspace(self.root), "A")
+        lock.parent.mkdir(parents=True)
+        with mock.patch.object(store, "LOG_LOCK_WAIT", 0.2), store._locked(lock):
+            with self.assertRaises(store.StoreError) as caught:
+                store.record(self.root, "s1", self.request(decisions=[{"text": "x"}]), None, "r1")
+        self.assertEqual(str(caught.exception), "STORE_BUSY")
+        self.assertIsNone(self.status()["checkpoint"])
+        self.assertEqual(self.record(self.request(decisions=[{"text": "x"}]))["log_entries"], ["D1"])
+
+    def test_migrated_entries_are_read_and_ids_continue_after_them(self):
+        self.record(self.request(decisions=[{"text": "live"}]))
+        self.append_lines(self.entry("D2", "2026-01-01T00:00:00+00:00", migrated=True))
+        status = self.status("A")
+        self.assertEqual((status["log"]["total"], status["log"]["newest"][0]["migrated"]), (2, True))
+        written = self.record(self.request(decisions=[{"text": "next"}]), status["expected"], "r2")
+        self.assertEqual(written["log_entries"], ["D3"])
+        self.append_lines(self.entry("D4", "2026-01-01T00:00:00+00:00", migrated=False))
+        self.assertEqual(self.status("A")["log"], {"error": "CORRUPT_LOG"})
+
+    def test_an_at_that_is_not_an_iso_time_fails_closed(self):
+        self.record(self.request(decisions=[{"text": "live"}]))
+        self.append_lines(self.entry("D2", "yesterday"))
+        self.assertEqual(self.status("A")["log"], {"error": "CORRUPT_LOG"})
+
+    def test_status_orders_the_newest_entries_by_time_not_by_id(self):
+        self.record(self.request(decisions=[{"text": "live %d" % i} for i in range(9)]))
+        # Imported later with older times (as migrate does): higher ids, earlier at.
+        self.append_lines(*[self.entry("D%d" % i, "2026-01-%02dT00:00:00+00:00" % (13 - i), migrated=True)
+                            for i in (10, 11, 12)])
+        newest = self.status("A")["log"]["newest"]
+        self.assertEqual([e["id"] for e in newest], ["D10"] + ["D%d" % i for i in range(1, 10)])
+
+    def test_recovery_text_points_a_version_2_card_to_its_log(self):
+        self.record(self.request(decisions=[{"text": "logged"}]))
+        self.assertIn("status --work <work_id> shows its newest entries", recovery_context(self.root, "s1"))
+        bind(self.root, "s2", {})
+        self.record_v1(self.root, "s2", self.payload_v1(), None, "old")
+        self.assertNotIn("status --work <work_id> shows", recovery_context(self.root, "s2"))
