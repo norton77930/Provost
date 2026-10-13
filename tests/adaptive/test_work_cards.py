@@ -123,7 +123,8 @@ class WorkCardTests(FixtureCase):
         second = self.record("A", "a2", first["revision"], "a2")
         status = self.status()
         self.assertEqual(set(status), STATUS_KEYS)
-        self.assertEqual((status["expected"], status["checkpoint"]), (second["revision"], second))
+        card = {k: v for k, v in second.items() if k not in ("warnings", "echo")}  # record output extras
+        self.assertEqual((status["expected"], status["checkpoint"]), (second["revision"], card))
         self.assertEqual(self.status("A"), status)
 
     def test_legacy_chain_continues_with_its_head_work_and_starts_new_works_fresh(self):
@@ -205,7 +206,8 @@ class WorkCardTests(FixtureCase):
         write("A")
         # The process died after the horizon write, before deleting A1.
         leftover = records / (written["A"][1]["revision"] + ".json")
-        leftover.write_text(json.dumps(written["A"][1]), encoding="utf-8")
+        stored = {k: v for k, v in written["A"][1].items() if k not in ("warnings", "echo")}  # record output extras
+        leftover.write_text(json.dumps(stored), encoding="utf-8")
         self.assertEqual(self.horizon(), ids(1, 0))
         self.assertEqual((self.status("A")["expected"], self.status("B")["expected"]), (heads["A"], heads["B"]))
         write("B")  # trimming the other chain leaves A's leftover
