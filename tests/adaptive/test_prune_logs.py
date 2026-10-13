@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from unittest import mock
 from _support import BASH, FixtureCase, REPO
 from provost_runtime import migrate, store
+from provost_runtime.config import handoff_home
 from provost_runtime.hooks import bind
 from provost_runtime.store import digest, prune, session_dir
 
@@ -48,7 +49,8 @@ class IdleLogPruneTests(FixtureCase):
         return store._log_paths(store.as_workspace(self.root), work)
 
     def backdate(self, work, days, session="s1", log=True):
-        """Shift the stored times of the session's cards (resealed) and, with log, of the work's log entries."""
+        """Shift the stored times of the session's cards (resealed) and, with log, of the work's log entries
+        and the log file's mtime."""
         for path in (session_dir(self.root, session) / "records").glob("*.json"):
             data = json.loads(path.read_text(encoding="utf-8"))
             data.pop("checksum")
@@ -62,6 +64,8 @@ class IdleLogPruneTests(FixtureCase):
                 entry["at"] = (datetime.fromisoformat(entry["at"]) - timedelta(days=days)).isoformat()
                 entries[index] = json.dumps(entry)
             path.write_text("\n".join([header, *entries]) + "\n", encoding="utf-8")
+            stamp = datetime.now(timezone.utc).timestamp() - days * DAY
+            os.utime(path, (stamp, stamp))
 
     def logs(self, apply=False):
         return prune(self.root, apply=apply)["idle_logs"]
@@ -137,6 +141,26 @@ class IdleLogPruneTests(FixtureCase):
         self.assertEqual((result["removed"], result["skipped"]), (0, [{"work_id": "A", "reason": "RECENT"}]))
         self.assertTrue(self.paths("A")[0].is_file())
 
+    def test_a_log_gone_between_listing_and_lock_is_not_an_error(self):
+        result = self.recheck(lambda: self.paths("A")[0].unlink())
+        self.assertEqual(self.listed(result), [("A", "done", True, None)])
+        self.assertEqual((result["removed"], result["skipped"], result["errors"]), (0, [], []))
+
+    def test_a_leftover_appearing_between_listing_and_lock_keeps_the_log(self):
+        leftover = session_dir(self.root, "any").parent / (".pruning-" + "c" * 64)
+        result = self.recheck(lambda: leftover.mkdir(parents=True))
+        self.assertEqual((result["removed"], result["skipped"]), (0, [{"work_id": "A", "reason": "LEFTOVER_PENDING"}]))
+        self.assertTrue(self.paths("A")[0].is_file())
+
+    def test_a_schema1_card_appearing_between_listing_and_lock_keeps_the_log(self):
+        def schema1_card():
+            bind(self.root, "late", {})
+            self.record_v1(self.root, "late", dict(self.payload_v1(decisions=["Late decision"]), work_id="A",
+                                                   phase="done"), None, "v1")
+            self.backdate("A", 300, session="late", log=False)
+        result = self.recheck(schema1_card)
+        self.assertEqual((result["removed"], result["skipped"]), (0, [{"work_id": "A", "reason": "SCHEMA1_SOURCES"}]))
+
     def test_an_idle_orphan_log_is_removed_only_with_apply(self):
         self.orphan()
         self.assertEqual(self.listed(self.logs()), [("gone", "orphan", True, None)])
@@ -182,6 +206,30 @@ class IdleLogPruneTests(FixtureCase):
         self.backdate("gone", 400, session="old", log=False)
         self.assertEqual(self.listed(self.logs()), [("gone", "done", False, "SCHEMA1_SOURCES")])
         self.assertEqual(self.logs(apply=True)["removed"], 0)
+
+    def test_a_schema1_archive_file_keeps_the_log(self):
+        self.orphan()
+        bind(self.root, "archived", {})
+        card = self.record_v1(self.root, "archived", dict(self.payload_v1(decisions=["Archived decision"]),
+                                                          work_id="gone", phase="done"), None, "v1")
+        base = store._base(store.as_workspace(self.root))
+        store.atomic_write(handoff_home(), store._archive_path(base / "archive", "gone"), card)
+        shutil.rmtree(session_dir(self.root, "archived"))
+        self.assert_kept("SCHEMA1_SOURCES")
+
+    def test_a_migrated_log_keeps_its_grace_across_prune_runs(self):
+        bind(self.root, "old", {})
+        self.record_v1(self.root, "old", dict(self.payload_v1(decisions=["Decision only in a schema 1 card"]),
+                                              work_id="legacy", phase="done"), None, "v1")
+        shift(session_dir(self.root, "old"), 400)
+        migrate.migrate(self.root, apply=True)
+        self.assertLess(datetime.fromisoformat(store.read_log(self.root, "legacy")[0]["at"]),
+                        datetime.now(timezone.utc) - timedelta(days=399))  # migrated entries keep their time
+        first = prune(self.root, apply=True)
+        self.assertEqual((first["expired_removed"], first["idle_logs"]["removed"]), (1, 0))
+        second = prune(self.root, apply=True)["idle_logs"]
+        self.assertEqual((second["candidates"], second["removed"]), ([], 0))  # the fresh file mtime counts
+        self.assertTrue(self.paths("legacy")[0].is_file())
 
     def test_a_done_work_with_a_broken_chain_elsewhere_is_kept(self):
         self.write("A", phase="done", session="s1")
@@ -274,6 +322,35 @@ class SessionPruneTests(FixtureCase):
                          (0, [], [{"entry": directory.name, "reason": "UNMIGRATED_DECISIONS"}]))
         self.assertTrue((directory / "records").is_dir())
         self.assertEqual(list(directory.parent.glob(".pruning-*")), [])
+
+
+class MigrateDryRunTests(FixtureCase):
+    def old_session(self, name, work, decisions):
+        bind(self.root, name, {})
+        self.record_v1(self.root, name, dict(self.payload_v1(decisions=decisions), work_id=work), None, "r1")
+        directory = session_dir(self.root, name)
+        shift(directory, 40)
+        return directory
+
+    def test_the_dry_run_runs_once_per_prune_and_writes_nothing(self):
+        first = self.old_session("one", "alpha", ["Decision of alpha in a schema 1 card"])
+        second = self.old_session("two", "beta", ["Decision of beta in a schema 1 card"])
+        before = sorted(p.relative_to(self.store_home) for p in self.store_home.rglob("*"))
+        with mock.patch.object(migrate, "migrate", wraps=migrate.migrate) as dry:
+            result = prune(self.root)
+        self.assertEqual(dry.call_count, 1)
+        self.assertNotIn("apply", dry.call_args.kwargs)
+        self.assertEqual(sorted(item["entry"] for item in result["skipped"]), sorted([first.name, second.name]))
+        self.assertEqual(sorted(p.relative_to(self.store_home) for p in self.store_home.rglob("*")), before)
+
+    def test_a_failed_dry_run_keeps_every_session_with_schema1_decisions(self):
+        directory = self.old_session("one", "alpha", ["Decision of alpha in a schema 1 card"])
+        migrate.migrate(self.root, apply=True)  # imported: normally removable
+        with mock.patch.object(migrate, "migrate", side_effect=store.StoreError("CORRUPT_LOG")):
+            result = prune(self.root, apply=True)
+        self.assertEqual((result["expired_removed"], result["skipped"]),
+                         (0, [{"entry": directory.name, "reason": "UNMIGRATED_DECISIONS"}]))
+        self.assertEqual(prune(self.root, apply=True)["expired_removed"], 1)
 
 
 class BackupListingTests(FixtureCase):

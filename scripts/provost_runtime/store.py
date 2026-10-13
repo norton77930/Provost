@@ -1593,7 +1593,9 @@ def _log_work(path):
 def _log_context(ws):
     """What decides whether logs may go, read once: work_states, whether a session dir could not be
     read (work_states skipped it, or its scan failed), whether `.pruning-` leftovers exist (their cards
-    are unknown to work_states), and the work_ids of schema 1 content cards in any session dir."""
+    are unknown to work_states), and the work_ids of schema 1 content cards in any session dir or in
+    the repo-level `archive/` (the sources migrate reads; files are not validated, so an odd one only
+    keeps more logs)."""
     home = handoff_home()
     sessions = _base(ws) / "sessions"
     guard(home, sessions)
@@ -1607,6 +1609,12 @@ def _log_context(ws):
                 context["schema1"] |= _scan(home, entry).unmigrated
             except (StoreError, OSError):
                 context["unreadable"] = True
+    archive = _base(ws) / "archive"
+    guard(home, archive)
+    for path in sorted(archive.glob("*.json")) if archive.is_dir() else ():
+        guard(home, path)
+        data = _load(path)
+        context["schema1"] |= _schema1_works(data, "records") if data is not None else set()
     return context
 
 
@@ -1614,23 +1622,23 @@ def _log_state(ws, work_id, path, cutoff, context):
     """(reason, idle_since, kind) of a work's log; reason None when it may be removed.
 
     kind: "orphan" (no card of the work in any readable session) or "done" (its newest card is
-    done). Idle since the latest of that card's recorded_at, the log's newest entry `at` and, for a
-    log without entries, the file mtime. Reasons, in order: OPEN (newest card open; never removed),
+    done). Idle since the latest of that card's recorded_at, the log's newest entry `at` and the
+    file mtime (an append or a migrate import rewrites the file, and migrated entries keep their
+    original `at`: the mtime gives a freshly written log its full grace). Reasons, in order: OPEN (newest card open; never removed),
     RECENT (idle since cutoff or later), SESSIONS_UNREADABLE, LEFTOVER_PENDING, the code of a broken
     chain of the work in any session, SCHEMA1_SOURCES (a schema 1 card of the work with decisions or
-    evidence still exists: removing the log would let migrate import it again). StoreError when the
-    log cannot be read.
+    evidence still exists in a session or an archive file: removing the log would let migrate import
+    it again). StoreError when the log cannot be read; FileNotFoundError when it is gone.
     """
     states = context["states"]
     state = states["works"].get(work_id)
     if state is not None and state["open"]:
         return "OPEN", None, "done"
     kind = "done" if state is not None else "orphan"
+    mtime = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
     entries = read_log(ws, work_id)
     times = ([_when(state["recorded_at"])] if state is not None else []) + [_when(e["at"]) for e in entries]
-    if not entries:
-        times.append(datetime.fromtimestamp(path.stat().st_mtime, timezone.utc))
-    idle = max(times)
+    idle = max(times + [mtime])
     fault = next((item["error"] for item in states["broken"] if item["work_id"] == work_id), None)
     if idle.timestamp() >= cutoff:
         reason = "RECENT"
@@ -1655,8 +1663,8 @@ def _idle_logs(ws, clock, apply):
     `reason` (see _log_state). Only `logs/<digest>.jsonl` of a removable candidate is removed, never
     its `.lock`, and only under the work's log lock after every session and the log are read again
     there (a reopen, a new entry, a new leftover or a new broken chain since the listing keeps it;
-    the reason is listed in `skipped`). An unreadable log is listed in `skipped` by file name; OS
-    errors on removal in `errors`. Never raises.
+    the reason is listed in `skipped`). A log that is gone by then (another prune) is not reported.
+    An unreadable log is listed in `skipped` by file name; OS errors on removal in `errors`. Never raises.
     """
     out = {"older_than_days": LOG_IDLE_DAYS, "candidates": [], "removed": 0, "removed_work_ids": [],
            "skipped": [], "errors": []}
@@ -1675,6 +1683,8 @@ def _idle_logs(ws, clock, apply):
             guard(home, path)
             work = _log_work(path)
             reason, idle, kind = _log_state(ws, work, path, cutoff, context)
+        except FileNotFoundError:
+            continue  # removed since the listing
         except (StoreError, OSError) as exc:
             out["skipped"].append({"log": path.name,
                                    "reason": str(exc) if isinstance(exc, StoreError) else type(exc).__name__})
@@ -1687,13 +1697,16 @@ def _idle_logs(ws, clock, apply):
             continue
         try:
             with _log_lock(ws, work):
-                # every session and the log again, under the lock
-                reason, _, _ = _log_state(ws, work, path, cutoff, _log_context(ws))
-                if reason is not None:
-                    out["skipped"].append({"work_id": work, "reason": reason})
-                    continue
-                guard(home, path)
-                path.unlink()
+                try:
+                    # every session and the log again, under the lock
+                    reason, _, _ = _log_state(ws, work, path, cutoff, _log_context(ws))
+                    if reason is not None:
+                        out["skipped"].append({"work_id": work, "reason": reason})
+                        continue
+                    guard(home, path)
+                    path.unlink()
+                except FileNotFoundError:
+                    continue  # already gone (another prune removed it between the listing and the lock)
             out["removed"] += 1
             out["removed_work_ids"].append(work)
         except StoreError as exc:

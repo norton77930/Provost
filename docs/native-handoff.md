@@ -633,8 +633,9 @@ Idle logs. `prune` also lists, under `idle_logs.candidates`, the decision log of
 that is idle for more than 180 days (`older_than_days`) and either has no card left in
 any readable session (`kind: "orphan"`, for example after its sessions expired) or whose
 newest card across all sessions is done (`kind: "done"`). Idle time is the latest of that
-newest card's `recorded_at`, the log's newest entry `at` and, for a log without entries,
-the file mtime. Logs of open works are never listed or removed. Each candidate has
+newest card's `recorded_at`, the log's newest entry `at` and the log file's mtime: an
+append or a `migrate` import rewrites the file, and migrated entries keep their original
+`at`, so a freshly written or migrated log gets the full 180 days. Logs of open works are never listed or removed. Each candidate has
 `work_id`, `kind`, `idle_since` and `removable`; one that is not removable also has
 `reason`:
 
@@ -643,9 +644,10 @@ the file mtime. Logs of open works are never listed or removed. Each candidate h
 - `LEFTOVER_PENDING`: a `.pruning-` leftover exists, whose cards are not read either;
 - a chain code (`INCOMPLETE_CHAIN`, `CORRUPT_RECORD`, `AMBIGUOUS_CHAIN`, …): the work's
   chain is broken in some session;
-- `SCHEMA1_SOURCES`: a session still holds a schema 1 card of the work with decisions or
-  evidence; removing the log would let `migrate` import them again. Sessions go first, the
-  log in a later run.
+- `SCHEMA1_SOURCES`: a session or a repo-level `archive/` file still holds a schema 1 card
+  of the work with decisions or evidence (the sources `migrate` reads); removing the log
+  would let `migrate` import them again. Sessions go first, the log in a later run; an
+  archive file keeps the log until it is deleted by hand.
 
 `--apply` removes the removable ones (`removed`, `removed_work_ids`): only
 `logs/<sha256(work_id)>.jsonl`, never its `.lock`, and only while holding that work's log
