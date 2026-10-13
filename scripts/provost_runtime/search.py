@@ -169,8 +169,10 @@ class DecisionLog:
         self.by_id = {entry["id"]: entry for entry in entries}
         self.order = newest_entries(entries, len(entries))  # oldest first: by time, then log order
         self.position = {entry["id"]: i for i, entry in enumerate(self.order)}
-        self.superseded_by, self.updated_by, self.links = {}, {}, {}
+        self.superseded_by, self.updated_by, self.links, self.claims = {}, {}, {}, {}
         for entry in entries:  # log order: with several pointers at one target the last one wins
+            if entry["kind"] == "evidence":
+                self.claims.setdefault(entry["claim"], []).append(entry["id"])
             target = entry.get("supersedes") if entry["kind"] == "decision" else entry.get("updates")
             if target is None:
                 continue
@@ -178,12 +180,15 @@ class DecisionLog:
             (self.superseded_by if entry["kind"] == "decision" else self.updated_by)[target] = entry["id"]
 
     def latest(self, ident):
-        """The last entry of the update chain that starts at `ident` (itself if never updated)."""
+        """The current entry of evidence `ident`: the newest in time order of the end of its update chain
+        and every evidence entry of the work with the same claim text (a migrated chain and a live one
+        for one claim are never linked, so the claim text joins them)."""
         seen = {ident}
         while ident in self.updated_by and self.updated_by[ident] not in seen:
             ident = self.updated_by[ident]
             seen.add(ident)
-        return self.by_id[ident]
+        same = self.claims.get(self.by_id[ident].get("claim"), ())
+        return self.by_id[max([ident, *same], key=self.position.__getitem__)]
 
     def chain(self, ident):
         """(entries connected to `ident` through supersede/update links in either direction, in time
@@ -238,12 +243,18 @@ def _read_log(home, repo, own_key, path):
     return work, _parse_log(Workspace(Path("."), Path("."), key), work, raw)[0]
 
 
-def _repo_logs(home, ws, repo_dir, skipped):
-    """The verified decision logs of a repo dir; unreadable, foreign or mismatched ones are counted in skipped."""
+def _repo_logs(home, ws, repo_dir, skipped, work=None):
+    """The verified decision logs of a repo dir (only the one of `work` when given); unreadable,
+    foreign or mismatched ones are counted in skipped."""
     logs = repo_dir / "logs"
     try:
         guard(home, logs)
-        paths = sorted(logs.glob("*.jsonl")) if logs.is_dir() else []
+        if work is not None:
+            named = logs / (digest(work) + ".jsonl")
+            guard(home, named)
+            paths = [named] if named.is_file() else []
+        else:
+            paths = sorted(logs.glob("*.jsonl")) if logs.is_dir() else []
     except BAD_FILE:
         skipped[0] += 1
         return []
@@ -317,7 +328,8 @@ def _limit(text):
 
 def _log_ref(ws, log, ident):
     """Ref of a log entry: <work_id>:<entry id>, with an @<repo dir>: prefix outside the workspace's repo."""
-    return ("" if log.repo == ws.repo_key[:REPO_DIR_CHARS] else "@%s:" % log.repo) + log.work_id + ":" + ident
+    outside = log.repo != ws.repo_key[:REPO_DIR_CHARS] or log.work_id.startswith("@")  # "@..." must not be read as a prefix
+    return ("@%s:" % log.repo if outside else "") + log.work_id + ":" + ident
 
 
 def find(ws, query, *, all_repos=False, since=None, limit=None, work=None, kind=None):
@@ -346,9 +358,7 @@ def find(ws, query, *, all_repos=False, since=None, limit=None, work=None, kind=
     # Candidates: (when, source rank, ref, field, text, score, dedupe key or None, result without text/ref).
     hits, logged = [], set()
     for repo_dir in repos:
-        for log in _repo_logs(home, ws, repo_dir, skipped):
-            if work is not None and log.work_id != work:
-                continue
+        for log in _repo_logs(home, ws, repo_dir, skipped, work):
             for item in log.order:
                 when = _when(item["at"])
                 text = item["text"] if item["kind"] == "decision" else item["claim"]
@@ -358,7 +368,7 @@ def find(ws, query, *, all_repos=False, since=None, limit=None, work=None, kind=
                     continue
                 logged.add((log.work_id, item["kind"], text))
                 result = {"recorded_at": item["at"], "work_id": log.work_id, "id": item["id"], "kind": item["kind"],
-                          "date": when.date().isoformat(), "field": item["kind"], "source": "log",
+                          "date": when.astimezone(timezone.utc).date().isoformat(), "field": item["kind"], "source": "log",
                           **log.state(item)}
                 hits.append((when, SOURCE_RANK["log"], _log_ref(ws, log, item["id"]), item["kind"], text, points,
                              None, result))

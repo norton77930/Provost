@@ -232,7 +232,8 @@ once, for the newest record, and not at all when a log entry of that work holds 
 text (for example one that `migrate` imported). Results rank by how often the terms occur
 in the item text, then by time, newest first. `--since` keeps items dated on or after
 that UTC date (a log entry's `at`, a record's `recorded_at`); `--work` keeps one
-`work_id` (exact match); `--kind` keeps decisions or evidence only, so it drops blockers
+`work_id` (exact match; only that work's log file is read, so other logs, good or bad, are
+neither read nor counted under `skipped`); `--kind` keeps decisions or evidence only, so it drops blockers
 and `next` (`INVALID_KIND` for any other value; an empty `--work` is
 `INVALID_ARGUMENTS`); `--limit` defaults to 10 and must be 1 to 50 (`INVALID_LIMIT`);
 `truncated` counts the matches beyond it.
@@ -245,9 +246,13 @@ characters), `source` (`record`, `snapshot` or `archive`) and `ref`. A result fr
 (`decision` or `evidence`, also the `field`), `date` (UTC, `YYYY-MM-DD`), `recorded_at`
 (the entry's `at`), `text` (at most 160 characters), `ref` and `superseded_by`: the id of
 the entry that replaced it, or `null`. Evidence also shows its chain's latest state:
-`state` is the state of the newest entry of its `updates` chain and `latest` that
+`state` is the state of the work's current entry for that claim and `latest` that
 entry's id, so an old "fail" whose chain ended in "pass-observed" reads
-`pass-observed`.
+`pass-observed`. The current entry is the newest in time order (`at`, then log order)
+among the end of the entry's `updates` chain and all evidence entries of the work with
+exactly the same claim text, so a migrated chain and a live chain of one claim that were
+never linked still agree on the current state. (`--show`'s `chain` keeps only linked
+entries.)
 
 `--show <ref>` returns one hit in full. Refs of record, snapshot and archive results are
 opaque (`r:`, `s:` or `a:` prefix) and returned as before: the full `payload` with
@@ -267,8 +272,8 @@ time order (the same ordering as `status`: by `at`, then log order), fewer at th
 of the log. Use `--show` only for a result worth reading in full. A `ref` is valid
 while its file exists (the store trims old records), and only
 resolves inside the scope of the call (`REF_NOT_FOUND` otherwise). Other errors:
-`QUERY_REQUIRED`, `INVALID_SINCE`, `INVALID_REF`, `REF_AMBIGUOUS`, `CORRUPT_LOG` (a
-shown log that fails to parse).
+`QUERY_REQUIRED`, `INVALID_SINCE`, `INVALID_REF`, `REF_AMBIGUOUS`, and for a shown log
+that fails verification `CORRUPT_LOG` or `FOREIGN_REPO`.
 
 Secret-like strings (GitHub tokens, `github_pat_` tokens, `sk-` keys, AWS access key
 ids and private-key headers) are replaced by `[REDACTED]` in all output. Records
@@ -427,7 +432,10 @@ an interrupted trim stay on disk until that work's chain is trimmed again, so a 
 never written again keeps them (reads skip them); submodules, bare-backed and
 separate-git-dir checkouts are refused (`REPO_KEY_UNRESOLVED`); Git older than
 2.31 is refused (`GIT_UNSUPPORTED`); on Windows without long-path support a long
-user or `PROVOST_HOME` path can exceed 260 characters.
+user or `PROVOST_HOME` path can exceed 260 characters; redacting a log entry changes the
+log only: schema 1 cards, snapshots, archive files and `migrate` backups keep the
+original text, and `search` can still find it there (redacting those means deleting the
+files by hand).
 Pass `--session <current-id>` to keep the running session. Directories with any
 record, snapshot, lock or other file, linked or reparse-point entries, and names
 that are not session digests are never candidates. With `--apply`, each candidate

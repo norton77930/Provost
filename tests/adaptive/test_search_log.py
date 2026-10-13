@@ -253,3 +253,46 @@ class SearchLogTests(FixtureCase):
                                 encoding="utf-8", env=env, timeout=60)
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertEqual(json.loads(result.stdout)["results"][0]["ref"], "w:D1")
+
+    def test_a_work_id_starting_with_at_round_trips_through_its_ref(self):
+        self.write("@odd", decisions=[{"text": "omicron under an at work id"}])
+        ref = self.found("--query", "omicron")["results"][0]["ref"]
+        self.assertEqual(ref, "@%s:@odd:D1" % self.ws.repo_key[:16])
+        shown = self.found("--show", ref)
+        self.assertEqual((shown["work_id"], shown["entry"]["id"]), ("@odd", "D1"))
+
+    def test_work_filter_reads_only_the_named_log(self):
+        self.write("good", decisions=[{"text": "pi good decision"}])
+        self.write("broken", decisions=[{"text": "pi broken decision"}])
+        self.log_path("broken").write_text("not json\n", encoding="utf-8")
+        named = self.found("--query", "pi", "--work", "good")
+        self.assertEqual((self.ids(named), named["skipped"]), ([("good", "D1")], 0))
+        self.assertEqual(self.found("--query", "pi")["skipped"], 1)
+        missing = self.found("--query", "pi", "--work", "absent")
+        self.assertEqual((missing["results"], missing["skipped"]), ([], 0))
+
+    def test_date_is_the_utc_date(self):
+        self.write("w", decisions=[{"text": "tau late evening decision"}])
+        self.retime("w", {"D1": "2026-03-01T23:30:00-05:00"})
+        hit = self.found("--query", "tau")["results"][0]
+        self.assertEqual((hit["recorded_at"], hit["date"]), ("2026-03-01T23:30:00-05:00", "2026-03-02"))
+
+    def test_evidence_state_is_the_newest_entry_with_the_same_claim_even_across_unlinked_chains(self):
+        self.write("w", evidence=[{"claim": "phi suite passes", "state": "pass-observed", "ref": "r"}])
+        self.write("w", evidence=[{"claim": "phi suite passes", "state": "fail", "ref": "r"},
+                                  {"claim": "phi other claim", "state": "unverified", "ref": "r"}])
+        self.retime("w", {"E1": "2026-01-01T00:00:00+00:00", "E2": "2026-02-01T00:00:00+00:00",
+                          "E3": "2026-03-01T00:00:00+00:00"})
+        by_id = {r["id"]: r for r in self.found("--query", "phi")["results"]}
+        for ident in ("E1", "E2"):
+            self.assertEqual((by_id[ident]["state"], by_id[ident]["latest"]), ("fail", "E2"))
+        self.assertEqual((by_id["E3"]["state"], by_id["E3"]["latest"]), ("unverified", "E3"))
+        shown = self.found("--show", "w:E1")
+        self.assertEqual((shown["state"], shown["latest"]), ("fail", "E2"))
+        self.assertEqual([e["id"] for e in shown["chain"]], ["E1"])
+
+    def test_show_of_a_foreign_repo_log_is_refused(self):
+        self.write("alien", decisions=[{"text": "chi foreign"}], ws=self.other)
+        self.log_path("alien").parent.mkdir(parents=True, exist_ok=True)
+        self.log_path("alien", self.other).replace(self.log_path("alien"))
+        self.assertEqual(self.search("--show", "alien:D1"), (1, {"error": "FOREIGN_REPO"}))
