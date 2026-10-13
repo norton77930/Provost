@@ -58,10 +58,10 @@ class Gate:
         self.session, self.joined = session, joined
         self.skipped = []  # (text, id of the current decision with that text, or None: earlier in this request)
 
-    def __call__(self, work_id, logged, revision, entries):
+    def __call__(self, work_id, logged, revision, entries, replay=False):
         first = next((i for i, entry in enumerate(logged) if entry.get("record") == revision), len(logged))
         prior = logged[:first]
-        if not self.joined:
+        if not (self.joined or replay):  # replay: store found this session's card of the request
             others = sorted({entry["session"] for entry in prior if entry["session"] != self.session})
             if others:
                 raise StoreError("JOIN_REQUIRED", "work %s already has log entries from %d other session(s) (%s) and "
@@ -173,7 +173,7 @@ def _others(root, session, payload):
                                  % (_clip(work_id, ECHO_WORK), CONCURRENT_MINUTES,
                                     ", ".join("session %s %d min ago" % (_short(other), max(minutes, 0))
                                               for other, minutes in recent))))
-    if not state["open"] and payload.get("phase") != store.DONE_PHASE:
+    if not state["open"] and not store.is_done(payload.get("phase")):
         warnings.append(_warning("REOPENED", "work %s was closed (phase done) by session %s at %s; this record "
                                              "reopens it" % (_clip(work_id, ECHO_WORK), _short(state["session"]),
                                                             state["recorded_at"])))

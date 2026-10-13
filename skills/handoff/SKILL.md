@@ -30,7 +30,7 @@ A Python invocation is also documented in the pilot guide.
    status and next actions. Exclude credentials and full transcripts. Never treat
    an unfilled template as saved work.
 3. Write the payload to a file with the Write tool, then run one plain command:
-   `record --workspace "<root>" --session "<id>" --expected "<revision-or-null>" --request-id "<unique-id>" --input "<payload-file>"`,
+   `record --workspace "<root>" --session "<id>" --expected "<revision-or-null>" --request-id "<unique-id>" [--join] --input "<payload-file>"`,
    using the `expected` value status returned for the payload's work_id (`null`
    when there is none).
    Worktree guards refuse heredocs, pipes, command substitution and line
@@ -41,7 +41,7 @@ A Python invocation is also documented in the pilot guide.
    `--join` only when you intend to continue that work (or resume its snapshot
    instead); otherwise choose a new work_id. Once this session has a card of the
    work, later records need no flag. Read `CONCURRENT_SESSION` and `REOPENED`
-   warnings before continuing. Set phase `done` to close a finished work.
+   warnings before continuing. Set phase `done` (any case) to close a finished work.
 4. Use `snapshot --workspace "<root>" --session "<id>" --request-id "<unique-id>"`.
    Report the returned snapshot ID and local path. On failure, say it was not
    saved; do not call an old snapshot current.

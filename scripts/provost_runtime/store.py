@@ -636,12 +636,17 @@ def latest(root, session):
 DONE_PHASE = "done"  # a card with this phase closes its work; a later card of another phase reopens it
 
 
+def is_done(phase):
+    """True when a card's phase closes its work: "done", ignoring case and surrounding whitespace."""
+    return isinstance(phase, str) and phase.strip().lower() == DONE_PHASE
+
+
 def work_states(root):
     """Read-only: the newest state card of each work across the repo's sessions.
 
     {"works": {work_id: state}, "skipped": [{"session_dir", "error"}]}. A state is the newest
     head card of the work by `recorded_at` (`session`, `revision`, `phase`, `recorded_at`, `open`:
-    phase is not "done") plus `sessions`, the head card of each session holding the work in the
+    not is_done(phase)) plus `sessions`, the head card of each session holding the work in the
     same shape without `open`, newest first. A session dir whose cards cannot be read is skipped
     and listed with its error code; a dir without records holds no cards and is not listed.
     """
@@ -659,7 +664,9 @@ def work_states(root):
             for path in sorted((folder / "records").glob("*.json")) if (folder / "records").is_dir() else ():
                 if ID.fullmatch(path.stem):
                     raw = _load(path)
-                    session = raw.get("session_id") if raw else None
+                    if raw is None:
+                        raise StoreError("CORRUPT_RECORD")
+                    session = raw.get("session_id")
                     if not isinstance(session, str) or digest(session) != folder.name:
                         raise StoreError("RECORD_IDENTITY_MISMATCH")
                     break
@@ -683,7 +690,7 @@ def work_states(root):
     states = {}
     for work_id, items in works.items():
         items.sort(key=key, reverse=True)
-        states[work_id] = {**items[0], "open": items[0]["phase"] != DONE_PHASE, "sessions": items}
+        states[work_id] = {**items[0], "open": not is_done(items[0]["phase"]), "sessions": items}
     return {"works": states, "skipped": skipped}
 
 
@@ -893,7 +900,8 @@ def _commit(root, session, payload, version, expected, request_id, *, cursor=Non
                 # as it was when the card was written, not against entries other sessions appended since.
                 seen = log if prior.get("log_entries") else [
                     entry for entry in log if _when(entry["at"]) <= _when(prior["recorded_at"])]
-                entries = check(payload["work_id"], seen, revision, entries)
+                # This session's card of the request exists: the replay has joined the work.
+                entries = check(payload["work_id"], seen, revision, entries, replay=True)
             logged = [_log_entry_fields(entry) for entry in log if entry.get("record") == revision]
             if (prior["payload"] != payload or prior.get("adopted_from") != adopted_from
                     or prior["schema_version"] != version or logged != entries):
@@ -942,7 +950,7 @@ def snapshot(root, session, event_key):
         if not heads:
             raise StoreError("NO_CHECKPOINT")
         # Every open card (phase not done), most recently written first; with none open, the current card.
-        held = [head for head in heads if head["payload"]["phase"] != "done"] or heads[:1]
+        held = [head for head in heads if not is_done(head["payload"]["phase"])] or heads[:1]
         previous = latest(root, session)
         data = {k: v for k, v in held[0].items() if k != "checksum"}
         data.update(kind="snapshot", snapshot_id=ident, captured_at=datetime.now(timezone.utc).isoformat(),

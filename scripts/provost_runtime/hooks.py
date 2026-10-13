@@ -8,8 +8,8 @@ from .config import ConfigError, handoff_home, load_config, resolve_mode, worksp
 from .notifications import PARTIAL, notice
 from .search import redact
 from .store import (CACHE_SESSION, FACTS_MARKER, StoreError, _base, _chains, as_workspace, atomic_write, current,
-                    digest, guard, latest, locate, newest_entries, read_log, session_dir, snapshot, snapshot_cards,
-                    storage_ready)
+                    digest, guard, is_done, latest, locate, newest_entries, read_log, session_dir, snapshot,
+                    snapshot_cards, storage_ready)
 
 PLUGIN = Path(__file__).resolve().parents[2]
 RECOVERY_PAYLOAD_LIMIT = 4500     # inline the payload in full up to this size; digest is capped to it too
@@ -208,7 +208,7 @@ def recovery_context(root, session):
 
 def _other_works(chains):
     """Variants of the session's other open works (every chain head but the current; phase done is closed)."""
-    others = [chain[0]["payload"] for chain in chains[1:] if chain[0]["payload"]["phase"] != "done"]
+    others = [chain[0]["payload"] for chain in chains[1:] if not is_done(chain[0]["payload"]["phase"])]
     if not others:
         return []
     lines = ["Other open works in this session (status --work <work_id> shows a card):"]

@@ -116,7 +116,15 @@ class JoinAndDoneTests(FixtureCase):
         self.assertEqual(self.record(self.request(), session=TWO)["error"], "CORRUPT_LOG")
         self.assertNotIn("error", self.record(self.request(), session=TWO, join=True))
 
-    def test_two_sessions_racing_to_start_a_work_admit_only_one(self):
+    def test_an_exact_replay_of_a_joined_first_write_needs_no_join(self):
+        self.record(self.request(decisions=[{"text": LONG}]))
+        data = self.request(decisions=[{"text": LONG + " too"}])
+        joined = self.record(data, session=TWO, join=True)
+        replay = self.record(data, session=TWO)
+        self.assertEqual((replay["revision"], replay["log_entries"]), (joined["revision"], ["D2"]))
+        self.assertEqual(self.total(), 2)
+
+    def test_three_sessions_racing_to_log_a_new_work_admit_only_one(self):
         sessions = [ONE, TWO, THREE]
         procs = [subprocess.Popen(self.command("record", "--expected", "null", "--request-id", "r1", session=session),
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -167,6 +175,27 @@ class JoinAndDoneTests(FixtureCase):
         self.assertIn("done", reopened["warnings"][0]["message"])
         self.assertEqual(self.codes(self.record(self.request(), reopened["revision"], "r5")), [])
 
+    def test_done_ignores_case_and_surrounding_space(self):
+        first = self.record(self.request(phase="Done"))
+        self.assertFalse(store.work_states(self.root)["works"]["A"]["open"])
+        reopened = self.record(self.request(), first["revision"], "r2")
+        self.assertEqual(self.codes(reopened), ["REOPENED"])
+        closed = self.record(self.request(phase=" done "), reopened["revision"], "r3")
+        self.assertEqual(self.codes(closed), [])
+        self.assertEqual(self.codes(self.record(self.request(phase="DONE"), closed["revision"], "r4")), [])
+        self.assertFalse(store.work_states(self.root)["works"]["A"]["open"])
+
+    def test_a_closed_work_is_not_listed_among_other_open_works_on_compaction(self):
+        from provost_runtime.hooks import handle_event
+        self.record(self.request("work-closed", phase=" Done "), request_id="c1")
+        self.record(self.request("work-alpha"), request_id="a1")
+        self.record(self.request("work-beta"), request_id="b1")
+        output = handle_event({"session_id": ONE, "cwd": str(self.root), "hook_event_name": "SessionStart",
+                               "source": "compact"}, self.config_path)
+        text = output.get("hookSpecificOutput", {}).get("additionalContext", "")
+        self.assertIn("work-alpha", text)
+        self.assertNotIn("work-closed", text)
+
     def test_a_work_done_by_another_session_reopens_on_join(self):
         self.record(self.request(decisions=[{"text": LONG}], phase="done"))
         self.age(ONE, "A", 180)
@@ -193,6 +222,14 @@ class JoinAndDoneTests(FixtureCase):
                          [(TWO, a2["revision"]), (ONE, a1["revision"])])
         self.assertEqual((states["works"]["B"]["session"], states["works"]["B"]["open"]), (ONE, False))
         self.assertEqual(states["skipped"], [{"session_dir": store.digest(THREE), "error": "CORRUPT_RECORD"}])
+
+    def test_work_states_reports_an_unparseable_record_as_corrupt(self):
+        self.record(self.request(), session=THREE)
+        head = store.current(self.root, THREE, "A")
+        (store.session_dir(self.root, THREE) / "records" / (head["revision"] + ".json")).write_text(
+            "not json", encoding="utf-8")
+        self.assertEqual(store.work_states(self.root)["skipped"],
+                         [{"session_dir": store.digest(THREE), "error": "CORRUPT_RECORD"}])
 
     def test_work_states_is_empty_without_sessions(self):
         self.assertEqual(store.work_states(self.root), {"works": {}, "skipped": []})

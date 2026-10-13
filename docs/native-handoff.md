@@ -181,8 +181,11 @@ Write UTF-8 JSON with Write/Edit to an allowed scratch file, for example:
 Then record it with a single-line command:
 
 ```bash
-bash "<runtime>/hooks/runtime" record --workspace "<root>" --session "<session>" --expected "<revision-or-null>" --request-id "<unique-milestone-id>" --input "<payload-file>"
+bash "<runtime>/hooks/runtime" record --workspace "<root>" --session "<session>" --expected "<revision-or-null>" --request-id "<unique-milestone-id>" [--join] --input "<payload-file>"
 ```
+
+`--join` is only for a first record of a work that other sessions have logged (see
+Joining work below); leave it out otherwise.
 
 Keep each runtime call a single plain command: no heredoc, pipe, command
 substitution, env-var prefix or line continuation, because worktree guards refuse those.
@@ -294,14 +297,18 @@ refused with `JOIN_REQUIRED`, whether or not the record has entries. A session t
 already has a card of the work (written earlier or adopted, the card `--expected`
 names) has joined it: later records need no flag, and `--join` on them changes
 nothing. A work whose log holds only this session's entries, or none, needs no join.
-Two sessions starting the same new work at once are serialized by the log lock: the
-first to append wins, and the other is refused unless it joins.
+Sessions that start the same new work at once with records that have entries are
+serialized by the log lock: the first to append wins, and the others are refused unless
+they join. Records without entries, and works with no log yet, are not serialized: two
+such first writes can both succeed, and only `CONCURRENT_SESSION` reports the overlap.
+An exact replay of a record whose card was already written needs no `--join`.
 
 Joining does not lock anyone out: `CONCURRENT_SESSION` warns while another session's
 card of the work is under 120 minutes old.
 
-A card with phase `done` closes its work: the work is closed while its newest card
-across sessions is done. Any later record of the work with another phase reopens it,
+A card with phase `done` (ignoring case and surrounding whitespace, so `Done` and
+` done ` count) closes its work: the work is closed while its newest card across
+sessions is done. Any later record of the work with another phase reopens it,
 with a `REOPENED` warning; a closed work's log is kept like any other.
 
 ## Search past decisions
