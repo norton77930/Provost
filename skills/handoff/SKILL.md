@@ -44,16 +44,24 @@ A Python invocation is also documented in the pilot guide.
 ## Resume
 
 1. Only proceed when the user asks to continue or provides a snapshot ID.
-2. Use `list --workspace "<root>"`. Each entry identifies a source session, work,
-   time and parent snapshot. Match the requested work and exact workspace.
+2. Use `list --workspace "<root>"`. Each entry identifies a source session, time,
+   parent snapshot and `works` (every work the snapshot holds, with its phase).
+   Match the requested work and exact workspace.
    Do not select a global latest timestamp across different work.
    List entries with error are damaged candidates, not resumable snapshots; report
    them briefly and retain usable candidates. Never delete history to recover.
 3. If several candidates remain, ask which work/session. Never start a worker
    while the correct handoff or existing writer ownership remains unresolved.
-4. Use `resume --workspace "<root>" --session "<current-id>" --from "<snapshot-id>"`.
+4. Use `resume --workspace "<root>" --session "<current-id>" --from "<snapshot-id>"`,
+   adding one `--work "<work_id>"` per work the user chose. A snapshot with one
+   work needs no `--work`. When it holds several and none is named, resume adopts
+   nothing and returns `WORK_CHOICE_REQUIRED` with `choices` (work, phase, next
+   step): show them, ask which works to continue, and run resume again with
+   those `--work` flags. Never pick for the user.
    This adopts observations into the current session, not running worker ownership.
    For the same session use its supplied checkpoint rather than adopting itself.
+   Evidence that passed before the adoption is shown as "passed before adoption,
+   not re-verified": re-check it before relying on it.
 5. Read referenced sources and relevant working changes/evidence. A closed issue,
    checked task or archived change is not proof that behavior passes acceptance.
    Establish whether recorded workers remain active before re-dispatching.

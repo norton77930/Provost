@@ -8,15 +8,17 @@ from pathlib import Path
 
 from .config import handoff_home
 from .store import (CHAINS, ID, REPO_DIR_CHARS, StoreError, Workspace, _archive_path, _parse_log,
-                    _read, _when, digest, encoded, guard, newest_entries, validate_payload)
+                    _read, _when, digest, encoded, guard, newest_entries, snapshot_cards, validate_payload)
 
 DEFAULT_LIMIT = 10
 MAX_LIMIT = 50
 CLIP = 160
 REPO_DIR = re.compile(r"^[a-f0-9]{%d}$" % REPO_DIR_CHARS)
 ARCHIVE_FILE = re.compile(r"^[a-f0-9]{32}\.json$")
-# ref: <r|s>:<repo dir>:<session digest[:12]>:<record or snapshot id[:12]> or a:<repo dir>:<archive file stem>
-REF = re.compile(r"^(?:([rs]):([a-f0-9]{16}):([a-f0-9]{12}):([a-f0-9]{12})|(a):([a-f0-9]{16}):([a-f0-9]{32}))$")
+# ref: <r|s>:<repo dir>:<session digest[:12]>:<record or snapshot id[:12]> or a:<repo dir>:<archive file stem>;
+# a snapshot card other than its current (top-level) one adds :<card revision[:12]>.
+REF = re.compile(r"^(?:([rs]):([a-f0-9]{16}):([a-f0-9]{12}):([a-f0-9]{12})|(a):([a-f0-9]{16}):([a-f0-9]{32})"
+                 r"|(s):([a-f0-9]{16}):([a-f0-9]{12}):([a-f0-9]{12}):([a-f0-9]{12}))$")
 SECRET = re.compile(r"gh[pousr]_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,}|(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}"
                     r"|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----")
 SOURCE_RANK = {"log": -1, "record": 0, "snapshot": 1, "archive": 2}
@@ -86,7 +88,7 @@ def _archive_file(home, repo, path):
 
 
 def _session_entries(home, repo, folder, skipped):
-    """The session's newest valid record per work_id plus all of its valid snapshots."""
+    """The session's newest valid record per work_id plus every card of each of its valid snapshots."""
     newest, entries = {}, []
     for kind, source, letter in SESSION_KINDS:
         collection = folder / CHAINS[kind]
@@ -101,16 +103,19 @@ def _session_entries(home, repo, folder, skipped):
         for path in paths:
             if not ID.fullmatch(path.stem):
                 continue
+            ref = "%s:%s:%s:%s" % (letter, repo, folder.name[:12], path.stem[:12])
             try:
                 data = _session_file(home, repo, folder, path, kind)
+                if kind == "snapshot":
+                    held = snapshot_cards(data)
+                    entries += [Entry(card, source, ref + ("" if i == 0 else ":" + card["revision"][:12]),
+                                      _when(card.get("recorded_at"))) for i, card in enumerate(held)]
+                    continue
                 when = _when(data.get("recorded_at"))
             except BAD_FILE:
                 skipped[0] += 1
                 continue
-            entry = Entry(data, source, "%s:%s:%s:%s" % (letter, repo, folder.name[:12], path.stem[:12]), when)
-            if kind == "snapshot":
-                entries.append(entry)
-                continue
+            entry = Entry(data, source, ref, when)
             work, stamp = data["payload"]["work_id"], (when, path.stem)
             if work not in newest or stamp > newest[work][0]:
                 newest[work] = (stamp, entry)
@@ -439,8 +444,11 @@ def show(ws, ref, *, all_repos=False):
         raise StoreError("INVALID_REF")
     home = handoff_home()
     letter, repo, session_prefix, stem_prefix = match.group(1, 2, 3, 4)
+    card_prefix = None
     if match.group(5):
         letter, repo, stem = match.group(5, 6, 7)
+    elif match.group(8):
+        letter, repo, session_prefix, stem_prefix, card_prefix = match.group(8, 9, 10, 11, 12)
     if not all_repos and repo != ws.repo_key[:REPO_DIR_CHARS]:
         raise StoreError("REF_NOT_FOUND")
     repo_dir = _repos_dir() / repo
@@ -473,6 +481,12 @@ def show(ws, ref, *, all_repos=False):
     try:
         data = (_archive_file(home, repo, found) if letter == "a"
                 else _session_file(home, repo, folder, found, kind))
+        if letter == "s":  # the snapshot's current card, or with a card suffix one of its other cards
+            held = snapshot_cards(data)
+            cards = held[:1] if card_prefix is None else [c for c in held[1:] if c["revision"].startswith(card_prefix)]
+            if len(cards) != 1:
+                raise StoreError("REF_NOT_FOUND")
+            data = cards[0]
         _when(data.get("recorded_at"))
     except BAD_FILE as exc:
         raise StoreError(str(exc) if isinstance(exc, StoreError) else "CORRUPT_RECORD") from exc

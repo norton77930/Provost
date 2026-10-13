@@ -63,13 +63,13 @@ class MigrateTests(FixtureCase):
         self.card("s1", "A", ["Keep the parser API because callers pin it", "Split the lexer out"],
                   [self.evidence("suite green", "pass-observed")])
         self.card("s1", "B", ["Use one lock per work"])
-        store.snapshot(self.root, "s1", "e1")  # copies the card of B
+        store.snapshot(self.root, "s1", "e1")  # copies the open cards of B and A
         self.card("s2", "A", ["Split the lexer out", "Ship behind a flag"])
         before, tree = self.files(), self.tree()
         out = self.migrate()
         self.assertEqual((out["applied"], out["backup"], out["skipped"]), (False, None, []))
         self.assertEqual(self.works(out), {
-            "A": {"sources": 3, "decisions": 3, "evidence": 2, "already_migrated": 0},
+            "A": {"sources": 4, "decisions": 3, "evidence": 2, "already_migrated": 0},
             "B": {"sources": 2, "decisions": 1, "evidence": 0, "already_migrated": 0}})
         self.assertEqual((self.files(), self.tree()), (before, tree))
 

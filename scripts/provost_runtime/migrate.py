@@ -6,7 +6,8 @@ A dry run writes nothing; apply appends under each work's log lock, after backin
 that work's log under the same lock.
 
 A source stands for the card it holds: a snapshot or archive file carries its card's
-`recorded_at` and `revision`, so copies of one card share time and identity. Per work_id,
+`recorded_at` and `revision` (a snapshot is one source per card it holds), so copies of
+one card share time and identity. Per work_id,
 sources are read in time order (`recorded_at`; equal times: by parent_record descent,
 then records before snapshots before archive files, then path):
 - a decision is imported once per exact text, at its first occurrence (its time, session
@@ -31,7 +32,7 @@ from datetime import datetime, timezone
 from .config import handoff_home
 from .store import (CHAINS, ID, LOG_ENTRY_ID, LOG_KINDS, LOG_SCHEMA, STAGING, StoreError, _archive_path, _base,
                     _log_lock, _log_paths, _parse_log, _read, _valid_decision, _valid_evidence, _when, as_workspace,
-                    digest, encoded, guard, read_log, storage_ready, validate_payload)
+                    digest, encoded, guard, read_log, snapshot_cards, storage_ready, validate_payload)
 
 SOURCE_RANK = {"record": 0, "snapshot": 1, "archive": 2}
 BAD_SOURCE = (StoreError, OSError, UnicodeError, ValueError, TypeError, KeyError, AttributeError)
@@ -61,15 +62,16 @@ def _card_source(data, kind, rel, session):
                   data["revision"], data.get("parent_record"), data["payload"])
 
 
-def _session_source(ws, home, path, name, kind, rel):
-    """The schema 1 source of a record or snapshot file (None for schema 2); StoreError when invalid."""
+def _session_sources(ws, home, path, name, kind, rel):
+    """The schema 1 sources of a record file or of every card a snapshot holds; StoreError when invalid."""
     guard(home, path)
     raw = json.loads(path.read_text(encoding="utf-8"))
     session = raw.get("session_id") if isinstance(raw, dict) else None
     if not isinstance(session, str) or digest(session) != name:
         raise StoreError("RECORD_IDENTITY_MISMATCH")
     data = _read(ws, path, session, kind)
-    return _card_source(data, kind, rel, session) if data["schema_version"] == 1 else None
+    held = snapshot_cards(data) if kind == "snapshot" else [data]
+    return [_card_source(card, kind, rel, session) for card in held if card["schema_version"] == 1]
 
 
 def _archive_source(ws, home, path, rel):
@@ -123,12 +125,9 @@ def sources(ws):
                     continue
                 rel = rel_dir + "/" + path.name
                 try:
-                    source = _session_source(ws, home, path, name, kind, rel)
+                    found += _session_sources(ws, home, path, name, kind, rel)
                 except BAD_SOURCE as exc:
                     skipped.append({"file": rel, "reason": _reason(exc)})
-                    continue
-                if source is not None:
-                    found.append(source)
     for path in listing("archive", base / "archive"):
         rel = "archive/" + path.name
         try:
