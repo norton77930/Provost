@@ -370,9 +370,10 @@ class MigrateTests(FixtureCase):
         self.assertEqual([e["id"] for e in self.log("A") + self.log("B")], ["D1", "D1", "E1"])
 
     def adopt(self, session="s9"):
-        """Resume the newest snapshot of s1 into session: a new schema 1 card with evidence unverified."""
+        """Resume s1's current card from its newest snapshot into session: a new schema 1 card with evidence
+        unverified. The snapshot holds every open card of s1, so the work is named."""
         snap = store.snapshot(self.root, "s1", "adopt-%d" % next(self.requests))
-        return store.resume(self.root, session, snap["snapshot_id"])
+        return store.resume(self.root, session, snap["snapshot_id"], [snap["payload"]["work_id"]])
 
     def test_an_adopted_schema_1_card_is_imported_by_the_next_apply(self):
         first = self.card("s1", "A", ["Decision before adoption"], [self.evidence("claim", "pass-observed")])
