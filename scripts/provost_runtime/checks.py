@@ -1,0 +1,274 @@
+"""Record checks and echo: what a `record` request may not do, what it may have missed, and what it wrote.
+
+Hard rejections raise StoreError with a code and a `detail`; nothing is written. Decision text
+is checked before the write; entry targets and duplicates are checked by Gate under the
+work's log lock, against the committed log. Soft warnings come back with a successful write
+as {code, message} items. The echo is a short text (at most ECHO_MAX characters) of the
+assigned ids, the state card, open evidence, the newest decisions and the warnings.
+"""
+import re
+from datetime import datetime
+
+from . import facts, store
+from .store import LOG_ENTRY_ID, StoreError
+
+TEXT_MAX = 1000         # decision text over this is refused
+SHORT_TEXT = 40         # decision text under this warns
+LOG_LARGE = 300         # a log with more entries warns
+HASH_PREFIX = 7         # shortest hash prefix that references a commit
+ECHO_MAX = 1500         # echo characters
+ECHO_DECISIONS = 3      # newest current decisions in the echo
+ECHO_ITEM = 200         # characters per echoed decision, evidence or warning line
+PASSED = "pass-observed"
+HEX = re.compile(r"(?<![0-9a-z])[0-9a-f]{%d,40}(?![0-9a-z])" % HASH_PREFIX, re.IGNORECASE)
+
+
+def check_texts(payload):
+    """Refuse empty (or whitespace-only) and over-long decision text. Other shapes are left to store."""
+    if not isinstance(payload, dict) or {"decisions", "evidence"} & set(payload):
+        return
+    items = payload.get("new_decisions")
+    for index, item in enumerate(items if isinstance(items, list) else ()):
+        text = item.get("text") if isinstance(item, dict) else None
+        if not isinstance(text, str):
+            continue
+        if not text.strip():
+            raise StoreError("DECISION_TEXT_EMPTY", "new_decisions[%d]: text is empty; write one self-contained "
+                                                    "sentence with the decision and its reason" % index)
+        if len(text) > TEXT_MAX:
+            raise StoreError("DECISION_TEXT_TOO_LONG", "new_decisions[%d]: text has %d characters, the limit is %d; "
+                                                       "split it into several decisions" % (index, len(text), TEXT_MAX))
+
+
+class Gate:
+    """Target and duplicate checks, called by store under the work's log lock.
+
+    The committed log it checks against is every entry logged before this record's own
+    entries (all of them when none is logged yet), so a replay of an interrupted request
+    sees the log its first attempt saw. Returns the entries to append (duplicates skipped).
+    """
+
+    def __init__(self):
+        self.skipped = []  # (text, id of the current decision with that text, or None: earlier in this request)
+
+    def __call__(self, work_id, logged, revision, entries):
+        first = next((i for i, entry in enumerate(logged) if entry.get("record") == revision), len(logged))
+        prior = logged[:first]
+        known = {entry["id"]: entry for entry in prior}
+        superseded = {entry["supersedes"]: entry["id"] for entry in prior
+                      if entry["kind"] == "decision" and "supersedes" in entry}
+        claimed = set()
+        counts = {"decision": 0, "evidence": 0}
+        for kind, fields in entries:
+            where = "new_%s[%d]" % ("decisions" if kind == "decision" else "evidence", counts[kind])
+            counts[kind] += 1
+            field = "supersedes" if kind == "decision" else "updates"
+            if field not in fields:
+                continue
+            target = fields[field]
+            _target(work_id, known, target, kind, where)
+            if kind == "decision":
+                if target in superseded:
+                    latest = target
+                    while latest in superseded:
+                        latest = superseded[latest]
+                    raise StoreError("ALREADY_SUPERSEDED", "%s: %s is already superseded by %s; the latest entry of "
+                                                           "its chain is %s: supersede %s instead"
+                                     % (where, target, superseded[target], latest, latest))
+                if target in claimed:
+                    raise StoreError("ALREADY_SUPERSEDED", "%s: %s is superseded by an earlier entry of this record"
+                                     % (where, target))
+                claimed.add(target)
+        current = {entry["text"]: entry["id"] for entry in prior
+                   if entry["kind"] == "decision" and entry["id"] not in superseded}
+        kept, self.skipped = [], []
+        for kind, fields in entries:
+            if kind == "decision":
+                if fields["text"] in current:
+                    self.skipped.append((fields["text"], current[fields["text"]]))
+                    continue
+                current[fields["text"]] = None
+            kept.append((kind, fields))
+        return kept
+
+
+def _target(work_id, known, target, kind, where):
+    letter, name = ("D", "a decision (D...)") if kind == "decision" else ("E", "an evidence entry (E...)")
+    field = "supersedes" if kind == "decision" else "updates"
+    match = LOG_ENTRY_ID.fullmatch(target)
+    if match is None:
+        work, colon, ident = target.rpartition(":")
+        if colon and work and work != work_id and LOG_ENTRY_ID.fullmatch(ident):
+            raise StoreError("TARGET_OTHER_WORK", "%s: %s %s names an entry of work %s; a record may only point at "
+                                                  "entries of its own work (%s)" % (where, field, target, work, work_id))
+        raise StoreError("TARGET_NOT_FOUND", "%s: %s %s is not an entry id; write the bare id of an entry of work %s, "
+                                             "such as %s1" % (where, field, target, work_id, letter))
+    if match[1] != letter:
+        raise StoreError("TARGET_WRONG_KIND", "%s: %s must name %s, not %s" % (where, field, name, target))
+    if target not in known:
+        raise StoreError("TARGET_NOT_FOUND", "%s: %s %s does not exist in the log of work %s"
+                         % (where, field, target, work_id))
+
+
+def _epoch(text):
+    return datetime.fromisoformat(text).timestamp()
+
+
+def _last_record(root, session, request_id):
+    """Epoch of the session's newest card of any work other than this request's, None without one,
+    False when unreadable (no activity warnings then)."""
+    try:
+        revision = store.digest(session + "\0record\0" + request_id)
+        times = [_epoch(head["recorded_at"]) for head in store.cards(root, session) if head["revision"] != revision]
+    except (StoreError, OSError, KeyError, TypeError, ValueError):
+        return False
+    return max(times) if times else None
+
+
+def record(root, session, payload, expected, request_id, *, cursor=None):
+    """store.record with the checks; its output plus `warnings` and `echo`."""
+    check_texts(payload)
+    after = _last_record(root, session, request_id) if isinstance(request_id, str) else False
+    gate = Gate()
+    data = store.record(root, session, payload, expected, request_id, cursor=cursor, check=gate)
+    work_id = data["payload"]["work_id"]
+    try:
+        log = store.read_log(root, work_id)
+    except StoreError:
+        log = None  # written, but unreadable now: no log sections
+    ids = data.get("log_entries", [])
+    entries = {entry["id"]: entry for entry in log or ()}
+    warnings = []
+    short = [i for i in ids if i in entries and entries[i]["kind"] == "decision"
+             and len(entries[i]["text"].strip()) < SHORT_TEXT]
+    if short:
+        warnings.append(_warning("SHORT_DECISION", "%s under %d characters: write one self-contained sentence with "
+                                                   "the decision, its reason and specifics (files, values, PRs)"
+                                 % (_ids(short), SHORT_TEXT)))
+    if gate.skipped:
+        warnings.append(_warning("DUPLICATE_SKIPPED", "skipped %d decision(s) whose exact text is already logged: %s"
+                                 % (len(gate.skipped), "; ".join(
+                                     "%s %s" % (ident or "earlier in this record", _clip(text, 60))
+                                     for text, ident in gate.skipped))))
+    if after is not False:
+        decided = any(i.startswith("D") for i in ids)
+        warnings += _activity(root, session, after, payload, decided)
+    if log is not None and len(log) > LOG_LARGE:
+        warnings.append(_warning("LOG_LARGE", "the log of work %s has %d entries (over %d); consider splitting the "
+                                              "work" % (work_id, len(log), LOG_LARGE)))
+    return {**data, "warnings": warnings, "echo": echo(data, log, warnings)}
+
+
+def _warning(code, message):
+    return {"code": code, "message": message}
+
+
+def _ids(ids):
+    return ", ".join(ids) + (" is" if len(ids) == 1 else " are")
+
+
+def _requested(payload):
+    return payload.get("new_decisions", []), payload.get("new_evidence", [])
+
+
+def _referenced(commit, tokens):
+    """True when a token and the commit hash share a prefix of at least HASH_PREFIX characters."""
+    full = commit.lower()
+    return any(min(len(full), len(token)) >= HASH_PREFIX and full[:len(token)] == token[:len(full)]
+               for token in tokens)
+
+
+def _activity(root, session, after, payload, decided):
+    """Warnings from the session's stored facts (as hooks read them): activity after `after` (None: all)."""
+    try:
+        data, _ = facts.stored(root, session)
+    except (StoreError, OSError):
+        return []
+    if not data:
+        return []
+    try:
+        found = facts.since(data, after)
+        edits = [f for f in data.get("files", [])
+                 if type(f.get("last_ts")) is int and (after is None or f["last_ts"] > after)]
+        decisions, evidence = _requested(payload)
+        texts = ([d["text"] for d in decisions] + [ref for d in decisions for ref in d.get("refs", [])]
+                 + [e["claim"] for e in evidence] + [e["ref"] for e in evidence])
+        tokens = {token.lower() for text in texts for token in HEX.findall(text)}
+        haystack = "\n".join(texts + [a[k] for a in payload.get("assignments", []) for k in ("task", "agent_id")]).lower()
+        warnings = []
+        missing = [(repo["root"], c["hash"]) for repo in found["repos"] for c in repo["commits"]
+                   if not _referenced(c["hash"], tokens)]
+        if missing:
+            warnings.append(_warning("UNREFERENCED_COMMITS", "%d commit(s) since the last record have no hash prefix "
+                                     "(%d+ characters) in this record's entries (refs, text, evidence ref): %s"
+                                     % (len(missing), HASH_PREFIX, ", ".join(h for _, h in missing))))
+        quiet = [a for a in found["dispatches"]
+                 if a["role"].lower() not in haystack and not (a["desc"] and a["desc"].lower() in haystack)]
+        if quiet:
+            warnings.append(_warning("UNMENTIONED_DISPATCHES", "%d dispatch(es) since the last record are mentioned "
+                                     "by neither role nor description in this record's entries or assignments: %s"
+                                     % (len(quiet), "; ".join(a["role"] + (": " + a["desc"] if a["desc"] else "")
+                                                              for a in quiet))))
+        if not decided and (edits or found["dispatches"] or found["commits"]):
+            warnings.append(_warning("NO_NEW_DECISION", "activity since the last record (%d edited file(s), %d "
+                                     "dispatch(es), %d commit(s)) but this record adds no new decision"
+                                     % (len(edits), len(found["dispatches"]), found["commits"])))
+        return warnings
+    except (KeyError, TypeError, AttributeError, ValueError):
+        return []
+
+
+def _clip(text, limit):
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[:limit - 3] + "..."
+
+
+def echo(data, log, warnings):
+    """The record echo, at most ECHO_MAX characters. Over the cap it drops the oldest shown decisions,
+    then the oldest open evidence, then the last warnings, counting each, and finally clips the card."""
+    card = data["payload"]
+    ids = data.get("log_entries", [])
+    head = "Recorded %s (revision %s): %s" % (card["work_id"], data["revision"][:12], ", ".join(ids) or "no new entries")
+    lines = ["Card: phase: %s; next: %s" % (card["phase"], card["next"])]
+    if card["blockers"]:
+        lines.append("Blockers: " + "; ".join(card["blockers"]))
+    if card["assignments"]:
+        lines.append("Assignments: " + "; ".join("%s (%s, %s)" % (a["task"], a["agent_id"], a["observed_state"])
+                                                 for a in card["assignments"]))
+    card_text = " ".join(lines[0].split()) + "".join("\n" + " ".join(line.split()) for line in lines[1:])
+    sections = []
+    if log is not None:
+        evidence = [e for e in log if e["kind"] == "evidence"]
+        updated = {e["updates"] for e in evidence if "updates" in e}
+        still_open = [e for e in evidence if e["id"] not in updated and e["state"] != PASSED]
+        superseded = {e["supersedes"] for e in log if e["kind"] == "decision" and "supersedes" in e}
+        current = [e for e in log if e["kind"] == "decision" and e["id"] not in superseded]
+        sections.append(["Open evidence", [_clip("- %s [%s] %s (%s)" % (e["id"], e["state"], e["claim"], e["ref"]),
+                                                 ECHO_ITEM) for e in store.newest_entries(still_open, len(still_open))],
+                         0, 0])
+        recent = store.newest_entries(current, ECHO_DECISIONS)[::-1]  # newest first
+        sections.append(["Recent decisions", [_clip("- %s %s" % (e["id"], e["text"]), ECHO_ITEM) for e in recent],
+                         0, -1])
+    sections.append(["Warnings", [_clip("- %s: %s" % (w["code"], w["message"]), ECHO_ITEM) for w in warnings], 0, -1])
+
+    def render(card_part):
+        parts = [head, card_part]
+        for title, items, trimmed, _ in sections:
+            if not items:
+                parts.append("%s: %s" % (title, "%d more, see status" % trimmed if trimmed else "none"))
+            else:
+                parts.append("\n".join([title + ":"] + items + (["- %d more, see status" % trimmed] if trimmed else [])))
+        return "\n".join(parts)
+
+    order = [s for title in ("Recent decisions", "Open evidence", "Warnings") for s in sections if s[0] == title]
+    text = render(card_text)
+    while len(text) > ECHO_MAX:
+        section = next((s for s in order if s[1]), None)
+        if section is None:
+            break
+        section[1].pop(section[3])
+        section[2] += 1
+        text = render(card_text)
+    if len(text) > ECHO_MAX:
+        text = render(_clip(card_text, max(20, len(card_text) - (len(text) - ECHO_MAX))))
+    return text[:ECHO_MAX]
