@@ -54,6 +54,9 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 - `install.py` also refuses a policy source holding only a BOM or Unicode
   whitespace (such as NBSP); `prune --apply` lists a session kept by an OS error
   only under `errors`, no longer also under `expired`.
+- `hooks/native-facts` handles a 500 KB Write in about 2 s instead of over
+  60 s: it finds the end of `tool_input` by binary search over linear glob
+  tests instead of a quadratic bash suffix strip.
 
 ### Removed
 
