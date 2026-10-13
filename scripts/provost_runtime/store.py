@@ -387,6 +387,8 @@ def _chains(root, session, kind):
     its ancestors still on disk]} (left by a trim interrupted between the horizon
     write and the deletes); they take no part in head selection. Only the oldest
     live object of a chain may miss its parent, and only when that parent is a horizon.
+    Two live records of different works naming the same horizon as parent (only a hand
+    edit makes them) read as two chains.
     """
     root = as_workspace(root)
     home = handoff_home()

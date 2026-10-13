@@ -20,17 +20,23 @@ A Python invocation is also documented in the pilot guide.
 
 1. Run `status --workspace "<root>" --session "<id>"`. It is read-only and returns
    the expected revision, the current checkpoint and a complete payload template
-   (recently edited files prefilled as sources when facts exist).
+   (recently edited files prefilled as sources when facts exist). Expected is
+   per work_id: `other_works` lists the session's other works, and when the
+   payload's work_id is not the checkpoint's, run
+   `status --workspace "<root>" --session "<id>" --work "<work_id>"` instead
+   (`expected` null starts that work's chain).
 2. Fill the template with actual task/source status: reference existing specs,
    tickets, ADRs and evidence; include unresolved decisions, observed worker
    status and next actions. Exclude credentials and full transcripts. Never treat
    an unfilled template as saved work.
 3. Write the payload to a file with the Write tool, then run one plain command:
    `record --workspace "<root>" --session "<id>" --expected "<revision-or-null>" --request-id "<unique-id>" --input "<payload-file>"`,
-   using the `expected` value status returned (`null` when there is none).
+   using the `expected` value status returned for the payload's work_id (`null`
+   when there is none).
    Worktree guards refuse heredocs, pipes, command substitution and line
    continuations; never interpolate payload into executable shell text.
-   A revision conflict means rerun status and reconcile, never overwrite.
+   A revision conflict means rerun status (with `--work "<work_id>"`) and
+   reconcile, never overwrite.
 4. Use `snapshot --workspace "<root>" --session "<id>" --request-id "<unique-id>"`.
    Report the returned snapshot ID and local path. On failure, say it was not
    saved; do not call an old snapshot current.
