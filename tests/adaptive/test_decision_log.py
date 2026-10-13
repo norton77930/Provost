@@ -34,9 +34,9 @@ class DecisionLogTests(FixtureCase):
     def request(self, work="A", decisions=(), evidence=(), step="next step"):
         return dict(self.payload(step), work_id=work, new_decisions=list(decisions), new_evidence=list(evidence))
 
-    def record(self, data, expected=None, request_id="r1", session="s1", workspace=None):
+    def record(self, data, expected=None, request_id="r1", session="s1", workspace=None, join=False):
         code, out = self.runtime("record", "--expected", expected or "null", "--request-id", request_id,
-                                 data=data, session=session, workspace=workspace)
+                                 *(("--join",) if join else ()), data=data, session=session, workspace=workspace)
         return out if code == 0 else out["error"]
 
     def status(self, work=None, session="s1", workspace=None):
@@ -184,7 +184,7 @@ class DecisionLogTests(FixtureCase):
         a = self.record(self.request(decisions=[{"text": "from main"}]), session="s-main", workspace=main)
         b = self.record(self.request(decisions=[{"text": "from worktree"}],
                                      evidence=[{"claim": "c", "state": "fail", "ref": "r"}]),
-                        session="s-wt", workspace=worktree)
+                        session="s-wt", workspace=worktree, join=True)
         c = self.record(self.request(decisions=[{"text": "main again"}]), a["revision"], "r2",
                         session="s-main", workspace=main)
         self.assertEqual((a["log_entries"], b["log_entries"], c["log_entries"]), (["D1"], ["D2", "E1"], ["D3"]))
@@ -197,7 +197,8 @@ class DecisionLogTests(FixtureCase):
         sessions = ["c%d" % i for i in range(6)]
         for session in sessions:
             bind(self.root, session, {})
-        procs = [subprocess.Popen(self.command("record", "--expected", "null", "--request-id", "r1", session=session),
+        procs = [subprocess.Popen(self.command("record", "--expected", "null", "--request-id", "r1", "--join",
+                                               session=session),
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                   text=True, encoding="utf-8", env=self.env())
                  for session in sessions]
@@ -308,7 +309,7 @@ class DecisionLogTests(FixtureCase):
         with mock.patch.object(store, "atomic_write", fail_card):
             with self.assertRaises(store.StoreError):
                 store.record(self.root, "s1", data, None, "r1")
-        other = self.record(self.request(decisions=[{"text": "from s2"}]), session="s2")
+        other = self.record(self.request(decisions=[{"text": "from s2"}]), session="s2", join=True)
         self.assertEqual(other["log_entries"], ["D2"])
         replay = self.record(data)
         self.assertEqual(replay["log_entries"], ["D1"])

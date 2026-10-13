@@ -218,11 +218,16 @@ naming the entry (`new_decisions[i]` / `new_evidence[i]`):
 - `ALREADY_SUPERSEDED`: superseding a decision that another entry already supersedes;
   the detail names the latest entry of that chain, which is the one to supersede. Two
   entries of one record superseding the same decision are refused the same way.
+- `JOIN_REQUIRED`: the session's first write to a work whose log already holds entries
+  of other sessions, without `--join` (see Joining work below). The detail names up to
+  5 of those sessions by their first 8 characters.
 
-The text checks run before anything is read; the target checks run under the work's
-log lock against the committed log (for a replayed request, the log as it was before
-that request's own entries, or, when its card logged nothing, the log as it was when
-the card was written).
+The text checks run before anything is read; the join and target checks run under the
+work's log lock against the committed log (for a replayed request, the log as it was
+before that request's own entries, or, when its card logged nothing, the log as it was
+when the card was written). A record that appends no entries reads the log only when
+the session has not joined the work, and without taking the lock, so it creates no log
+or lock file.
 
 Soft warnings come back with a successful write as `warnings`, a list of
 `{code, message}` (empty when there is nothing to report):
@@ -244,6 +249,16 @@ Soft warnings come back with a successful write as `warnings`, a list of
 - `NO_NEW_DECISION`: edits, dispatches or commits were captured since that last record
   but the record appends no decision (skipped duplicates do not count).
 - `LOG_LARGE`: the work's log holds more than 300 entries; consider splitting the work.
+- `CONCURRENT_SESSION`: another session's newest card of this work was written less
+  than 120 minutes ago; the message names each such session (first 8 characters) and
+  how many minutes ago. It comes from the cards of the work across the repository's
+  session dirs, not from the log, so a card that logged nothing counts too.
+- `REOPENED`: the work's newest card across sessions has phase `done` and this record's
+  phase is not `done`; the message names the session that closed it and when.
+
+`CONCURRENT_SESSION` and `REOPENED` are read before the write, read-only and with no
+lock held; when the cards cannot be read there are no such warnings, and a session dir
+whose cards are unreadable is left out.
 
 The commit, dispatch and activity warnings read the session's facts as of the
 record, the way `changes` does: the stored `facts.json` merged with the spool lines
@@ -263,6 +278,31 @@ cap it drops the oldest shown decisions first, then the oldest open evidence, th
 last warnings, and counts what it dropped as `N more, see status`; the card is always
 kept (clipped only when it alone does not fit). Secret-like strings in `warnings` and
 `echo` are replaced by `[REDACTED]`, as in search output.
+
+### Joining work
+
+A work's log is shared by every session of the repository, so reusing a work_id by
+coincidence would write into someone else's history. A session joins a work
+explicitly:
+
+- by resuming a snapshot that holds the work (the adopted card is the session's card
+  of that work), or
+- by adding `--join` to its first `record` of the work.
+
+Until then, its first write to a work whose log holds entries of other sessions is
+refused with `JOIN_REQUIRED`, whether or not the record has entries. A session that
+already has a card of the work (written earlier or adopted, the card `--expected`
+names) has joined it: later records need no flag, and `--join` on them changes
+nothing. A work whose log holds only this session's entries, or none, needs no join.
+Two sessions starting the same new work at once are serialized by the log lock: the
+first to append wins, and the other is refused unless it joins.
+
+Joining does not lock anyone out: `CONCURRENT_SESSION` warns while another session's
+card of the work is under 120 minutes old.
+
+A card with phase `done` closes its work: the work is closed while its newest card
+across sessions is done. Any later record of the work with another phase reopens it,
+with a `REOPENED` warning; a closed work's log is kept like any other.
 
 ## Search past decisions
 

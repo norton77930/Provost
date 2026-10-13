@@ -85,6 +85,8 @@ def main(argv=None):
         parser.add_argument("--older-than-days", type=int, default=None)
         parser.add_argument("--expired-older-than-days", type=int, default=None)
         parser.add_argument("--apply", action="store_true")
+        # record: the first write of this session to a work that other sessions logged joins that work.
+        parser.add_argument("--join", action="store_true")
         # search: keywords, optional date floor/limit/ref (validated in search.py), and scope.
         parser.add_argument("--query")
         parser.add_argument("--since")
@@ -200,7 +202,8 @@ def main(argv=None):
                     result = checks.record(root, options.session, payload,
                                            None if options.expected == "null" else options.expected,
                                            options.request_id, config_path=config_path(),
-                                           cursor=cursor(resolve_transcript(source.get("transcript_path"))))
+                                           cursor=cursor(resolve_transcript(source.get("transcript_path"))),
+                                           join=options.join)
                     clear_reminder_flags(config_path(), options.session)
                 elif options.command == "snapshot":
                     if not options.request_id:

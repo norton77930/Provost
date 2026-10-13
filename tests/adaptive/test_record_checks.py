@@ -348,7 +348,7 @@ class RecordChecksTests(FixtureCase):
         self.assertEqual((second["log_entries"], self.codes(second)), ([], ["DUPLICATE_SKIPPED"]))
         # Another session supersedes D1 afterwards: the replay still sees the log as it was.
         bind(self.root, "s2", {})
-        code, other = self.runtime("record", "--expected", "null", "--request-id", "x1", session="s2",
+        code, other = self.runtime("record", "--expected", "null", "--request-id", "x1", "--join", session="s2",
                                    data=self.request(decisions=[{"text": LONG + " (corrected)", "supersedes": "D1"}]))
         self.assertEqual(code, 0, other)
         replay = self.record(dup, first["revision"], "r2")
