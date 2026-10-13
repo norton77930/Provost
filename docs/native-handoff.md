@@ -466,7 +466,14 @@ completion or current ownership. Do not duplicate uncertain live work.
 
 SessionStart context stays within 8,000 characters (Claude Code replaces a larger
 one with a 2 KB preview) and never fails for its size. Startup, clear and fork
-carry identity, operations and the new-work notice only. Compact and resume add,
+carry identity, operations and the new-work notice, plus a menu of joinable works:
+up to 5 works of the repository whose newest card is not `done` (from `work_states`,
+across all sessions), newest card first, one line each with the work_id (cut to 80
+characters), phase, last update (UTC) and the first 8 characters of the session that
+wrote that card, then a hint to continue with `/handoff resume <snapshot-id>` or to
+record the work_id with `--join` on the first write. The menu is redacted and loads no
+card content, decisions or evidence; it is omitted without error when the store cannot
+be read. Compact and resume add,
 in priority order: the save status with the required action (after a facts-only
 save: write a record from the compaction summary; status prefills facts and
 `template.sources`), the facts summary (one line per repo, at most 5: branch,

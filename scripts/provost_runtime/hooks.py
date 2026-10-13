@@ -7,9 +7,9 @@ from . import facts
 from .config import ConfigError, handoff_home, load_config, resolve_mode, workspace_key
 from .notifications import PARTIAL, notice
 from .search import redact
-from .store import (CACHE_SESSION, FACTS_MARKER, StoreError, _base, _chains, as_workspace, atomic_write, current,
+from .store import (CACHE_SESSION, FACTS_MARKER, StoreError, _base, _chains, _when, as_workspace, atomic_write, current,
                     digest, guard, is_done, latest, locate, newest_entries, read_log, session_dir, snapshot,
-                    snapshot_cards, storage_ready)
+                    snapshot_cards, storage_ready, work_states)
 
 PLUGIN = Path(__file__).resolve().parents[2]
 RECOVERY_PAYLOAD_LIMIT = 4500     # inline the payload in full up to this size; digest is capped to it too
@@ -23,6 +23,8 @@ RECOVERY_DECISIONS = 15           # newest non-superseded decisions of the curre
 RECOVERY_NEXT_LIMIT = 160         # next step cap in an other-work line
 RECOVERY_ITEM_LIMIT = 400         # per decision or evidence line, so one huge entry cannot empty its section
 RECOVERY_WORK_ID_LIMIT = 80       # work_id cap in section titles and count lines
+MENU_WORKS = 5                    # joinable works listed at startup, clear and fork
+MENU_PHASE_LIMIT = 40
 PARTIAL_STATUS = ("Save status: the last compaction saved facts only. Before continuing, write a decision record "
                   "from the compaction summary: run status (it prefills facts and template.sources), then record.")
 NEVER_RECORDED = ("No handoff checkpoint: this session has not recorded yet; continue from the compact summary "
@@ -216,6 +218,37 @@ def _other_works(chains):
                     RECOVERY_LINE_LIMIT) for p in others]
     return ["\n".join(lines), "Other open works in this session: %d, omitted for size; status lists them "
                               "as other_works." % len(others)]
+
+
+def _joinable_menu(root):
+    """Notice lines listing up to MENU_WORKS open works of the repo, newest card first; [] on any failure.
+
+    Names only: work_id, phase, last update and the writing session. No card content, decisions or evidence.
+    """
+    try:
+        open_works = [(work, state) for work, state in work_states(root)["works"].items() if state["open"]]
+        floor = datetime.min.replace(tzinfo=timezone.utc)
+
+        def when(state):
+            try:
+                return _when(state["recorded_at"])
+            except StoreError:
+                return floor
+        open_works.sort(key=lambda item: (when(item[1]), item[1]["revision"]), reverse=True)
+        lines = []
+        for work, state in open_works[:MENU_WORKS]:
+            stamp = when(state)
+            updated = "unknown time" if stamp == floor else stamp.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            text = "- %s [%s] updated %s, session %s" % (
+                _work_name(work), _clip(redact(str(state["phase"])), MENU_PHASE_LIMIT), updated,
+                redact(str(state["session"]))[:8])
+            lines.append(_clip(" ".join(text.split()), RECOVERY_LINE_LIMIT))
+        if not lines:
+            return []
+        return (["Joinable works in this repository (nothing is loaded):"] + lines
+                + ["Continue one with /handoff resume <snapshot-id>, or record its work_id with --join on the first write."])
+    except Exception:  # fail-soft: the notice stays, the menu is omitted
+        return []
 
 
 def _work_name(work):
@@ -614,6 +647,7 @@ def handle_event(event, config_path):
                         sections[4], sections[5], sections[6] = _work_sections(root, session, chains, checkpoint)
                     elif source in ("startup", "clear", "fork"):
                         status.append("New work context: do not load or start old work unless explicitly requested.")
+                        status.extend(_joinable_menu(root))
                     else:
                         status.append("Unrecognized session source: no automatic continuation.")
                     cache = state_dir / (digest(key) + ".json")
