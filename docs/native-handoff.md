@@ -46,7 +46,7 @@ by `at`, and entries with the same `at` keep their log order (ids ascending per
 kind). Ids are assigned and lines appended under a per-work lock
 (`logs/<sha256(work_id)>.lock`) that a `record` waits for up to 10 seconds
 (`STORE_BUSY` after), so concurrent writers from any session or worktree never
-reuse an id. Entries are never rewritten. A line exists only once its terminating
+reuse an id. Entries are never rewritten (except by `redact`, see below). A line exists only once its terminating
 newline is written: all lines of one `record` go out in one write followed by
 fsync. Bytes after the last newline are a torn append (a crash mid-write): readers
 ignore them and the next append cuts them off. A newline-terminated line that is
@@ -261,40 +261,77 @@ kept (clipped only when it alone does not fit).
 
 ```bash
 bash "<runtime>/hooks/runtime" search --workspace "<root>" --query "<terms>" \
-  [--all-repos] [--since YYYY-MM-DD] [--limit N]
+  [--all-repos] [--since YYYY-MM-DD] [--limit N] [--work "<work_id>"] [--kind decision|evidence]
 bash "<runtime>/hooks/runtime" search --workspace "<root>" --show "<ref>" [--all-repos]
 ```
 
 Finds why something was decided. Read-only keyword search over what the store
 already holds: no model call, no index, no daemon, and nothing is created or written
-(no files, locks or directories). The scope is the repo of `--workspace`; `--all-repos`
-scans every repo dir under the store home. Like `list`, it needs handoff enabled for
-the workspace (`HANDOFF_DISABLED` otherwise).
+(no files, locks or directories; the decision logs are read without taking their
+lock). The scope is the repo of `--workspace`; `--all-repos` scans every repo dir under
+the store home. Like `list`, it needs handoff enabled for the workspace
+(`HANDOFF_DISABLED` otherwise).
 
-The corpus is each session's newest valid record (a session's decision list is
-cumulative, so older records add nothing), every valid snapshot, and every valid file
-in `archive/`. Unreadable, checksum-invalid or foreign files are skipped and counted
-under `skipped`, never fatal. Searched items are each decision, each blocker, `next`
-and each evidence `claim` of those records. Only schema 1 cards hold decisions and
-evidence; for schema 2 cards they live in the decision log, which search does not
-read yet, so only their blockers and `next` are searched. Use `status --work
-<work_id>` (its `log` field) for a work's newest log entries. An item matches when every whitespace-separated query
-term (case-insensitive substring) appears in the item text or in its record's
-`work_id` or `phase`. Identical (`work_id`, `field`, text) hits are reported once, for
-the newest record. Results rank by how often the terms occur in the item text, then by
-`recorded_at`, newest first. `--since` keeps records recorded on or after that UTC
-date; `--limit` defaults to 10 and must be 1 to 50 (`INVALID_LIMIT`); `truncated`
-counts the matches beyond it.
+The corpus is every entry of every decision log of the repo (`logs/*.jsonl`), each
+session's newest valid record **per work_id** (a session that worked on several works
+contributes one card for each), every valid snapshot, and every valid file in
+`archive/`. A log is read header first: its header must name this repo and a `work_id`
+whose digest is the file name, and every entry must parse (under "Where records live"). A log
+that fails (`FOREIGN_REPO`, `CORRUPT_LOG`, a name that does not match its header) and
+any unreadable, checksum-invalid or foreign record, snapshot or archive file is skipped
+and counted under `skipped`, never fatal; bytes of an interrupted append at the end of a
+log are ignored, as everywhere. Searched items are each log entry (a decision's `text`,
+an evidence entry's `claim`) and, of the records, each decision, blocker, `next` and
+evidence `claim`. Only schema 1 cards hold decisions and evidence; for schema 2 cards
+they live in the log. An item matches when every whitespace-separated query term
+(case-insensitive substring) appears in the item text or in its `work_id` (or, for a
+record item, its `phase`). Identical (`work_id`, `field`, text) record items are reported
+once, for the newest record, and not at all when a log entry of that work holds the same
+text (for example one that `migrate` imported). Results rank by how often the terms occur
+in the item text, then by time, newest first. `--since` keeps items dated on or after
+that UTC date (a log entry's `at`, a record's `recorded_at`); `--work` keeps one
+`work_id` (exact match; only that work's log file is read, so other logs, good or bad, are
+neither read nor counted under `skipped`); `--kind` keeps decisions or evidence only, so it drops blockers
+and `next` (`INVALID_KIND` for any other value; an empty `--work` is
+`INVALID_ARGUMENTS`); `--limit` defaults to 10 and must be 1 to 50 (`INVALID_LIMIT`);
+`truncated` counts the matches beyond it.
 
-Output: `query`, `repos_scanned`, `results`, `truncated`, `skipped`. Each result has
-`recorded_at`, `worktree_path`, `work_id`, `phase`, `field` (`decision`, `blocker`,
-`next` or `evidence`), `text` (at most 160 characters), `source` (`record`,
-`snapshot` or `archive`) and `ref`. `--show <ref>` returns that one record's full
-`payload` with `ref`, `source`, `recorded_at`, `worktree_path`, `work_id` and `phase`;
-use it only for a result worth reading in full. A `ref` is opaque, valid while its
-file exists (the store trims old records), and only resolves inside the scope of the
-call (`REF_NOT_FOUND` otherwise). Other errors: `QUERY_REQUIRED`, `INVALID_SINCE`,
-`INVALID_REF`, `REF_AMBIGUOUS`.
+Output: `query`, `repos_scanned`, `results`, `truncated`, `skipped`. A result from a
+record, snapshot or archive file has `recorded_at`, `worktree_path`, `work_id`,
+`phase`, `field` (`decision`, `blocker`, `next` or `evidence`), `text` (at most 160
+characters), `source` (`record`, `snapshot` or `archive`) and `ref`. A result from a log
+(`source: "log"`) is one line per entry: `work_id`, `id` (`D3`, `E1`), `kind`
+(`decision` or `evidence`, also the `field`), `date` (UTC, `YYYY-MM-DD`), `recorded_at`
+(the entry's `at`), `text` (at most 160 characters), `ref` and `superseded_by`: the id of
+the entry that replaced it, or `null`. Evidence also shows its chain's latest state:
+`state` is the state of the work's current entry for that claim and `latest` that
+entry's id, so an old "fail" whose chain ended in "pass-observed" reads
+`pass-observed`. The current entry is the newest in time order (`at`, then log order)
+among the end of the entry's `updates` chain and all evidence entries of the work with
+exactly the same claim text, so a migrated chain and a live chain of one claim that were
+never linked still agree on the current state. (`--show`'s `chain` keeps only linked
+entries.)
+
+`--show <ref>` returns one hit in full. Refs of record, snapshot and archive results are
+opaque (`r:`, `s:` or `a:` prefix) and returned as before: the full `payload` with
+`ref`, `source`, `recorded_at`, `worktree_path`, `work_id` and `phase`. A log entry's
+ref is `<work_id>:<entry id>`, for example `hook-perf:D2` (the entry id is the part after
+the last `:`, so a work_id may contain colons). Outside the workspace's repo (with
+`--all-repos`) it carries the repo dir as a prefix, `@<repo dir>:<work_id>:<entry id>`,
+exactly as search results print it. Showing a log entry returns `ref`, `source: "log"`,
+`work_id`, `recorded_at`, `entry` (the full stored entry), `superseded_by`, for evidence
+`state` and `latest`, `chain`, `dangling`, `before` and `after`. `chain` holds the
+entry and every entry connected to it through `supersedes`/`updates` links, followed in
+both directions, oldest first; links that point at no entry (logs written before the
+record checks may hold such, or links to an entry of the other kind) are tolerated:
+cross-kind targets are followed like any other, missing ones are listed under
+`dangling`. `before` and `after` are the two entries on each side of the shown one in
+time order (the same ordering as `status`: by `at`, then log order), fewer at the ends
+of the log. Use `--show` only for a result worth reading in full. A `ref` is valid
+while its file exists (the store trims old records), and only
+resolves inside the scope of the call (`REF_NOT_FOUND` otherwise). Other errors:
+`QUERY_REQUIRED`, `INVALID_SINCE`, `INVALID_REF`, `REF_AMBIGUOUS`, and for a shown log
+that fails verification `CORRUPT_LOG` or `FOREIGN_REPO`.
 
 Secret-like strings (GitHub tokens, `github_pat_` tokens, `sk-` keys, AWS access key
 ids and private-key headers) are replaced by `[REDACTED]` in all output. Records
@@ -453,9 +490,10 @@ an interrupted trim stay on disk until that work's chain is trimmed again, so a 
 never written again keeps them (reads skip them); submodules, bare-backed and
 separate-git-dir checkouts are refused (`REPO_KEY_UNRESOLVED`); Git older than
 2.31 is refused (`GIT_UNSUPPORTED`); on Windows without long-path support a long
-user or `PROVOST_HOME` path can exceed 260 characters; `search` does not read the
-decision log yet, so decisions and evidence recorded in schema 2 are found only
-through `status --work <work_id>`.
+user or `PROVOST_HOME` path can exceed 260 characters; redacting a log entry changes the
+log only: schema 1 cards, snapshots, archive files and `migrate` backups keep the
+original text, and `search` can still find it there (redacting those means deleting the
+files by hand).
 Pass `--session <current-id>` to keep the running session. Directories with any
 record, snapshot, lock or other file, linked or reparse-point entries, and names
 that are not session digests are never candidates. With `--apply`, each candidate
@@ -476,6 +514,144 @@ bash "<runtime>/hooks/runtime" prune --workspace "<root>" --session "<session>"
 
 Show the listed candidates to the user before running the same command with
 `--apply`.
+
+## Redact
+
+Maintainer only. Removes the content of one decision log entry, for example a
+decision or claim that accidentally holds a secret:
+
+```bash
+! bash "<runtime>/hooks/runtime" redact --workspace "<root>" --work "<work_id>" \
+  --entry "<id>" [--reason "<text>"]
+```
+
+A decision's `text`, or an evidence entry's `claim` and `ref`, becomes `[removed]`.
+Everything else stays: `id`, `kind`, `at`, `session`, `record`, a decision's `refs`
+and `supersedes`, an evidence entry's `state` and `updates`. The entry gains
+`redacted_at` (ISO-8601) and, with `--reason`, `redaction_reason` (1 to 1000
+characters; it is stored and printed, so never put the secret in it). Links from or to
+the entry still resolve, and `status` shows the marker instead of the content.
+Redacting an entry that is already redacted succeeds without any change (`changed`
+false; the first reason stays). Output: `work_id`, `entry` (the redacted entry) and
+`changed`. Errors: `ENTRY_NOT_FOUND` (no such id, or the work has no log),
+`INVALID_REASON`, `INVALID_ARGUMENTS` (`--work` or `--entry` missing), `STORE_BUSY`,
+`CORRUPT_LOG`/`FOREIGN_REPO` (a log that fails closed is not rewritten) and
+`WRITE_FAILED`.
+
+This is the one rewrite of a log. It runs under the work's log lock (the lock
+`record` appends under, waiting up to 10 seconds, `STORE_BUSY` after) and takes no
+session lock. Committed lines are copied unchanged except the redacted one, and a
+torn tail is dropped (redacting an already redacted entry writes nothing and leaves
+it; the next append cuts it off). The new log is written to a temporary `.pending-*` file in `logs/`,
+fsynced, then moved over the log in one `os.replace`, so a crash leaves either the
+old log or the new one, never a mix, and the result ends with a newline as appends
+require. A crash before the move can leave the `.pending-*` file; it holds the
+redacted log; readers and appends ignore it, and it can be deleted. On Windows the move fails while another process has
+the log open (a `status` or hook reading it): that is `WRITE_FAILED`, the
+log is unchanged, and running the same command again is safe.
+
+Replaying a `record` request whose entries were redacted returns `REQUEST_ID_REUSED`,
+even when the earlier attempt was interrupted before its card was written: the log
+no longer holds what the request sent. Write a new request ID instead. Redaction only
+rewrites the log: copies elsewhere (session transcripts, schema 1 cards, snapshots,
+archive files, migrate backups and output already shown) keep the content.
+
+The model must not run this command. Deny it in the Claude Code settings with a
+permission rule rather than relying on instructions, and run it yourself with the `!`
+prefix, which runs the command directly in your shell and not as a model tool call,
+so the deny rule does not apply to it. Example for the `permissions` object of
+`~/.claude/settings.json` (this repository does not install it):
+
+```json
+{"permissions": {"deny": ["Bash(*runtime* redact*)"]}}
+```
+
+`*` matches any characters, so the rule covers the quoted wrapper path
+(`bash "<runtime>/hooks/runtime" redact`), both path separators and the module form
+(`python -m provost_runtime.cli redact`). A Bash rule matches the command text, so it
+blocks the documented invocation, not every conceivable way of rewriting the file.
+
+## Migrate
+
+```bash
+bash "<runtime>/hooks/runtime" migrate --workspace "<root>" [--apply]
+```
+
+A one-time import of the decisions and evidence that schema 1 cards carried into
+the decision logs. Without `--apply` it is a dry run that writes nothing (no files,
+locks or directories). Like `prune`, it needs handoff enabled for the workspace.
+Run the dry run, show it to the user, and run `--apply` only after the user has
+reviewed it. Migrate soon after installing: a schema 1 card trimmed from its chain
+(5 newer records of the work) is no longer a source unless a snapshot or archive
+file still holds it.
+
+Sources are the repo's valid schema 1 records and snapshots in every session dir
+(including `.pruning-` leftovers) and its valid `archive/` files. Unreadable,
+checksum-invalid, mismatched or foreign files are skipped and listed under
+`skipped` (`file` relative to the repo dir, `reason`), as are single items the log
+cannot hold (`INVALID_DECISION` for empty decision text, `INVALID_EVIDENCE` for an
+empty claim). Schema 2 cards hold nothing to import and are not listed. Source
+files are only read, never modified.
+
+A source stands for the card it holds. A snapshot or archive file carries its
+card's `recorded_at` and `revision`, so every copy of one card has the same time and
+identity, whichever copies still exist. Per work_id, sources are read in time order
+by `recorded_at`. Equal times are ordered by `parent_record` descent (a card after
+its ancestors), then records before snapshots before archive files, then by path.
+
+- Decisions are deduplicated by exact text: the first occurrence is imported, with
+  its time, session and card.
+- Evidence with the same `claim` text forms one chain: its first state is one entry,
+  each later different state a new entry whose `updates` names the previous one, and
+  a state equal to the previous one adds nothing. Sessions interleave by time.
+
+Imported entries take `at` from the card's `recorded_at`, `session` from the card's
+session, `record` from the card's revision, and `migrated: true`. Their ids continue
+after the work's highest existing ids; entries already in the log are kept as they
+are, and every view orders by `at`, so older imported entries sort before newer live
+ones. Migrated chains never link to live entries. Expected consequences: a decision
+re-logged as a live entry can coexist with a migrated entry of the same text, and
+when a claim has both a migrated chain and a live chain, its current state is the
+entry with the newest `at`.
+
+Idempotent: all of one work's new entries go out in one write, so a candidate whose
+card revision already appears as `record` among the work's `migrated: true`
+entries was handled by an earlier run and is not imported again; as a secondary
+guard, neither is a decision whose text a migrated decision already has. A later
+chain link to an earlier import resolves by position among that card's migrated
+entries, else by (`record`, `claim`, `state`); when neither finds it the work fails
+with `MIGRATE_CHAIN_UNRESOLVED` and nothing is appended to it. Skipped candidates
+are counted under `already_migrated`, so a second `--apply` imports nothing (and
+makes no backup), also after a source card was trimmed (a surviving copy is the same
+card) or a migrated entry's text was rewritten.
+
+Output: `applied`, `backup` (null unless something was imported), `works` and
+`skipped`. Each work lists `work_id`, `sources` (source files contributing to it),
+`decisions` and `evidence` (entries the dry run would import, or `--apply`
+imported) and `already_migrated`. A work whose log cannot be read, backed up or
+appended to (`CORRUPT_LOG`, `FOREIGN_REPO`, `STORE_BUSY`, `WRITE_FAILED`,
+`MIGRATE_CHAIN_UNRESOLVED`) has `error` instead of the counts and gets nothing
+appended; other works continue.
+
+`--apply` takes each work's log lock (the same lock `record` uses, waiting up to 10
+seconds), copies that work's committed log bytes into
+`<store home>/v2/repos/<repo dir>/backups/logs-<UTC time>/<log file name>` (an
+empty file when the work had no log; fsynced), and only then appends the work's
+entries in one write and cuts any torn tail. A failed backup aborts that work before
+anything is appended, and an empty backup dir is removed. This store-level
+`backups/` is not the installer's `<config dir>/provost/backups`. Nothing prunes it,
+and its copies hold log text unredacted (a later `redact` does not reach them):
+delete backup dirs by hand once the migration is settled.
+
+Rollback, keeping live entries recorded after the migration: remove every line with
+`migrated: true` from the logs. A live entry whose `updates` or `supersedes` named a
+migrated id then points at a missing entry; fix or accept that residue. Full revert:
+replace each log with its copy in the oldest backup (a copy that is an empty file
+means the work had no log: delete that log), which also drops every entry recorded
+after the migration. Either way, reinstall the previous runtime if needed. Record,
+snapshot and archive files are never modified, so schema 1 cards still hold their
+decisions and evidence. A runtime with the decision log but without `migrate` reads
+migrated entries as they are.
 
 ## Reminder hook
 

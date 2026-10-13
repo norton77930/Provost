@@ -84,12 +84,13 @@ class SearchTests(FixtureCase):
     def texts(self, data):
         return [r["text"] for r in data["results"]]
 
-    def test_schema_2_cards_are_searched_for_blockers_and_next(self):
+    def test_schema_2_cards_are_searched_for_blockers_and_next_and_their_decisions_via_the_log(self):
         record(self.ws, "s2", {"work_id": "w2", "phase": "build", "sources": [], "assignments": [],
                                "blockers": ["lambda blocker"], "next": "lambda next", "suggested_skills": [],
                                "new_decisions": [{"text": "lambda logged decision"}]}, None, "r1")
         self.assertEqual(sorted((r["field"], r["text"]) for r in self.found("--query", "lambda")["results"]),
-                         [("blocker", "lambda blocker"), ("next", "lambda next")])
+                         [("blocker", "lambda blocker"), ("decision", "lambda logged decision"),
+                          ("next", "lambda next")])
 
     def test_matches_decisions_blockers_next_and_evidence_claims(self):
         self.rec("s1", decisions=["use sqlite for the queue"], blockers=["sqlite lock contention"],
