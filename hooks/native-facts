@@ -52,13 +52,14 @@ if [[ "$input" == *'"tool_input":'* ]]; then
     # ${body#*...} cost about the square of the distance they scan (over 60 s on a
     # 500 KB Write), while a *...* glob test is linear, so binary-search the
     # shortest prefix that contains the key.
-    if [[ "$body" == *'"tool_response":'* ]]; then
+    cut_key='"tool_response":'
+    if [[ "$body" == *"$cut_key"* ]]; then
         lo=0 hi=${#body}
         while (( lo < hi )); do
             mid=$(( (lo + hi) / 2 ))
-            if [[ "${body:0:mid}" == *'"tool_response":'* ]]; then hi=$mid; else lo=$(( mid + 1 )); fi
+            if [[ "${body:0:mid}" == *"$cut_key"* ]]; then hi=$mid; else lo=$(( mid + 1 )); fi
         done
-        body="${body:0:lo-16}"
+        body="${body:0:lo-${#cut_key}}"
     fi
 fi
 
