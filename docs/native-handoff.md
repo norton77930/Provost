@@ -33,8 +33,9 @@ chain with a missing record (`INCOMPLETE_CHAIN`), an unreadable or tampered reco
 a work_id that heads two chains (`AMBIGUOUS_CHAIN`) is broken. An unreadable record
 file breaks the work its content still names (so an older card of that work is never
 served in place of a corrupt head) and the chain of the parent it names. A broken work
-is left out of `status`, injection, snapshots and cross-session work listings, `status` lists it
-under `broken_works`, and `record` refuses to write to it with the same code (starting
+is left out of `status`, injection, snapshots and cross-session work listings; `status` lists it
+under `broken_works`, compact and resume injection name it in one status line ("Broken work
+chains: <work_id> (<code>); status lists broken_works"), and `record` refuses to write to it with the same code (starting
 a second chain beside it would hide the break); the session's other works are read and
 written as usual. Some failures cannot be tied to one work and still fail the whole
 session closed: a corrupt `horizon.json`, a horizon that no record continues (a whole
@@ -47,8 +48,8 @@ Decisions and evidence live in a decision log, not in the cards. Each work_id ha
 one append-only JSON Lines file at the repository level, beside `sessions/`:
 `<home>/v2/repos/<repo_key[:16]>/logs/<sha256(work_id as UTF-8)>.jsonl`. Every
 session of the repository (a checkout and its worktrees) appends to the same file,
-and pruning session directories never touches it (only `prune --apply` of a long done
-work removes it, see Pruning). Line 1 is a header (`kind: "log"`,
+and pruning session directories never touches it (only `prune --apply` of a long idle done
+or orphaned work removes it, see Pruning). Line 1 is a header (`kind: "log"`,
 `schema_version`, `workspace_id`, `work_id`); every later line is one entry:
 
 - decision: `{id, kind: "decision", at, session, record, text, refs?, supersedes?}`
@@ -122,7 +123,9 @@ has not recorded it). When the session has cards of other works, `other_works` l
 them, most recently written first, as `work_id`, `phase`, `revision` and
 `recorded_at`; a session with a single work has no `other_works` field. When some of
 the session's work chains fail validation (see Where records live), `broken_works`
-lists them as `work_id` and `error`; without any it is absent.
+lists them as `work_id` and `error`; without any it is absent. When every chain of the
+session is broken, `status` instead fails with the code of the first broken work by
+work_id (for example `{"error": "INCOMPLETE_CHAIN"}`), as before per-chain validation.
 
 `facts` holds `path` (the facts.json file), `updated_at`, `last_change_at`, `repos`
 (at most 5: `root`, `branch`, `dirty` listed/`dirty_total` uncommitted entries,
@@ -617,27 +620,44 @@ was refused is listed only in `skipped`, and one kept by an OS error
 Decisions outlive expiry: they live in the decision logs, which removing a session
 never touches. `prune` no longer writes the repo-level archive
 `<store home>/v2/repos/<repo dir>/archive/`; archive files written by earlier runtimes
-stay as they are and remain readable by `search` and `migrate`. Schema 1 cards not yet
-imported by `migrate --apply` still hold their decisions, so run the migration before
-pruning sessions that hold them.
+stay as they are and remain readable by `search` and `migrate`. Schema 1 cards still
+hold decisions and evidence that `migrate --apply` has not imported, so an expired
+session or reclaimable leftover holding a schema 1 card (a record, or any card a
+snapshot holds) with non-empty decisions or evidence of a work that a `migrate` dry run
+would still import, or reports an error for, is kept and listed in `skipped` as
+`UNMIGRATED_DECISIONS` (not under `expired`); the check repeats at removal time. The dry
+run runs at most once per `prune`, only when such a session is found. Run
+`migrate --apply` first, then `prune`.
 
-Done-work logs. `prune` also lists, under `done_logs`, the decision log of each work
-whose newest card across all sessions has phase `done` and whose idle time (the later
-of that card's `recorded_at` and the log's newest entry `at`) exceeds 180 days
-(`older_than_days`). `--apply` removes those logs (`removed`, `removed_work_ids`):
-only `logs/<sha256(work_id)>.jsonl`, never its `.lock`, and only while holding that
-work's log lock after reading every session's cards and the log again, so a work
-reopened or logged to since the listing is kept and listed in `skipped` as `OPEN` or
-`RECENT`. Kept and listed in `skipped` (`work_id`, `reason`): a work with a broken
-chain in any session (its chain code), and any candidate while a session dir cannot be
-read at all (`SESSIONS_UNREADABLE`, its cards are unknown); an unreadable log is listed
-by file name (`log`, `reason`, e.g. `CORRUPT_LOG`). Logs of works with no card left in
-any session (for example after their sessions expired) are listed under `orphans`
-(`work_id`, `entries`, `newest`) and never removed. Removal OS errors go to `errors`.
-Done-work logs are evaluated before any session dir is removed in the same run. A later
-`record` of a removed work starts a new log at `D1`/`E1`. A `record` without new entries
-does not take the log lock, so a card-only reopen that lands between the re-check and the
-delete is not seen (that window is only the delete itself).
+Idle logs. `prune` also lists, under `idle_logs.candidates`, the decision log of each work
+that is idle for more than 180 days (`older_than_days`) and either has no card left in
+any readable session (`kind: "orphan"`, for example after its sessions expired) or whose
+newest card across all sessions is done (`kind: "done"`). Idle time is the latest of that
+newest card's `recorded_at`, the log's newest entry `at` and, for a log without entries,
+the file mtime. Logs of open works are never listed or removed. Each candidate has
+`work_id`, `kind`, `idle_since` and `removable`; one that is not removable also has
+`reason`:
+
+- `SESSIONS_UNREADABLE`: a session dir could not be read at all, so its cards are unknown
+  (checked before deciding that a work is an orphan);
+- `LEFTOVER_PENDING`: a `.pruning-` leftover exists, whose cards are not read either;
+- a chain code (`INCOMPLETE_CHAIN`, `CORRUPT_RECORD`, `AMBIGUOUS_CHAIN`, …): the work's
+  chain is broken in some session;
+- `SCHEMA1_SOURCES`: a session still holds a schema 1 card of the work with decisions or
+  evidence; removing the log would let `migrate` import them again. Sessions go first, the
+  log in a later run.
+
+`--apply` removes the removable ones (`removed`, `removed_work_ids`): only
+`logs/<sha256(work_id)>.jsonl`, never its `.lock`, and only while holding that work's log
+lock after reading every session and the log again there, so a work reopened or logged to
+since the listing (`OPEN`, `RECENT`) or newly guarded is kept and listed in `skipped`
+(`work_id`, `reason`). An unreadable log is listed in `skipped` by file name (`log`,
+`reason`, e.g. `CORRUPT_LOG`); removal OS errors go to `errors`. Idle logs are evaluated
+before any session dir is removed in the same run. Nothing is archived: an abandoned work
+that was never marked done loses its log once its sessions are gone and it has been idle
+for 180 days, and a later `record` of a removed work starts a new log at `D1`/`E1`. A
+`record` without new entries does not take the log lock, so a card-only reopen that lands
+between the re-check and the delete is not seen (that window is only the delete itself).
 
 Migrate backups. `log_backups` lists `migrate`'s `backups/logs-<UTC time>` dirs, oldest
 first, as `dir`, `created_at` (from the name, else the dir mtime) and `age_days`.
@@ -754,7 +774,8 @@ A one-time import of the decisions and evidence that schema 1 cards carried into
 the decision logs. Without `--apply` it is a dry run that writes nothing (no files,
 locks or directories). Like `prune`, it needs handoff enabled for the workspace.
 Run the dry run, show it to the user, and run `--apply` only after the user has
-reviewed it. Migrate soon after installing: a schema 1 card trimmed from its chain
+reviewed it, and before any `prune --apply` (prune keeps sessions with unimported
+decisions as `UNMIGRATED_DECISIONS` until then). Migrate soon after installing: a schema 1 card trimmed from its chain
 (5 newer records of the work) is no longer a source unless a snapshot or archive
 file still holds it.
 

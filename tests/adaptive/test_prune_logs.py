@@ -1,4 +1,4 @@
-"""prune: no archive, done-work log cleanup and migrate backup listing (#26)."""
+"""prune: no archive, idle done/orphan log cleanup, the unmigrated guard and migrate backup listing (#26)."""
 import json
 import os
 import shutil
@@ -7,16 +7,30 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 from _support import BASH, FixtureCase, REPO
-from provost_runtime import store
-from provost_runtime.config import handoff_home
+from provost_runtime import migrate, store
 from provost_runtime.hooks import bind
-from provost_runtime.store import prune, session_dir
+from provost_runtime.store import digest, prune, session_dir
 
 RUNTIME = REPO / "hooks" / "runtime"
 LONG = "Keep the parser API stable because two callers pin its signature"
+DAY = 86400
 
 
-class DoneLogPruneTests(FixtureCase):
+def shift(directory, days):
+    """Move a session dir days into the past: stored record/snapshot times (resealed) and every file mtime."""
+    for kind, keys in (("records", ("recorded_at",)), ("snapshots", ("recorded_at", "captured_at"))):
+        for path in (directory / kind).glob("*.json"):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data.pop("checksum")
+            for key in keys:
+                data[key] = (datetime.fromisoformat(data[key]) - timedelta(days=days)).isoformat()
+            path.write_text(json.dumps(store._seal(data)), encoding="utf-8")
+    stamp = datetime.now(timezone.utc).timestamp() - days * DAY
+    for path in directory.rglob("*"):
+        os.utime(path, (stamp, stamp))
+
+
+class IdleLogPruneTests(FixtureCase):
     def setUp(self):
         super().setUp()
         self.requests = 0
@@ -49,21 +63,30 @@ class DoneLogPruneTests(FixtureCase):
                 entries[index] = json.dumps(entry)
             path.write_text("\n".join([header, *entries]) + "\n", encoding="utf-8")
 
-    def done_logs(self, result):
-        return result["done_logs"]
+    def logs(self, apply=False):
+        return prune(self.root, apply=apply)["idle_logs"]
+
+    def listed(self, result):
+        return [(item["work_id"], item["kind"], item["removable"], item.get("reason")) for item in result["candidates"]]
+
+    def orphan(self, work="gone", days=400):
+        """A log of work whose only session dir is gone, its entries days old."""
+        self.write(work, phase="done", session="gone-session")
+        self.backdate(work, days, session="gone-session")
+        shutil.rmtree(session_dir(self.root, "gone-session"))
 
     def test_a_done_work_idle_for_180_days_is_listed_and_its_log_removed_only_with_apply(self):
         self.write("A")
-        self.write("A", phase="done")
+        self.write("A", phase="Done ")  # is_done ignores case and surrounding whitespace
         self.backdate("A", 200)
         log, lock = self.paths("A")
-        dry = self.done_logs(prune(self.root))
-        self.assertEqual([item["work_id"] for item in dry["candidates"]], ["A"])
+        dry = self.logs()
+        self.assertEqual(self.listed(dry), [("A", "done", True, None)])
         self.assertLess(datetime.fromisoformat(dry["candidates"][0]["idle_since"]),
                         datetime.now(timezone.utc) - timedelta(days=199))
         self.assertEqual((dry["removed"], dry["older_than_days"]), (0, 180))
         self.assertTrue(log.is_file())
-        result = self.done_logs(prune(self.root, apply=True))
+        result = self.logs(apply=True)
         self.assertEqual((result["removed"], result["removed_work_ids"], result["errors"]), (1, ["A"], []))
         self.assertFalse(log.exists())
         self.assertTrue(lock.is_file())  # the lock file is never deleted
@@ -75,7 +98,7 @@ class DoneLogPruneTests(FixtureCase):
         self.write("fresh-card", phase="done")
         self.write("fresh-log", phase="done", session="s2")
         self.backdate("fresh-log", 400, session="s2", log=False)  # its log entries are new
-        result = self.done_logs(prune(self.root, apply=True))
+        result = self.logs(apply=True)
         self.assertEqual((result["candidates"], result["removed"]), ([], 0))
         for work in ("open", "fresh-card", "fresh-log"):
             self.assertTrue(self.paths(work)[0].is_file(), work)
@@ -85,35 +108,82 @@ class DoneLogPruneTests(FixtureCase):
         self.write("A", phase="implementation", session="s2")
         self.backdate("A", 300, session="s1")
         self.backdate("A", 200, session="s2", log=False)
-        self.assertEqual(self.done_logs(prune(self.root))["candidates"], [])  # s2's newer card is open
+        self.assertEqual(self.logs()["candidates"], [])  # s2's newer card is open
 
-    def test_a_reopen_between_listing_and_lock_keeps_the_log(self):
+    def recheck(self, change):
+        """prune --apply of done work A, with change() run between the listing and the log lock."""
         self.write("A", phase="done")
         self.backdate("A", 200)
-        real = store._log_lock
+        real, pending = store._log_lock, [change]
 
         @contextmanager
-        def reopen_first(ws, work_id):
-            self.write("A", phase="implementation", decisions=())  # a card-only reopen
+        def change_first(ws, work_id):
+            if pending:  # once: a change that appends takes this lock itself
+                pending.pop()()
             with real(ws, work_id):
                 yield
 
-        with mock.patch.object(store, "_log_lock", reopen_first):
-            result = self.done_logs(prune(self.root, apply=True))
-        self.assertEqual([item["work_id"] for item in result["candidates"]], ["A"])
+        with mock.patch.object(store, "_log_lock", change_first):
+            return self.logs(apply=True)
+
+    def test_a_reopen_between_listing_and_lock_keeps_the_log(self):
+        result = self.recheck(lambda: self.write("A", phase="implementation", decisions=()))  # a card-only reopen
+        self.assertEqual(self.listed(result), [("A", "done", True, None)])
         self.assertEqual((result["removed"], result["skipped"]), (0, [{"work_id": "A", "reason": "OPEN"}]))
         self.assertTrue(self.paths("A")[0].is_file())
 
-    def test_a_log_without_cards_is_an_orphan_listed_never_removed(self):
-        self.write("gone", phase="done")
-        self.backdate("gone", 400)
-        shutil.rmtree(session_dir(self.root, "s1"))
-        result = self.done_logs(prune(self.root, apply=True))
-        self.assertEqual(([item["work_id"] for item in result["orphans"]], result["candidates"], result["removed"]),
-                         (["gone"], [], 0))
+    def test_a_new_entry_between_listing_and_lock_keeps_the_log(self):
+        result = self.recheck(lambda: self.write("A", phase="done", session="s2", decisions=(LONG + " again",)))
+        self.assertEqual((result["removed"], result["skipped"]), (0, [{"work_id": "A", "reason": "RECENT"}]))
+        self.assertTrue(self.paths("A")[0].is_file())
+
+    def test_an_idle_orphan_log_is_removed_only_with_apply(self):
+        self.orphan()
+        self.assertEqual(self.listed(self.logs()), [("gone", "orphan", True, None)])
+        self.assertTrue(self.paths("gone")[0].is_file())
+        result = self.logs(apply=True)
+        self.assertEqual((result["removed"], result["removed_work_ids"]), (1, ["gone"]))
+        self.assertFalse(self.paths("gone")[0].exists())
+
+    def test_a_recent_orphan_or_header_only_log_is_kept(self):
+        self.orphan("young", days=10)
+        log = self.paths("empty")[0]
+        log.write_text(json.dumps({"kind": "log", "schema_version": 1, "workspace_id": store.as_workspace(
+            self.root).repo_key, "work_id": "empty"}) + "\n", encoding="utf-8")
+        self.assertEqual(self.logs(apply=True)["candidates"], [])  # header-only: its fresh mtime counts
+        stamp = datetime.now(timezone.utc).timestamp() - 200 * DAY
+        os.utime(log, (stamp, stamp))
+        self.assertEqual(self.listed(self.logs()), [("empty", "orphan", True, None)])
+
+    def assert_kept(self, reason):
+        dry = self.logs()
+        self.assertEqual(self.listed(dry), [("gone", "orphan", False, reason)])
+        result = self.logs(apply=True)
+        self.assertEqual((result["removed"], result["errors"]), (0, []))
         self.assertTrue(self.paths("gone")[0].is_file())
 
-    def test_a_done_work_with_a_broken_chain_elsewhere_is_skipped(self):
+    def test_an_unreadable_session_keeps_every_log(self):
+        self.orphan()
+        records = session_dir(self.root, "broken-session") / "records"
+        records.mkdir(parents=True)
+        (records / ("a" * 64 + ".json")).write_text("not json", encoding="utf-8")
+        self.assert_kept("SESSIONS_UNREADABLE")
+
+    def test_a_pruning_leftover_keeps_every_log(self):
+        self.orphan()
+        (session_dir(self.root, "any").parent / (".pruning-" + "b" * 64)).mkdir(parents=True)
+        self.assert_kept("LEFTOVER_PENDING")
+
+    def test_a_schema1_card_with_decisions_keeps_the_log(self):
+        self.orphan()
+        bind(self.root, "old", {})
+        self.record_v1(self.root, "old", dict(self.payload_v1(decisions=["Old decision"]), work_id="gone",
+                                              phase="done"), None, "v1")
+        self.backdate("gone", 400, session="old", log=False)
+        self.assertEqual(self.listed(self.logs()), [("gone", "done", False, "SCHEMA1_SOURCES")])
+        self.assertEqual(self.logs(apply=True)["removed"], 0)
+
+    def test_a_done_work_with_a_broken_chain_elsewhere_is_kept(self):
         self.write("A", phase="done", session="s1")
         self.write("A", session="s2")
         self.write("A", session="s2", decisions=())
@@ -122,26 +192,24 @@ class DoneLogPruneTests(FixtureCase):
         cards = sorted((session_dir(self.root, "s2") / "records").glob("*.json"))
         oldest = min(cards, key=lambda p: json.loads(p.read_text(encoding="utf-8"))["recorded_at"])
         oldest.unlink()  # s2's chain of A loses its first card: INCOMPLETE_CHAIN
-        result = self.done_logs(prune(self.root, apply=True))
-        self.assertEqual((result["candidates"], result["removed"]), ([], 0))
-        self.assertIn({"work_id": "A", "reason": "INCOMPLETE_CHAIN"}, result["skipped"])
+        self.assertEqual(self.listed(self.logs()), [("A", "done", False, "INCOMPLETE_CHAIN")])
+        self.assertEqual(self.logs(apply=True)["removed"], 0)
         self.assertTrue(self.paths("A")[0].is_file())
 
 
-class NoArchivePruneTests(FixtureCase):
+class SessionPruneTests(FixtureCase):
+    def old_session(self, name, payload, version=2, days=40):
+        bind(self.root, name, {})
+        if version == 1:
+            self.record_v1(self.root, name, payload, None, "r1")
+        else:
+            store.record(self.root, name, payload, None, "r1")
+        directory = session_dir(self.root, name)
+        shift(directory, days)
+        return directory
+
     def test_an_expired_session_is_removed_without_writing_an_archive(self):
-        bind(self.root, "old", {})
-        store.record(self.root, "old", dict(self.payload(), work_id="alpha"), None, "r1")
-        directory = session_dir(self.root, "old")
-        stamp = (datetime.now(timezone.utc) - timedelta(days=40)).timestamp()
-        for path in directory.rglob("*"):
-            os.utime(path, (stamp, stamp))
-        for path in (directory / "records").glob("*.json"):
-            data = json.loads(path.read_text(encoding="utf-8"))
-            data.pop("checksum")
-            data["recorded_at"] = datetime.fromtimestamp(stamp, timezone.utc).isoformat()
-            path.write_text(json.dumps(store._seal(data)), encoding="utf-8")
-            os.utime(path, (stamp, stamp))
+        directory = self.old_session("old", dict(self.payload(), work_id="alpha"))
         dry = prune(self.root)
         self.assertEqual(len(dry["expired"]), 1)
         self.assertNotIn("archive", dry["expired"][0])
@@ -149,6 +217,63 @@ class NoArchivePruneTests(FixtureCase):
         self.assertEqual(result["expired_removed"], 1)
         self.assertFalse(directory.exists())
         self.assertFalse((directory.parent.parent / "archive").exists())
+
+    def test_an_expired_session_with_only_invalid_records_is_removed(self):
+        directory = self.old_session("old", dict(self.payload(), work_id="alpha"))
+        path = next((directory / "records").glob("*.json"))
+        stamp = path.stat().st_mtime
+        path.write_text("not json", encoding="utf-8")
+        os.utime(path, (stamp, stamp))
+        result = prune(self.root, apply=True)
+        self.assertEqual((result["expired_removed"], result["errors"], result["skipped"]), (1, [], []))
+        self.assertFalse(directory.exists())
+
+    def test_unmigrated_schema1_decisions_keep_the_session_until_migrate_apply(self):
+        directory = self.old_session("old", dict(self.payload_v1(decisions=["Decision only in a schema 1 card"]),
+                                                 work_id="alpha"), version=1)
+        plain = self.old_session("plain", dict(self.payload_v1(), work_id="beta"), version=1)  # nothing to import
+        dry = prune(self.root)
+        self.assertEqual([item["session_dir"] for item in dry["expired"]], [plain.name])
+        self.assertIn({"entry": directory.name, "reason": "UNMIGRATED_DECISIONS"}, dry["skipped"])
+        result = prune(self.root, apply=True)
+        self.assertEqual(result["expired_removed"], 1)
+        self.assertTrue(directory.is_dir())
+        self.assertTrue(migrate.migrate(self.root, apply=True)["works"][0]["decisions"])
+        result = prune(self.root, apply=True)
+        self.assertEqual((result["expired_removed"], result["skipped"]), (1, []))
+        self.assertFalse(directory.exists())
+
+    def test_an_unmigrated_leftover_is_kept(self):
+        directory = self.old_session("old", dict(self.payload_v1(evidence=[{"claim": "c", "ref": "t", "state": "fail"}]),
+                                                 work_id="alpha"), version=1)
+        leftover = directory.parent / (".pruning-" + directory.name)
+        directory.rename(leftover)
+        result = prune(self.root, apply=True)
+        self.assertEqual((result["reclaimed"], result["skipped"]),
+                         (0, [{"entry": leftover.name, "reason": "UNMIGRATED_DECISIONS"}]))
+        self.assertTrue(leftover.is_dir())
+
+    def test_the_removal_recheck_applies_the_unmigrated_guard(self):
+        directory = self.old_session("old", dict(self.payload_v1(decisions=["Decision only in a schema 1 card"]),
+                                                 work_id="alpha"), version=1)
+        calls = []
+        real = store._unmigrated_guard
+
+        def lenient_listing(ws):
+            held = real(ws)
+
+            def guard_after_listing(scan):
+                calls.append(scan.unmigrated)
+                if len(calls) > 1:
+                    held(scan)
+            return guard_after_listing
+
+        with mock.patch.object(store, "_unmigrated_guard", lenient_listing):
+            result = prune(self.root, apply=True)
+        self.assertEqual((result["expired_removed"], result["expired"], result["skipped"]),
+                         (0, [], [{"entry": directory.name, "reason": "UNMIGRATED_DECISIONS"}]))
+        self.assertTrue((directory / "records").is_dir())
+        self.assertEqual(list(directory.parent.glob(".pruning-*")), [])
 
 
 class BackupListingTests(FixtureCase):
@@ -178,11 +303,11 @@ class BackupListingTests(FixtureCase):
                                                        - datetime(2026, 1, 1, tzinfo=timezone.utc)).days)
         self.assertTrue(old.is_dir())
 
-    def test_cli_lists_done_work_logs(self):
+    def test_cli_lists_idle_logs(self):
         bind(self.root, "s1", {})
         store.record(self.root, "s1", dict(self.payload(), work_id="A", phase="done",
                                            new_decisions=[{"text": LONG}]), None, "r1")
         code, result = self.runtime()
         self.assertEqual(code, 0, result)
-        self.assertEqual((result["done_logs"]["candidates"], result["done_logs"]["orphans"], result["log_backups"]),
-                         ([], [], []))
+        self.assertEqual((result["idle_logs"]["candidates"], result["log_backups"]), ([], []))
+        self.assertEqual(digest("A") + ".jsonl", store._log_paths(store.as_workspace(self.root), "A")[0].name)

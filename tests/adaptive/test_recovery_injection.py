@@ -140,12 +140,16 @@ class RecoveryInjection(FixtureCase):
         self.assertIn("Decision log of work work-beta: no entries yet.", self.start())
 
     def test_fallback_ignores_old_cards_of_other_works_in_a_mixed_chain(self):
-        from unittest import mock
+        from provost_runtime.config import handoff_home
         legacy = dict(self.payload_v1("legacy next", decisions=["OTHER-WORK-DECISION"]), work_id="work-legacy")
         old = self.record_v1(self.root, "s1", legacy, None, "old")
         # A chain written before per-work cards: the next card, of another work, names the old card as parent.
-        with mock.patch.object(store, "current", return_value=old):
-            store.record(self.root, "s1", dict(self.payload("new next"), work_id="work-new"), old["revision"], "new")
+        directory = store.session_dir(store.as_workspace(self.root), "s1")
+        new = store._seal({k: v for k, v in old.items() if k != "checksum"} | {
+            "schema_version": 2, "revision": store.digest("s1\0record\0new"), "parent_record": old["revision"],
+            "payload": dict(self.payload("new next"), work_id="work-new"), "log_entries": []})
+        store.atomic_write(handoff_home(), directory / "records" / (new["revision"] + ".json"), new)
+        store.atomic_write(handoff_home(), directory / "current.json", {"revision": new["revision"]})
         text = self.start()
         self.assertIn("new next", text)
         self.assertNotIn("OTHER-WORK-DECISION", text)

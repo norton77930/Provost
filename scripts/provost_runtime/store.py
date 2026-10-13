@@ -643,6 +643,15 @@ def _chains(root, session, kind):
     return chains, trimmed
 
 
+def record_chains(root, session):
+    """(chains, broken) of the session's record chains: _chains' valid chains (failing closed when
+    all are broken) and the {work_id: code} of the broken ones, from one read."""
+    chains, _, broken = _collection(root, session, "record")
+    if broken and not chains:
+        raise StoreError(broken[min(broken)])
+    return chains, broken
+
+
 def broken_works(root, session):
     """[{work_id, error}] of the session's record chains that fail validation, by work_id."""
     return [{"work_id": work, "error": code} for work, code in sorted(_collection(root, session, "record")[2].items())]
@@ -994,8 +1003,7 @@ def _commit(root, session, payload, version, expected, request_id, *, cursor=Non
             return prior
         if payload["work_id"] in broken:
             raise StoreError(broken[payload["work_id"]])  # never start a second chain beside a broken one
-        # Without a valid chain the work has no head (current() would fail closed on the broken ones).
-        previous = current(root, session, payload["work_id"]) if chains else None
+        previous = next((chain[0] for chain in chains if chain[0]["payload"]["work_id"] == payload["work_id"]), None)
         if expected != (previous["revision"] if previous else None):
             raise StoreError("REVISION_CONFLICT")
         if entries:
@@ -1223,7 +1231,7 @@ def _leftover_state(root, directory, cutoff):
     return "reclaimable" if found and found[1].st_mtime < cutoff else "kept"
 
 
-def _reclaim(root, directory, cutoff, expiry_cutoff=None, repo_key=None):
+def _reclaim(root, directory, cutoff, expiry_cutoff=None, repo_key=None, held=None):
     """Delete a leftover staging dir, re-verifying at deletion time. True when removed.
 
     A binding that is no longer old (another run moved a just-rebound session
@@ -1236,7 +1244,7 @@ def _reclaim(root, directory, cutoff, expiry_cutoff=None, repo_key=None):
             return False
         found[0].unlink()
     elif expiry_cutoff is not None and any(directory.iterdir()):
-        if not _expired_leftover(root, directory, expiry_cutoff, repo_key):
+        if not _expired_leftover(root, directory, expiry_cutoff, repo_key, held):
             return False
         shutil.rmtree(directory)
         return True
@@ -1269,6 +1277,8 @@ class Scan:
     snapshots: int
     extra: bool      # anything a session dir does not normally hold
     owners: frozenset = frozenset()  # stored workspace_ids of records, snapshots and binding
+    unmigrated: frozenset = frozenset()  # work_ids of schema 1 cards (records or held by snapshots)
+                                         # carrying decisions or evidence; see _schema1_works
 
     def foreign(self, repo_key):
         """True when any stored workspace_id names another repo (a REPO_DIR_CHARS prefix collision)."""
@@ -1282,6 +1292,20 @@ def _load(path):
     except (OSError, UnicodeError, ValueError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def _schema1_works(data, kind):
+    """work_ids of the schema 1 cards a parsed record or snapshot file holds (a snapshot: every card,
+    see snapshot_cards) with non-empty decisions or evidence; unvalidated, so an odd file only adds
+    work_ids (more is kept, never less). Empty for anything unparseable."""
+    try:
+        held = snapshot_cards(data) if kind == "snapshots" else [data]
+        return {card["payload"]["work_id"] for card in held
+                if isinstance(card, dict) and card.get("schema_version") == 1 and isinstance(card.get("payload"), dict)
+                and isinstance(card["payload"].get("work_id"), str)
+                and (card["payload"].get("decisions") or card["payload"].get("evidence"))}
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return set()
 
 
 def _owner(data):
@@ -1305,7 +1329,7 @@ def _scan(home, directory):
     """Read-only inventory of a session dir; never follows links (StoreError LINKED_STORAGE)."""
     guard(home, directory)
     newest, counts, extra, touched, unrecorded = None, {"records": 0, "snapshots": 0}, False, None, False
-    owners = set()
+    owners, unmigrated = set(), set()
     for child in directory.iterdir():
         guard(home, child)
         if child.name in counts and child.is_dir():
@@ -1320,6 +1344,7 @@ def _scan(home, directory):
                 counts[child.name] += 1
                 data = _load(item)
                 owners.add(_owner(data))
+                unmigrated |= _schema1_works(data, child.name) if data is not None else set()
                 when = _stamp(item, key, data)
                 newest = when if newest is None else max(newest, when)
         elif not (child.is_file() and (child.name in SESSION_FILES or child.name.startswith(".pending-"))):
@@ -1333,7 +1358,8 @@ def _scan(home, directory):
     if touched is not None and (newest is not None or unrecorded):
         # A session that compacted or folded facts but never recorded ages on its files alone.
         newest = touched if newest is None else max(newest, touched)
-    return Scan(newest, counts["records"], counts["snapshots"], extra, frozenset(owners - {None}))
+    return Scan(newest, counts["records"], counts["snapshots"], extra, frozenset(owners - {None}),
+                frozenset(unmigrated))
 
 
 def _lock_held(home, directory):
@@ -1366,7 +1392,7 @@ def _is_expired(scan, cutoff, repo_key):
     return scan.newest is not None and scan.newest < cutoff and not scan.extra and not scan.foreign(repo_key)
 
 
-def _remove_expired(home, entry, staging, cutoff, repo_key):
+def _remove_expired(home, entry, staging, cutoff, repo_key, held=None):
     """Under the session lock, re-verify an expired session, move it aside, re-verify it, delete it.
 
     The lock is taken without waiting (StoreError STORE_BUSY while a record or snapshot
@@ -1381,19 +1407,27 @@ def _remove_expired(home, entry, staging, cutoff, repo_key):
     recreated by a third writer before the move back, leaves the session (with that
     fresh record) parked at the staging name: the failed move back is reported with
     left_at, and a leftover is never deleted while it holds fresh activity.
+    held(scan) (see _unmigrated_guard) raises UNMIGRATED_DECISIONS for a session whose schema 1
+    decisions are not imported yet; it runs at both re-checks (the dir is moved back after the move).
     Returns True when removed.
     """
     lock = entry / ".lock"
     guard(home, lock)
     with _locked(lock) as stream:
-        if not _is_expired(_scan(home, entry), cutoff, repo_key):
+        scan = _scan(home, entry)
+        if not _is_expired(scan, cutoff, repo_key):
             return False
+        if held is not None:
+            held(scan)
         if os.name == "nt":
             _unlock(stream)
             stream.close()
         entry.rename(staging)
         try:
-            keep = not _is_expired(_scan(home, staging), cutoff, repo_key)
+            scan = _scan(home, staging)
+            keep = not _is_expired(scan, cutoff, repo_key)
+            if held is not None and not keep:
+                held(scan)
         except (StoreError, OSError):
             staging.rename(entry)
             raise
@@ -1443,9 +1477,15 @@ def _drop_cache(result, name, paths):
             result["errors"].append({"session_dir": name, "error": type(exc).__name__, "left_at": path.name})
 
 
-def _expired_leftover(home, directory, cutoff, repo_key):
-    """True for a staging dir holding an expired, unlocked session of this repo (an interrupted delete)."""
-    return _is_expired(_scan(home, directory), cutoff, repo_key) and not _lock_held(home, directory)
+def _expired_leftover(home, directory, cutoff, repo_key, held=None):
+    """True for a staging dir holding an expired, unlocked session of this repo (an interrupted delete);
+    held(scan) raises UNMIGRATED_DECISIONS for one whose schema 1 decisions are not imported yet."""
+    scan = _scan(home, directory)
+    if not _is_expired(scan, cutoff, repo_key) or _lock_held(home, directory):
+        return False
+    if held is not None:
+        held(scan)
+    return True
 
 
 def _when(value):
@@ -1534,7 +1574,7 @@ def _orphan_cache(home, cache, cutoff, keep_session, claimed, apply):
     return out
 
 
-DONE_LOG_DAYS = 180  # idle days after which a done work's decision log is a prune candidate
+LOG_IDLE_DAYS = 180  # idle days after which a done or orphan work's decision log is a prune candidate
 
 
 def _log_work(path):
@@ -1550,48 +1590,83 @@ def _log_work(path):
     return work
 
 
-def _done_state(ws, work_id, cutoff, states=None):
-    """(reason, idle_since) of a work's log: reason None when it may be removed, i.e. the work's newest
-    card across sessions is done and neither that card nor any log entry is newer than cutoff.
+def _log_context(ws):
+    """What decides whether logs may go, read once: work_states, whether a session dir could not be
+    read (work_states skipped it, or its scan failed), whether `.pruning-` leftovers exist (their cards
+    are unknown to work_states), and the work_ids of schema 1 content cards in any session dir."""
+    home = handoff_home()
+    sessions = _base(ws) / "sessions"
+    guard(home, sessions)
+    states = work_states(ws)
+    context = {"states": states, "unreadable": bool(states["skipped"]), "leftovers": False, "schema1": set()}
+    for entry in sorted(sessions.iterdir()) if sessions.is_dir() else ():
+        if STAGING.fullmatch(entry.name):
+            context["leftovers"] = True
+        elif ID.fullmatch(entry.name) and (entry.is_dir() or entry.is_symlink()):
+            try:
+                context["schema1"] |= _scan(home, entry).unmigrated
+            except (StoreError, OSError):
+                context["unreadable"] = True
+    return context
 
-    Reasons: ORPHAN (no card of the work in any readable session), OPEN, RECENT, the code of a
-    broken chain of the work in any session, and SESSIONS_UNREADABLE when a session dir could
-    not be read at all (its cards are unknown). Reads every session and the log (StoreError on
-    an unreadable log); states is a work_states() result to reuse.
+
+def _log_state(ws, work_id, path, cutoff, context):
+    """(reason, idle_since, kind) of a work's log; reason None when it may be removed.
+
+    kind: "orphan" (no card of the work in any readable session) or "done" (its newest card is
+    done). Idle since the latest of that card's recorded_at, the log's newest entry `at` and, for a
+    log without entries, the file mtime. Reasons, in order: OPEN (newest card open; never removed),
+    RECENT (idle since cutoff or later), SESSIONS_UNREADABLE, LEFTOVER_PENDING, the code of a broken
+    chain of the work in any session, SCHEMA1_SOURCES (a schema 1 card of the work with decisions or
+    evidence still exists: removing the log would let migrate import it again). StoreError when the
+    log cannot be read.
     """
-    states = work_states(ws) if states is None else states
-    fault = next((item["error"] for item in states["broken"] if item["work_id"] == work_id), None)
-    if fault is not None:
-        return fault, None
+    states = context["states"]
     state = states["works"].get(work_id)
-    if state is None:
-        return "ORPHAN", None
-    if state["open"]:
-        return "OPEN", None
-    idle = max([_when(state["recorded_at"])] + [_when(entry["at"]) for entry in read_log(ws, work_id)])
+    if state is not None and state["open"]:
+        return "OPEN", None, "done"
+    kind = "done" if state is not None else "orphan"
+    entries = read_log(ws, work_id)
+    times = ([_when(state["recorded_at"])] if state is not None else []) + [_when(e["at"]) for e in entries]
+    if not entries:
+        times.append(datetime.fromtimestamp(path.stat().st_mtime, timezone.utc))
+    idle = max(times)
+    fault = next((item["error"] for item in states["broken"] if item["work_id"] == work_id), None)
     if idle.timestamp() >= cutoff:
-        return "RECENT", idle
-    return ("SESSIONS_UNREADABLE" if states["skipped"] else None), idle
+        reason = "RECENT"
+    elif context["unreadable"]:
+        reason = "SESSIONS_UNREADABLE"
+    elif context["leftovers"]:
+        reason = "LEFTOVER_PENDING"
+    elif fault is not None:
+        reason = fault
+    elif work_id in context["schema1"]:
+        reason = "SCHEMA1_SOURCES"
+    else:
+        reason = None
+    return reason, idle, kind
 
 
-def _done_logs(ws, clock, apply):
-    """List, and with apply remove, the decision logs of works done and idle for DONE_LOG_DAYS.
+def _idle_logs(ws, clock, apply):
+    """List, and with apply remove, the decision logs of works idle for LOG_IDLE_DAYS whose newest
+    card is done or that have no card left (orphans); open works are never listed.
 
-    Only `logs/<digest>.jsonl` is removed, never its `.lock`, and only under the work's log
-    lock after _done_state is re-read there (a reopen or a new entry since the listing keeps
-    the log). Logs of works without any card are listed as `orphans`, never removed. A log
-    that cannot be read, a work with a broken chain or unreadable sessions is listed in
-    `skipped` with the reason; OS errors on removal in `errors`. Never raises.
+    Each candidate is listed with `kind`, `idle_since`, `removable` and, when not removable, the
+    `reason` (see _log_state). Only `logs/<digest>.jsonl` of a removable candidate is removed, never
+    its `.lock`, and only under the work's log lock after every session and the log are read again
+    there (a reopen, a new entry, a new leftover or a new broken chain since the listing keeps it;
+    the reason is listed in `skipped`). An unreadable log is listed in `skipped` by file name; OS
+    errors on removal in `errors`. Never raises.
     """
-    out = {"older_than_days": DONE_LOG_DAYS, "candidates": [], "removed": 0, "removed_work_ids": [],
-           "orphans": [], "skipped": [], "errors": []}
+    out = {"older_than_days": LOG_IDLE_DAYS, "candidates": [], "removed": 0, "removed_work_ids": [],
+           "skipped": [], "errors": []}
     home = handoff_home()
     logs = _base(ws) / "logs"
-    cutoff = clock - DONE_LOG_DAYS * 86400
+    cutoff = clock - LOG_IDLE_DAYS * 86400
     try:
         guard(home, logs)
         paths = sorted(path for path in logs.glob("*.jsonl") if ID.fullmatch(path.stem)) if logs.is_dir() else []
-        states = work_states(ws) if paths else None
+        context = _log_context(ws) if paths else None
     except (StoreError, OSError) as exc:
         out["skipped"].append({"log": "logs", "reason": str(exc) if isinstance(exc, StoreError) else type(exc).__name__})
         return out
@@ -1599,28 +1674,21 @@ def _done_logs(ws, clock, apply):
         try:
             guard(home, path)
             work = _log_work(path)
-            reason, idle = _done_state(ws, work, cutoff, states)
-            if reason == "ORPHAN":
-                entries = read_log(ws, work)
-                newest = newest_entries(entries, 1)
-                out["orphans"].append({"work_id": work, "entries": len(entries),
-                                       "newest": newest[0]["at"] if newest else None})
-                continue
+            reason, idle, kind = _log_state(ws, work, path, cutoff, context)
         except (StoreError, OSError) as exc:
             out["skipped"].append({"log": path.name,
                                    "reason": str(exc) if isinstance(exc, StoreError) else type(exc).__name__})
             continue
         if reason in ("OPEN", "RECENT"):
             continue
-        if reason is not None:
-            out["skipped"].append({"work_id": work, "reason": reason})
-            continue
-        out["candidates"].append({"work_id": work, "idle_since": idle.isoformat()})
-        if not apply:
+        out["candidates"].append({"work_id": work, "kind": kind, "idle_since": idle.isoformat(),
+                                  "removable": reason is None, **({"reason": reason} if reason else {})})
+        if not apply or reason is not None:
             continue
         try:
             with _log_lock(ws, work):
-                reason, _ = _done_state(ws, work, cutoff)  # every card and the log again, under the lock
+                # every session and the log again, under the lock
+                reason, _, _ = _log_state(ws, work, path, cutoff, _log_context(ws))
                 if reason is not None:
                     out["skipped"].append({"work_id": work, "reason": reason})
                     continue
@@ -1633,6 +1701,28 @@ def _done_logs(ws, clock, apply):
         except OSError as exc:
             out["errors"].append({"work_id": work, "error": type(exc).__name__})
     return out
+
+
+def _unmigrated_guard(ws):
+    """held(scan): StoreError UNMIGRATED_DECISIONS when a scanned session dir holds schema 1 decisions or
+    evidence of a work that a `migrate` dry run would still import or reports an error for (every such
+    work when the dry run itself fails). The read-only dry run runs once, on first need."""
+    pending = []
+
+    def held(scan):
+        if not scan.unmigrated:
+            return
+        if not pending:
+            from . import migrate  # migrate imports this module
+            try:
+                result = migrate.migrate(ws)
+                pending.append({item["work_id"] for item in result["works"]
+                                if item.get("error") or item.get("decisions") or item.get("evidence")})
+            except (StoreError, OSError):
+                pending.append(None)
+        if pending[0] is None or scan.unmigrated & pending[0]:
+            raise StoreError("UNMIGRATED_DECISIONS")
+    return held
 
 
 def _log_backups(ws, clock):
@@ -1682,8 +1772,10 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
     Only the current store is pruned; legacy stores are never touched.
     Nothing is archived: decisions live in the decision logs, which session pruning never
     touches (existing `archive/` files stay as they are, read by search and migrate).
-    `done_logs` (see _done_logs) lists, and under apply removes, the decision logs of
-    works done and idle for DONE_LOG_DAYS; it runs before any session dir is removed.
+    `idle_logs` (see _idle_logs) lists, and under apply removes, the decision logs of works
+    done or without cards and idle for LOG_IDLE_DAYS; it runs before any session dir is removed.
+    An expired session or leftover holding schema 1 decisions or evidence that `migrate` has not
+    imported yet is kept and listed in `skipped` as UNMIGRATED_DECISIONS (see _unmigrated_guard).
     `log_backups` lists migrate's `backups/logs-*` dirs with their age; nothing removes them.
     With facts_cache (the native-facts cache dir), each listed entry whose session id is
     known names that session's existing cache files (`facts_cache`: spool, claimed spool
@@ -1705,11 +1797,12 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
     result = {"older_than_days": binding_days, "expired_older_than_days": expiry_days,
               "applied": bool(apply), "candidates": [], "removed": 0, "expired": [], "expired_removed": 0,
               "leftovers": [], "reclaimed": 0, "skipped": [], "errors": [],
-              "done_logs": _done_logs(ws, clock, apply), "log_backups": _log_backups(ws, clock)}
+              "idle_logs": _idle_logs(ws, clock, apply), "log_backups": _log_backups(ws, clock)}
     if not sessions.is_dir():
         return result
     keep = digest(keep_session) if keep_session else None
     cutoff, expiry_cutoff = clock - binding_days * 86400, clock - expiry_days * 86400
+    held = _unmigrated_guard(ws)
     for entry in sorted(sessions.iterdir()):
         if STAGING.fullmatch(entry.name):
             if keep and entry.name == ".pruning-" + keep:
@@ -1718,13 +1811,14 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
                 continue
             try:
                 state = _leftover_state(home, entry, cutoff)
-                if state == "kept" and _expired_leftover(home, entry, expiry_cutoff, ws.repo_key):
+                if state == "kept" and _expired_leftover(home, entry, expiry_cutoff, ws.repo_key, held):
                     state = "reclaimable"
                 item = {"staging_dir": entry.name, "state": state}
                 name = entry.name[len(".pruning-"):]
                 cached = _cache_of(home, entry, name, facts_cache) if state == "reclaimable" else []
                 result["leftovers"].append(item | ({"facts_cache": [str(p) for p in cached]} if cached else {}))
-                if apply and state == "reclaimable" and _reclaim(home, entry, cutoff, expiry_cutoff, ws.repo_key):
+                if apply and state == "reclaimable" and _reclaim(home, entry, cutoff, expiry_cutoff, ws.repo_key,
+                                                                 held):
                     result["reclaimed"] += 1
                     _drop_cache(result, entry.name, cached)
             except StoreError as exc:
@@ -1753,6 +1847,7 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
                 if _lock_held(home, entry):
                     result["skipped"].append({"entry": entry.name, "reason": "STORE_BUSY"})
                     continue
+                held(scan)  # UNMIGRATED_DECISIONS: listed under skipped, kept
                 cached = _cache_of(home, entry, entry.name, facts_cache)
                 result["expired"].append({
                     "session_dir": entry.name, "records": scan.records, "snapshots": scan.snapshots,
@@ -1760,7 +1855,7 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
                     **({"facts_cache": [str(p) for p in cached]} if cached else {})})
                 if apply:
                     try:
-                        removed = _remove_expired(home, entry, staging, expiry_cutoff, ws.repo_key)
+                        removed = _remove_expired(home, entry, staging, expiry_cutoff, ws.repo_key, held)
                     except StoreError:
                         result["expired"].pop()  # a kept session is listed once: under skipped
                         raise

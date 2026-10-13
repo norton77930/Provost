@@ -7,9 +7,9 @@ from . import facts
 from .config import ConfigError, handoff_home, load_config, resolve_mode, workspace_key
 from .notifications import PARTIAL, notice
 from .search import redact
-from .store import (CACHE_SESSION, FACTS_MARKER, StoreError, _base, _chains, _when, as_workspace, atomic_write, current,
-                    digest, guard, is_done, latest, locate, newest_entries, read_log, session_dir, snapshot,
-                    snapshot_cards, storage_ready, work_states)
+from .store import (CACHE_SESSION, FACTS_MARKER, StoreError, _base, _when, as_workspace, atomic_write, current,
+                    digest, guard, is_done, latest, locate, newest_entries, read_log, record_chains, session_dir,
+                    snapshot, snapshot_cards, storage_ready, work_states)
 
 PLUGIN = Path(__file__).resolve().parents[2]
 RECOVERY_PAYLOAD_LIMIT = 4500     # inline the payload in full up to this size; digest is capped to it too
@@ -132,6 +132,13 @@ def _notification(message, session_start=False):
     # Fixed text and error codes only. Never put arbitrary payload into an OSC.
     safe = "".join(c for c in message if 32 <= ord(c) < 127).replace(";", ",")
     return {"terminalSequence": "\u001b]9;" + safe + "\u0007"}
+
+
+def _broken_line(broken):
+    """One status line naming the session's broken work chains ({work_id: code}), redacted and clipped."""
+    head, tail = "Broken work chains: ", "; status lists broken_works"
+    names = ", ".join("%s (%s)" % (_clip(work, RECOVERY_WORK_ID_LIMIT), code) for work, code in sorted(broken.items()))
+    return head + _clip(redact(names), RECOVERY_LINE_LIMIT - len(head) - len(tail)) + tail
 
 
 def _clip(text, limit):
@@ -640,7 +647,9 @@ def handle_event(event, config_path):
                         # Facts first: a corrupt checkpoint raises and must not drop them.
                         stored, stored_path = _stored_facts(root, session)
                         sections[2], sections[8] = _facts_variants(stored, stored_path)
-                        chains = _chains(root, session, "record")[0]
+                        chains, broken = record_chains(root, session)
+                        if broken:
+                            status.append(_broken_line(broken))
                         header, payload, path, checkpoint = _recovery(root, session, chains)
                         sections[3] = _checkpoint_variants(header, payload, path)
                         sections[7] = _since_variants(stored, stored_path, checkpoint)

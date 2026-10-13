@@ -56,6 +56,7 @@ class ChainScopeTests(FixtureCase):
         text, message = self.injected()
         self.assertNotIn("unavailable", message)
         self.assertIn('"next": "b1"', text)
+        self.assertIn("Broken work chains: %s (%s); status lists broken_works" % (work, error), text)
 
     def test_a_missing_card_breaks_only_its_own_chain(self):
         a1, _, _ = self.two_works()
@@ -114,6 +115,7 @@ class ChainScopeTests(FixtureCase):
         code, status = self.runtime("status")
         self.assertEqual(code, 0, status)
         self.assertNotIn("broken_works", status)
+        self.assertNotIn("Broken work chains", self.injected()[0])
 
     def test_work_states_skips_only_the_broken_chain_and_lists_it(self):
         a1, _, _ = self.two_works()

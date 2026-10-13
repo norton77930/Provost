@@ -2,7 +2,7 @@
 import json
 import os
 import subprocess
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from unittest import mock
 from _support import BASH, FixtureCase, REPO
 from provost_runtime import store
@@ -227,7 +227,7 @@ class MultiCardSnapshotTests(FixtureCase):
         line = next(line for line in text.splitlines() if line.startswith("- A ["))
         self.assertIn("a next", line)
 
-    def test_prune_archives_every_card_of_a_multi_card_snapshot(self):
+    def test_prune_removes_a_multi_card_snapshot_session_without_archiving(self):
         from test_prune import backdate
         self.write("A", "a next", session="s4")
         self.write("B", "b next", session="s4")
@@ -235,15 +235,10 @@ class MultiCardSnapshotTests(FixtureCase):
         self.drop_records("s4")
         backdate(store.session_dir(self.root, "s4"), 40)
         code, dry = self.runtime("prune", session="s1")
-        self.assertEqual([item["archive"] for item in dry["expired"]], [["A", "B"]], dry)
+        self.assertEqual([item["snapshots"] for item in dry["expired"]], [1], dry)
         code, applied = self.runtime("prune", "--apply", session="s1")
         self.assertEqual((code, applied["expired_removed"]), (0, 1), applied)
-        archive = store._base(store.as_workspace(self.root)) / "archive"
-        self.assertEqual(sorted(json.loads(path.read_text(encoding="utf-8"))["payload"]["work_id"]
-                                for path in archive.glob("*.json")), ["A", "B"])
-        archived = json.loads(store._archive_path(archive, "A").read_text(encoding="utf-8"))
-        shifted = datetime.fromisoformat(archived["recorded_at"]) + timedelta(days=40)
-        self.assertLess(abs((shifted - datetime.now(timezone.utc)).total_seconds()), 600)  # the backdated copy
+        self.assertFalse((store._base(store.as_workspace(self.root)) / "archive").exists())  # #26: no archive
 
     def rewrite(self, taken, **changes):
         """Replace fields of a stored snapshot of s1 and reseal it (its other_cards are left as given)."""

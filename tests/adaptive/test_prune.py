@@ -472,7 +472,7 @@ class ExpiredPruneTests(FixtureCase):
         from provost_runtime import store
         old = self.session("race", 90)
         head = store.current(self.root, "race")["revision"]
-        real_current, real_remove, real_scan = store.current, store._remove_expired, store._scan
+        real_collection, real_remove, real_scan = store._collection, store._remove_expired, store._scan
         read, go, outcome = threading.Event(), threading.Event(), {}
 
         def write():
@@ -483,8 +483,8 @@ class ExpiredPruneTests(FixtureCase):
 
         writer = threading.Thread(target=write)
 
-        def current_then_pause(root, session, *work_id):
-            found = real_current(root, session, *work_id)
+        def read_then_pause(root, session, kind):
+            found = real_collection(root, session, kind)
             if threading.current_thread() is writer:
                 read.set()
                 go.wait(10)
@@ -507,7 +507,7 @@ class ExpiredPruneTests(FixtureCase):
                 finish_writer()
             return real_scan(home, directory)
 
-        with mock.patch.object(store, "current", current_then_pause), \
+        with mock.patch.object(store, "_collection", read_then_pause), \
                 mock.patch.object(store, "_remove_expired", remove_while_writing), \
                 mock.patch.object(store, "_scan", writer_finishes_after_the_move):
             result = prune(self.root, apply=True)
