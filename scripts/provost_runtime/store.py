@@ -9,7 +9,8 @@ import shutil
 import stat
 import subprocess
 import tempfile
-from contextlib import contextmanager
+import time
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,7 +22,11 @@ ID = re.compile(r"^[a-f0-9]{64}$")
 
 
 class StoreError(ValueError):
-    pass
+    """str() is the error code; detail, when given, is guidance for the caller."""
+
+    def __init__(self, code, detail=None):
+        super().__init__(code)
+        self.detail = detail
 
 
 @dataclass(frozen=True)
@@ -166,18 +171,29 @@ def storage_ready(root):
         raise StoreError(error)
 
 
-def validate_payload(payload):
-    required = {"work_id", "phase", "sources", "assignments", "decisions", "blockers",
-                "evidence", "next", "suggested_skills"}
-    if not isinstance(payload, dict) or set(payload) != required:
+RECORD_SCHEMA = 2  # 1: the card also carried decisions and evidence; 2: those live in the decision log
+CARD_FIELDS = frozenset({"work_id", "phase", "sources", "assignments", "blockers", "next", "suggested_skills"})
+V1_FIELDS = CARD_FIELDS | {"decisions", "evidence"}
+LOG_FIELDS = ("new_decisions", "new_evidence")
+EVIDENCE_STATES = ("pass-observed", "fail", "unverified", "stale")
+LEGACY_GUIDANCE = ("record payloads no longer carry decisions or evidence: put only what is new since this "
+                   "work's last record in new_decisions ([{text, refs?, supersedes?}]) and new_evidence "
+                   "([{claim, state, ref, updates?}]); earlier entries stay in the work's decision log")
+
+
+def validate_payload(payload, version=RECORD_SCHEMA):
+    """A stored state card payload of record schema `version` (1 or 2)."""
+    if version not in (1, 2) or not isinstance(payload, dict) or set(payload) != (V1_FIELDS if version == 1
+                                                                                 else CARD_FIELDS):
         raise StoreError("INVALID_PAYLOAD")
     for key in ("work_id", "phase", "next"):
         if not isinstance(payload[key], str) or not payload[key]:
             raise StoreError("INVALID_PAYLOAD")
-    for key in ("sources", "assignments", "decisions", "blockers", "evidence", "suggested_skills"):
+    lists = ("sources", "assignments", "blockers", "suggested_skills") + (("decisions", "evidence") if version == 1 else ())
+    for key in lists:
         if not isinstance(payload[key], list):
             raise StoreError("INVALID_PAYLOAD")
-    for key in ("decisions", "blockers", "suggested_skills"):
+    for key in ("blockers", "suggested_skills") + (("decisions",) if version == 1 else ()):
         if any(not isinstance(item, str) for item in payload[key]):
             raise StoreError("INVALID_PAYLOAD")
     for source in payload["sources"]:
@@ -193,11 +209,15 @@ def validate_payload(payload):
                 or not isinstance(assignment["write_scope"], list)
                 or any(not isinstance(p, str) for p in assignment["write_scope"])):
             raise StoreError("INVALID_ASSIGNMENT")
-    for item in payload["evidence"]:
+    for item in payload.get("evidence", ()):
         if (not isinstance(item, dict) or set(item) != {"claim", "ref", "state"}
                 or any(not isinstance(v, str) for v in item.values())
-                or item["state"] not in ("pass-observed", "fail", "unverified", "stale")):
+                or item["state"] not in EVIDENCE_STATES):
             raise StoreError("INVALID_EVIDENCE")
+    _check_size(payload)
+
+
+def _check_size(payload):
     try:
         if len(encoded(payload)) > MAX_PAYLOAD:
             raise StoreError("PAYLOAD_TOO_LARGE")
@@ -205,6 +225,45 @@ def validate_payload(payload):
         if isinstance(exc, StoreError):
             raise
         raise StoreError("INVALID_PAYLOAD") from exc
+
+
+def _valid_decision(item):
+    """Model-supplied decision fields (types only; target checks come later)."""
+    return (isinstance(item, dict) and "text" in item and set(item) <= {"text", "refs", "supersedes"}
+            and isinstance(item["text"], str) and item["text"] != ""
+            and ("refs" not in item or (isinstance(item["refs"], list)
+                                        and all(isinstance(ref, str) for ref in item["refs"])))
+            and ("supersedes" not in item or (isinstance(item["supersedes"], str) and item["supersedes"] != "")))
+
+
+def _valid_evidence(item):
+    """Model-supplied evidence fields (types only; target checks come later)."""
+    return (isinstance(item, dict) and {"claim", "state", "ref"} <= set(item) <= {"claim", "state", "ref", "updates"}
+            and isinstance(item["claim"], str) and item["claim"] != "" and isinstance(item["ref"], str)
+            and item["state"] in EVIDENCE_STATES
+            and ("updates" not in item or (isinstance(item["updates"], str) and item["updates"] != "")))
+
+
+def split_request(payload):
+    """(state card payload, new log entries) of a record request; StoreError on any contract violation.
+
+    A request is a schema 2 card plus optional new_decisions and new_evidence lists.
+    The old decisions/evidence fields are refused with guidance (LEGACY_FIELDS). Entries
+    are (kind, fields) pairs, decisions first, each list in the given order.
+    """
+    if isinstance(payload, dict) and {"decisions", "evidence"} & set(payload):
+        raise StoreError("LEGACY_FIELDS", LEGACY_GUIDANCE)
+    if not isinstance(payload, dict):
+        raise StoreError("INVALID_PAYLOAD")
+    card = {k: v for k, v in payload.items() if k not in LOG_FIELDS}
+    validate_payload(card)
+    decisions, evidence = payload.get("new_decisions", []), payload.get("new_evidence", [])
+    if not isinstance(decisions, list) or not all(_valid_decision(item) for item in decisions):
+        raise StoreError("INVALID_DECISION")
+    if not isinstance(evidence, list) or not all(_valid_evidence(item) for item in evidence):
+        raise StoreError("INVALID_EVIDENCE")
+    _check_size(payload)
+    return card, ([("decision", item) for item in decisions] + [("evidence", item) for item in evidence])
 
 
 def atomic_write(base, path, data):
@@ -304,7 +363,8 @@ def _read(root, path, session, kind):
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise StoreError("CORRUPT_RECORD") from exc
-    if (not isinstance(data, dict) or data.get("schema_version") != 1
+    if (not isinstance(data, dict) or data.get("schema_version") not in (1, 2)
+            or isinstance(data.get("schema_version"), bool)
             or data.get("workspace_id") != ws.repo_key
             or data.get("session_id") != session or data.get("kind") != kind):
         raise StoreError("RECORD_IDENTITY_MISMATCH")
@@ -315,7 +375,7 @@ def _read(root, path, session, kind):
     body = {k: v for k, v in data.items() if k != "checksum"}
     if checksum != hashlib.sha256(encoded(body)).hexdigest():
         raise StoreError("CORRUPT_RECORD")
-    validate_payload(data.get("payload"))
+    validate_payload(data.get("payload"), data["schema_version"])
     return data
 
 
@@ -510,8 +570,167 @@ def latest(root, session):
     return _head(root, session, "snapshot")
 
 
-def record(root, session, payload, expected, request_id, *, cursor=None, adopted_from=None):
-    validate_payload(payload)
+# Decision log: one append-only JSON Lines file per work_id at the repo level of the
+# store, <repo dir>/logs/<sha256(work_id)>.jsonl, shared by every session of the repo
+# (a checkout and its worktrees). Line 1 is a header naming the repo and the work;
+# every later line is one entry. A line exists only once its newline is written: bytes
+# after the last newline are a torn append (a crash mid-write), ignored by readers and
+# cut by the next append under the per-work lock. A newline-terminated line that is not
+# a valid entry fails closed (CORRUPT_LOG): it is never skipped or rewritten.
+LOG_SCHEMA = 1
+LOG_ENTRY_ID = re.compile(r"^([DE])([1-9][0-9]*)$")
+LOG_KINDS = {"decision": "D", "evidence": "E"}
+LOG_RUNTIME_FIELDS = ("id", "kind", "at", "session", "record")
+LOG_LOCK_WAIT = 10.0  # seconds a record waits for another session's append to the same work
+
+
+def _log_paths(ws, work_id):
+    """(log, lock) paths of a work's decision log."""
+    logs = _base(ws) / "logs"
+    name = digest(work_id)
+    return logs / (name + ".jsonl"), logs / (name + ".lock")
+
+
+def _log_entry_fields(entry):
+    """(kind, model-supplied fields) of a stored entry."""
+    return entry["kind"], {k: v for k, v in entry.items() if k not in LOG_RUNTIME_FIELDS}
+
+
+def _parse_log(ws, work_id, raw):
+    """(entries, committed byte length) of a log file's bytes; StoreError on a bad header or entry."""
+    end = raw.rfind(b"\n") + 1  # bytes past the last newline are a torn append
+    lines = raw[:end].split(b"\n")[:-1]
+    if not lines:
+        return [], end
+    try:
+        header = json.loads(lines[0].decode("utf-8"))
+        entries = [json.loads(line.decode("utf-8")) for line in lines[1:]]
+    except (UnicodeError, ValueError) as exc:
+        raise StoreError("CORRUPT_LOG") from exc
+    if not isinstance(header, dict) or header.get("kind") != "log" or header.get("schema_version") != LOG_SCHEMA:
+        raise StoreError("CORRUPT_LOG")
+    if header.get("workspace_id") != ws.repo_key:
+        raise StoreError("FOREIGN_REPO")
+    if header.get("work_id") != work_id:
+        raise StoreError("CORRUPT_LOG")
+    last = {"D": 0, "E": 0}
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("kind") not in LOG_KINDS:
+            raise StoreError("CORRUPT_LOG")
+        match = LOG_ENTRY_ID.fullmatch(entry.get("id")) if isinstance(entry.get("id"), str) else None
+        kind, fields = _log_entry_fields(entry)
+        if (match is None or match[1] != LOG_KINDS[kind] or int(match[2]) <= last[match[1]]
+                or not all(isinstance(entry.get(k), str) and entry[k] for k in ("at", "session"))
+                or not isinstance(entry.get("record", ""), str)
+                or not (_valid_decision if kind == "decision" else _valid_evidence)(fields)):
+            raise StoreError("CORRUPT_LOG")
+        last[match[1]] = int(match[2])
+    return entries, end
+
+
+def read_log(root, work_id):
+    """All committed entries of a work's decision log, oldest first ([] without a log). Read-only, no lock."""
+    ws = as_workspace(root)
+    path, _ = _log_paths(ws, work_id)
+    guard(handoff_home(), path)
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise StoreError("CORRUPT_LOG") from exc
+    return _parse_log(ws, work_id, raw)[0]
+
+
+@contextmanager
+def _log_lock(ws, work_id):
+    """Hold the per-work log lock, waiting up to LOG_LOCK_WAIT for another writer (STORE_BUSY after)."""
+    storage_ready(ws)
+    _, lock = _log_paths(ws, work_id)
+    guard(handoff_home(), lock)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + LOG_LOCK_WAIT
+    try:
+        with ExitStack() as held:
+            while True:
+                try:
+                    held.enter_context(_locked(lock))
+                    break
+                except StoreError as exc:
+                    if str(exc) != "STORE_BUSY" or time.monotonic() >= deadline:
+                        raise
+                time.sleep(0.02)
+            yield
+    except OSError as exc:
+        raise StoreError("WRITE_FAILED") from exc
+
+
+def _append_log(ws, session, work_id, revision, entries):
+    """Append entries for the card `revision` under the work's lock; returns the ids of all its entries.
+
+    Entries already logged for this revision (an earlier attempt that appended but never
+    wrote its card) must be the start of `entries`; only the rest is appended, so a replay
+    never appends twice. Anything else is REQUEST_ID_REUSED. Ids continue the work's
+    highest D/E number. All new lines go out in one write, then fsync.
+    """
+    home = handoff_home()
+    path, _ = _log_paths(ws, work_id)
+    with _log_lock(ws, work_id):
+        guard(home, path)
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            raw = b""
+        except OSError as exc:
+            raise StoreError("WRITE_FAILED") from exc
+        logged, end = _parse_log(ws, work_id, raw)
+        mine = [entry for entry in logged if entry.get("record") == revision]
+        if len(mine) > len(entries) or [_log_entry_fields(e) for e in mine] != entries[:len(mine)]:
+            raise StoreError("REQUEST_ID_REUSED")
+        last = {"D": 0, "E": 0}
+        for entry in logged:
+            match = LOG_ENTRY_ID.fullmatch(entry["id"])
+            last[match[1]] = int(match[2])
+        lines, ids, now = [], [entry["id"] for entry in mine], datetime.now(timezone.utc).isoformat()
+        if end == 0:
+            lines.append(encoded({"kind": "log", "schema_version": LOG_SCHEMA,
+                                  "workspace_id": ws.repo_key, "work_id": work_id}))
+        for kind, fields in entries[len(mine):]:
+            letter = LOG_KINDS[kind]
+            last[letter] += 1
+            ids.append(letter + str(last[letter]))
+            lines.append(encoded({"id": ids[-1], "kind": kind, "at": now, "session": session, "record": revision,
+                                  **copy.deepcopy(fields)}))
+        if len(ids) == len(mine) and end == len(raw):
+            return ids
+        try:
+            with path.open("r+b" if raw else "wb") as stream:
+                stream.truncate(end)  # drop a torn append; committed lines are never touched
+                stream.seek(end)
+                stream.write(b"".join(line + b"\n" for line in lines))
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError as exc:
+            raise StoreError("WRITE_FAILED") from exc
+        return ids
+
+
+def record(root, session, payload, expected, request_id, *, cursor=None):
+    """Write a schema 2 state card from a record request and append its new log entries.
+
+    The entries are appended (under the per-work log lock) before the card is written, so
+    a card always follows its entries; replaying the request completes an interrupted one.
+    """
+    card, entries = split_request(payload)
+    return _commit(root, session, card, RECORD_SCHEMA, expected, request_id, cursor=cursor, entries=entries)
+
+
+def _commit(root, session, payload, version, expected, request_id, *, cursor=None, adopted_from=None, entries=()):
+    """Under the session lock, write a card of schema `version` on its work chain (idempotent per request id)."""
+    validate_payload(payload, version)
+    entries = list(entries)
+    if version == 1 and entries:
+        raise StoreError("INVALID_PAYLOAD")
     if not isinstance(request_id, str) or not request_id or len(request_id) > 512:
         raise StoreError("INVALID_REQUEST_ID")
     root = as_workspace(root)
@@ -523,17 +742,22 @@ def record(root, session, payload, expected, request_id, *, cursor=None, adopted
         _expired(root, session, "record", revision)
         if path.exists():
             prior = _read(root, path, session, "record")
-            if prior["payload"] != payload or prior.get("adopted_from") != adopted_from:
+            logged = [_log_entry_fields(entry) for entry in read_log(root, payload["work_id"])
+                      if entry.get("record") == revision] if version != 1 else []
+            if (prior["payload"] != payload or prior.get("adopted_from") != adopted_from
+                    or prior["schema_version"] != version or logged != entries):
                 raise StoreError("REQUEST_ID_REUSED")
             return prior
         previous = current(root, session, payload["work_id"])
         if expected != (previous["revision"] if previous else None):
             raise StoreError("REVISION_CONFLICT")
-        data = _seal({"schema_version": 1, "kind": "record", "workspace_id": root.repo_key,
+        ids = _append_log(root, session, payload["work_id"], revision, entries) if entries else []
+        data = _seal({"schema_version": version, "kind": "record", "workspace_id": root.repo_key,
                       "worktree_path": str(root.root),
                       "session_id": session, "revision": revision, "parent_record": expected,
                       "recorded_at": datetime.now(timezone.utc).isoformat(),
-                      "transcript_cursor": cursor, "adopted_from": adopted_from, "payload": copy.deepcopy(payload)})
+                      "transcript_cursor": cursor, "adopted_from": adopted_from, "payload": copy.deepcopy(payload),
+                      **({"log_entries": ids} if version >= 2 else {})})
         atomic_write(home, path, data)
         atomic_write(home, directory / "current.json", {"revision": revision})
         _trim(root, session, "record", KEEP_RECORDS, payload["work_id"])
@@ -616,13 +840,18 @@ def resume(root, session, snapshot_id):
 
 
 def adopt(root, session, source, snapshot_id):
-    """Start `session`'s chain from a validated snapshot, with its observed state marked unverified."""
+    """Start `session`'s chain from a validated snapshot, with its observed state marked unverified.
+
+    The card keeps the snapshot's schema version (a schema 1 card keeps its decisions and
+    evidence); nothing is written to the decision log.
+    """
     payload = copy.deepcopy(source["payload"])
     for assignment in payload["assignments"]:
         assignment["observed_state"] = "needs-verification"
-    for evidence in payload["evidence"]:
+    for evidence in payload.get("evidence", ()):
         evidence["state"] = "unverified"
-    return record(root, session, payload, None, "adopt:" + snapshot_id, adopted_from=snapshot_id)
+    return _commit(root, session, payload, source["schema_version"], None, "adopt:" + snapshot_id,
+                   adopted_from=snapshot_id)
 
 
 def _only_binding(root, directory):

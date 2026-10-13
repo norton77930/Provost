@@ -142,8 +142,9 @@ def _digest_text(payload):
               # Stored keys are sorted; lead with task/agent_id so a cut keeps the identifying fields.
               "assignments": [_clip(json.dumps({k: item[k] for k in ("task", "agent_id", "observed_state", "write_scope")},
                                                ensure_ascii=False), RECOVERY_ASSIGNMENT_LIMIT)
-                              for item in payload["assignments"]],
-              "decisions": payload["decisions"][-3:]}
+                              for item in payload["assignments"]]}
+    if "decisions" in payload:  # a schema 1 card; schema 2 keeps decisions in the decision log
+        digest["decisions"] = payload["decisions"][-3:]
     return ("Observed payload digest (full JSON in the checkpoint file): "
             + _clip(json.dumps(digest, ensure_ascii=False), RECOVERY_PAYLOAD_LIMIT))
 

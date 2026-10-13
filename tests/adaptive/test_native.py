@@ -113,6 +113,8 @@ class NativeTests(FixtureCase):
         block=guide.split("```json",1)[1].split("```",1)[0]
         example=json.loads(block)
         self.assertEqual({s["kind"] for s in example["sources"]},{"file","url"})
-        self.assertEqual((len(example["assignments"]),len(example["evidence"])),(1,1))
+        self.assertEqual((len(example["assignments"]),len(example["new_decisions"]),len(example["new_evidence"])),(1,1,1))
         from provost_runtime.store import record
-        self.assertEqual(record(self.root,"s1",example,None,"doc-example")["payload"],example)
+        written=record(self.root,"s1",example,None,"doc-example")
+        card={k:v for k,v in example.items() if k not in ("new_decisions","new_evidence")}
+        self.assertEqual((written["payload"],written["log_entries"]),(card,["D1","E1"]))

@@ -8,7 +8,7 @@ from provost_runtime.hooks import bind
 from provost_runtime.store import _seal, as_workspace, atomic_write, digest, session_dir
 
 RUNTIME = REPO / "hooks" / "runtime"
-STATUS_KEYS = {"workspace", "session_id", "expected", "checkpoint", "facts", "template"}
+STATUS_KEYS = {"workspace", "session_id", "expected", "checkpoint", "facts", "template", "log"}
 
 
 class WorkCardTests(FixtureCase):
@@ -56,7 +56,7 @@ class WorkCardTests(FixtureCase):
                           "worktree_path": str(ws.root), "session_id": "s1", "revision": revision,
                           "parent_record": parent, "recorded_at": "2026-10-01T00:00:%02d+00:00" % index,
                           "transcript_cursor": None, "adopted_from": None,
-                          "payload": self.card(work, "legacy %d" % index)})
+                          "payload": dict(self.payload_v1("legacy %d" % index), work_id=work)})
             atomic_write(handoff_home(), directory / "records" / (revision + ".json"), data)
             parent = revision
             written.append(data)

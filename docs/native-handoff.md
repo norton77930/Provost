@@ -27,6 +27,37 @@ Retrying the request ID of the most recently removed record of any chain returns
 `REQUEST_ID_EXPIRED` (see Known limits below). Request IDs stay unique per session:
 reusing one for another work's content is `REQUEST_ID_REUSED`.
 
+Decisions and evidence live in a decision log, not in the cards. Each work_id has
+one append-only JSON Lines file at the repository level, beside `sessions/`:
+`<home>/v2/repos/<repo_key[:16]>/logs/<sha256(work_id as UTF-8)>.jsonl`. Every
+session of the repository (a checkout and its worktrees) appends to the same file,
+and pruning session directories never touches it. Line 1 is a header (`kind: "log"`,
+`schema_version`, `workspace_id`, `work_id`); every later line is one entry:
+
+- decision: `{id, kind: "decision", at, session, record, text, refs?, supersedes?}`
+- evidence: `{id, kind: "evidence", at, session, record, claim, state, ref, updates?}`
+
+`id` (`D1, D2, …` and `E1, E2, …`, sequential per work and kind), `kind`, `at`,
+`session` and `record` (the revision of the card written with the entry) are filled
+by the runtime. Ids are assigned and lines appended under a per-work lock
+(`logs/<sha256(work_id)>.lock`) that a `record` waits for up to 10 seconds
+(`STORE_BUSY` after), so concurrent writers from any session or worktree never
+reuse an id. Entries are never rewritten. A line exists only once its terminating
+newline is written: all lines of one `record` go out in one write followed by
+fsync. Bytes after the last newline are a torn append (a crash mid-write): readers
+ignore them and the next append cuts them off. A newline-terminated line that is
+not a valid entry, or a header naming another repo or work, makes the log fail
+closed (`CORRUPT_LOG`, `FOREIGN_REPO`): `status` reports the error and `record`
+refuses to append. A `record` appends its entries before it writes its card; if it
+is interrupted in between, replaying the same request appends only what is missing.
+Entries logged by an interrupted request that is never replayed stay in the log.
+
+Cards have `schema_version` 2 and no `decisions`/`evidence` fields; they carry
+`log_entries`, the ids the record appended. Cards of schema 1 (written before the
+decision log) stay readable as they are, with their decisions and evidence, and a
+work's chain may mix both versions. Resuming a schema 1 snapshot adopts it as a
+schema 1 card; resume never writes to the log.
+
 Sessions written before per-work cards hold one chain whose records may carry
 several work_ids. They are read as they are, with no migration: that chain is the
 chain of its head's work_id, and the older works inside it have no chain of their
@@ -57,8 +88,10 @@ bash "<runtime>/hooks/runtime" status --workspace "<root>" --session "<session>"
 ```
 
 Output: expected (revision or null), checkpoint (complete current record or null),
-facts (summary of the session's `facts.json`, or null before the first PreCompact)
-and template (all required fields). Read-only. SESSION_NOT_BOUND means fix the
+facts (summary of the session's `facts.json`, or null before the first PreCompact),
+template (all request fields) and log (the decision log of the shown work: `total`
+entries and the `newest` 10, oldest first; `{"error": <code>}` when the log is
+unreadable; `total` 0 when no work is shown). Read-only. SESSION_NOT_BOUND means fix the
 session startup/workspace configuration; do not fabricate binding files.
 
 `expected` and `checkpoint` belong to the session's current card. Add
@@ -102,10 +135,18 @@ exactly when one exists, that is, when a SessionStart hook has bound a session h
 
 Fill work_id, phase and next; use actual sources and observations. sources entries:
 kind=file|url, ref, optional item. assignments entries: task, agent_id, observed_state,
-write_scope (list). evidence entries: claim, ref, state (pass-observed|fail|unverified|stale).
-decisions, blockers and suggested_skills are string lists. Fields are required;
-empty lists are fine when truthful. No credentials, raw transcripts or large logs.
-Reference existing tasks/tickets rather than copying them. Maximum 32 KiB.
+write_scope (list). blockers and suggested_skills are string lists. These card fields
+are required; empty lists are fine when truthful. `new_decisions` and `new_evidence`
+(optional, default empty) hold only what is new since this work's last record; the
+runtime appends them to the work's decision log and returns their ids in
+`log_entries`. new_decisions entries: `text` (non-empty), optional `refs` (string
+list) and `supersedes` (the id of the decision it replaces). new_evidence entries:
+`claim` (non-empty), `ref`, `state` (pass-observed|fail|unverified|stale), optional
+`updates` (the id of the evidence entry whose claim it updates). The old `decisions`
+and `evidence` fields are refused with `LEGACY_FIELDS` and a `detail` naming the new
+fields; malformed entries are `INVALID_DECISION`/`INVALID_EVIDENCE`. No credentials,
+raw transcripts or large logs. Reference existing tasks/tickets rather than copying
+them. Maximum 32 KiB for the whole request.
 
 Write UTF-8 JSON with Write/Edit to an allowed scratch file, for example:
 
@@ -120,13 +161,15 @@ Write UTF-8 JSON with Write/Edit to an allowed scratch file, for example:
   "assignments": [
     {"task": "T1 add parser", "agent_id": "implementer-1", "observed_state": "running", "write_scope": ["src/parser"]}
   ],
-  "decisions": ["Keep the existing parser API"],
   "blockers": [],
-  "evidence": [
-    {"claim": "parser tests pass", "ref": "tests/test_parser.py", "state": "pass-observed"}
-  ],
   "next": "Review T1 result before dispatching T2",
-  "suggested_skills": []
+  "suggested_skills": [],
+  "new_decisions": [
+    {"text": "Keep the existing parser API because two callers pin its signature", "refs": ["TICKET-123"]}
+  ],
+  "new_evidence": [
+    {"claim": "parser tests pass", "ref": "tests/test_parser.py", "state": "pass-observed"}
+  ]
 }
 ```
 
@@ -139,7 +182,8 @@ bash "<runtime>/hooks/runtime" record --workspace "<root>" --session "<session>"
 Keep each runtime call a single plain command: no heredoc, pipe, command
 substitution, env-var prefix or line continuation, because worktree guards refuse those.
 
-Use a new request ID for new content; retry the same ID only with identical content.
+Use a new request ID for new content; retry the same ID only with identical content
+(card and new entries): a replay returns the stored card and appends nothing.
 `--expected` is the head of the payload's work chain: when switching to another
 work, read it with `status --work "<work_id>"` first.
 After REVISION_CONFLICT rerun status and reconcile. Never force an overwrite.

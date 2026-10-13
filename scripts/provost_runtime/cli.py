@@ -10,13 +10,14 @@ from .config import ConfigError, config_path, handoff_home, load_config, resolve
 from .hooks import (binding, cursor, handle_event, last_binding_at, recovery_context,
                     resolve_transcript, workspace_root)
 from .facts import SPOOL_SESSION
-from .store import (FACTS_FLAGS, StoreError, cards, guard, list_snapshots, prune, record, resume, snapshot,
-                    storage_ready)
+from .store import (FACTS_FLAGS, StoreError, cards, guard, list_snapshots, prune, read_log, record, resume,
+                    snapshot, storage_ready)
 
 
 RUNTIME_ROOT = Path(__file__).resolve().parents[2]
 REMINDER_FLAGS = FACTS_FLAGS  # touched by hooks/native-facts
 STATUS_SOURCES = 10  # recent repo files prefilled into template.sources
+STATUS_LOG = 10  # newest decision log entries of the shown work in status
 
 
 def clear_reminder_flags(cfg_path, session):
@@ -145,13 +146,18 @@ def main(argv=None):
                               "checkpoint": checkpoint,
                               "facts": None,
                               "template": {"work_id": "", "phase": "", "sources": [],
-                                           "assignments": [], "decisions": [], "blockers": [],
-                                           "evidence": [], "next": "", "suggested_skills": []}}
+                                           "assignments": [], "blockers": [], "next": "", "suggested_skills": [],
+                                           "new_decisions": [], "new_evidence": []}}
                     others = [{"work_id": head["payload"]["work_id"], "phase": head["payload"]["phase"],
                                "revision": head["revision"], "recorded_at": head["recorded_at"]}
                               for head in heads if head["payload"]["work_id"] != work]
                     if others:  # only for a session with several works: single-work output is unchanged
                         result["other_works"] = others
+                    try:
+                        entries = read_log(root, work) if work is not None else []
+                        result["log"] = {"total": len(entries), "newest": entries[-STATUS_LOG:]}
+                    except StoreError as exc:
+                        result["log"] = {"error": str(exc)}
                     try:
                         stored, stored_path = facts.stored(root, options.session)
                     except (StoreError, OSError):
@@ -194,7 +200,8 @@ def main(argv=None):
         print(json.dumps(result, ensure_ascii=True))
         return 0
     except (ConfigError, StoreError) as exc:
-        print(json.dumps({"error": str(exc)}))
+        detail = getattr(exc, "detail", None)
+        print(json.dumps({"error": str(exc), **({"detail": detail} if detail else {})}))
         return 1
     except (OSError, UnicodeError, json.JSONDecodeError):
         print(json.dumps({"error": "INPUT_OR_IO_ERROR"}))

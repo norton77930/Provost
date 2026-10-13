@@ -70,10 +70,11 @@ def _archive_file(home, repo, path):
     raw = json.loads(path.read_text(encoding="utf-8"))
     _foreign_ws(repo, raw)
     body = {k: v for k, v in raw.items() if k != "checksum"}
-    if (raw.get("schema_version") != 1 or raw.get("kind") != "record" or not isinstance(raw.get("session_id"), str)
+    if (raw.get("schema_version") not in (1, 2) or isinstance(raw.get("schema_version"), bool)
+            or raw.get("kind") != "record" or not isinstance(raw.get("session_id"), str)
             or raw.get("checksum") != hashlib.sha256(encoded(body)).hexdigest()):
         raise StoreError("CORRUPT_RECORD")
-    validate_payload(raw.get("payload"))
+    validate_payload(raw.get("payload"), raw["schema_version"])
     if _archive_path(path.parent, raw["payload"]["work_id"]).name != path.name:
         raise StoreError("RECORD_IDENTITY_MISMATCH")
     return raw
@@ -173,12 +174,13 @@ def _repo_dirs(home, ws, all_repos, skipped):
 
 
 def _items(payload):
-    for text in payload["decisions"]:
+    """Searchable items of a card; schema 2 cards hold no decisions or evidence (those are in the log)."""
+    for text in payload.get("decisions", ()):
         yield "decision", text
     for text in payload["blockers"]:
         yield "blocker", text
     yield "next", payload["next"]
-    for item in payload["evidence"]:
+    for item in payload.get("evidence", ()):
         yield "evidence", item["claim"]
 
 

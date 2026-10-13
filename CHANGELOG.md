@@ -45,6 +45,16 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   <work_id>` reads another work's card and `status` lists the session's
   `other_works`. Single-work sessions behave as before, and existing single-chain
   sessions are read without migration (the chain belongs to its head's work_id).
+- Decisions and evidence move to an append-only decision log per work_id (#19),
+  shared by a checkout and its worktrees at `<repo dir>/logs/`. `record` takes
+  `new_decisions` / `new_evidence` (only what is new), appends them under a
+  per-work lock with runtime-assigned ids (`D1…`, `E1…`) and returns them as
+  `log_entries`; a replayed request appends nothing twice, and a torn last line
+  is ignored on read and cut by the next append. **Record schema 2:** cards no
+  longer carry `decisions` / `evidence`, and requests using those fields are
+  refused (`LEGACY_FIELDS`, with a `detail` naming the new fields). Schema 1
+  cards stay readable. `status` adds `log` (the newest 10 entries of the shown
+  work) and its template has the new fields.
 
 ### Fixed
 

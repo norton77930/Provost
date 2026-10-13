@@ -49,7 +49,8 @@ DIGEST_LABEL = "Observed payload digest (full JSON in the checkpoint file): "
 
 class RecoveryPayloadInjection(FixtureCase):
     def sized_payload(self, evidence_chars):
-        payload = self.payload("ship it")
+        """A schema 1 card: its digest still carries the newest decisions."""
+        payload = self.payload_v1("ship it")
         payload["work_id"] = "wid-1"
         payload["blockers"] = ["blocked on review"]
         payload["assignments"] = [
@@ -61,7 +62,10 @@ class RecoveryPayloadInjection(FixtureCase):
         return payload
 
     def recover(self, payload):
-        store.record(self.root, "s1", payload, None, "r1")
+        if "decisions" in payload:
+            self.record_v1(self.root, "s1", payload, None, "r1")
+        else:
+            store.record(self.root, "s1", payload, None, "r1")
         return recovery_context(self.root, "s1")
 
     def test_mid_size_payload_is_inlined_in_full(self):
@@ -100,7 +104,7 @@ class RecoveryPayloadInjection(FixtureCase):
         payload = self.sized_payload(0)
         payload["next"] = "n" * (4500 - len(json.dumps(payload, ensure_ascii=False)) + len(payload["next"]))
         self.assertEqual(len(json.dumps(payload, ensure_ascii=False)), 4500)
-        store.record(self.root, "s1", payload, None, "r1")
+        self.record_v1(self.root, "s1", payload, None, "r1")
         stored = store.current(self.root, "s1")["payload"]
         output = handle_event({"session_id": "s1", "cwd": str(self.root),
                                "hook_event_name": "SessionStart", "source": "compact"}, self.config_path)
