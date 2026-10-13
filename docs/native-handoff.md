@@ -307,9 +307,14 @@ save: write a record from the compaction summary; status prefills facts and
 uncommitted count, session commit count; a subagent count by role; edits outside
 repos; a `Facts capture:` line when spool lines were unreadable or the session
 compacted with zero captured events, which means capture may be failing; omitted
-without `facts.json`), the checkpoint (payload, or its digest when
-over 4,500 characters; a schema 2 card adds one line pointing to the work's decision
-log through `status --work <work_id>`), the activity since the last record, and the edited repo
+without `facts.json`), the checkpoint (the session's most recently written card in
+full, or its digest when over 4,500 characters), one line per other open card of the
+session (`work_id`, phase and next step cut to 160 characters; a card with phase
+`done` is closed and not listed), the open evidence of the current work (the newest
+entry of each claim chain linked by `updates` whose state is not `pass-observed`,
+oldest first, plus `Passed claims: N`), the current work's decisions (the newest 15
+that no entry supersedes, ordered by `at` then log order and listed oldest first,
+with id, date, text, refs and the id each replaces), the activity since the last record, and the edited repo
 files, most recent first (at most 10, then `N more not listed` with the facts.json
 path; N also counts the oldest files the facts size cap dropped, which are in
 neither the list nor facts.json: `N more not listed: K in <facts.json>, D older not
@@ -323,10 +328,24 @@ are named and not counted), the 5 newest later dispatches (role and description)
 and, per repo, the count and 3 newest later commits. Without a checkpoint it says so
 and counts all captured dispatches and commits as unrecorded; without `facts.json`
 it is omitted. Over budget, whole items are replaced, never cut: the file list
-first (by the facts.json path), then a full checkpoint payload by its digest, then
-the activity section (its headline, which keeps the staleness line, and the
-facts.json path), then the checkpoint digest (only the checkpoint path), then the
-facts summary (by its path), and last the identity (paths and `status` usage only).
+first (by the facts.json path), then the decisions one at a time from the oldest
+shown (down to a count), so decisions fill the budget the other sections leave,
+newest first; then the open evidence (to its counts), the other open cards (to a
+count), a full checkpoint payload by its digest, the activity section (its headline,
+which keeps the staleness line, and the facts.json path), the checkpoint digest
+(only the checkpoint path), the facts summary (by its path), and last the identity
+(paths and `status` usage only).
+
+A schema 1 checkpoint is injected as before (its payload or digest carries its
+decisions), its checkpoint line labelled `Checkpoint (old format, not migrated)`.
+A schema 2 card whose work has no decision log yet falls back to the newest schema 1
+card of the same work chain in this session: its decisions and open evidence are
+shown labelled `not migrated` with that card's path; without such a card the section
+says the log has no entries yet (schema 1 cards of other works in the same chain are
+never used). The card payload, other-work lines, decisions and evidence are passed
+through the same secret redaction as search; each decision or evidence line is capped
+at 400 characters and a work_id in a section title at 80. An unreadable decision log (for example `CORRUPT_LOG`) never breaks the
+injection: one line names the error code and every other section is kept.
 
 The save status names a genuine failure as `previous handoff save failed; verify
 any older checkpoint`. When the last PreCompact found no record (`NO_CHECKPOINT`)
