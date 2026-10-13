@@ -98,6 +98,7 @@ class RedactTests(FixtureCase):
         self.assertEqual(self.redact("E1"), "ENTRY_NOT_FOUND")
         self.assertEqual(self.redact("x"), "ENTRY_NOT_FOUND")
         self.assertEqual(self.redact("D1", work="B"), "ENTRY_NOT_FOUND")  # a work without a log
+        self.assertFalse(self.log_path("B").with_suffix(".lock").exists())  # a typo leaves no stray lock
         self.assertEqual(self.redact("D1", ""), "INVALID_REASON")
         self.assertEqual(self.runtime("redact", "--work", "A")[1]["error"], "INVALID_ARGUMENTS")
         self.assertEqual(self.runtime("redact", "--entry", "D1")[1]["error"], "INVALID_ARGUMENTS")
@@ -171,6 +172,14 @@ class RedactTests(FixtureCase):
         self.assertEqual(self.log_path().read_bytes(), raw)
         self.assertEqual(list(self.log_path().parent.glob(".pending-*")), [])
         self.assertTrue(redact.redact(self.root, "A", "D1")["changed"])  # retryable
+
+    def test_a_stray_pending_file_is_ignored_by_status_and_record(self):
+        first = self.record([{"text": "kept"}])
+        (self.log_path().parent / ".pending-crash").write_bytes(b'{"kind":"log"}\nnot json')  # a crash before the move
+        self.assertEqual([e["text"] for e in self.status()["log"]["newest"]], ["kept"])
+        second = self.record([{"text": "next"}], expected=first["revision"], request_id="r2")
+        self.assertEqual(second["log_entries"], ["D2"])
+        self.assertEqual(self.status()["log"]["total"], 2)
 
     def test_the_reader_accepts_only_well_formed_redaction_fields(self):
         self.record([{"text": "kept"}])

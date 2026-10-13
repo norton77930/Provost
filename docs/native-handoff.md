@@ -46,7 +46,7 @@ by `at`, and entries with the same `at` keep their log order (ids ascending per
 kind). Ids are assigned and lines appended under a per-work lock
 (`logs/<sha256(work_id)>.lock`) that a `record` waits for up to 10 seconds
 (`STORE_BUSY` after), so concurrent writers from any session or worktree never
-reuse an id. Entries are never rewritten. A line exists only once its terminating
+reuse an id. Entries are never rewritten (except by `redact`, see below). A line exists only once its terminating
 newline is written: all lines of one `record` go out in one write followed by
 fsync. Bytes after the last newline are a torn append (a crash mid-write): readers
 ignore them and the next append cuts them off. A newline-terminated line that is
@@ -444,13 +444,14 @@ false; the first reason stays). Output: `work_id`, `entry` (the redacted entry) 
 
 This is the one rewrite of a log. It runs under the work's log lock (the lock
 `record` appends under, waiting up to 10 seconds, `STORE_BUSY` after) and takes no
-session lock. Committed lines are copied unchanged except the redacted one; a torn
-tail is dropped. The new log is written to a temporary `.pending-*` file in `logs/`,
+session lock. Committed lines are copied unchanged except the redacted one, and a
+torn tail is dropped (redacting an already redacted entry writes nothing and leaves
+it; the next append cuts it off). The new log is written to a temporary `.pending-*` file in `logs/`,
 fsynced, then moved over the log in one `os.replace`, so a crash leaves either the
 old log or the new one, never a mix, and the result ends with a newline as appends
 require. A crash before the move can leave the `.pending-*` file; it holds the
-redacted log, and can be deleted. On Windows the move fails while another process has
-the log open (a `status`, `search` or hook reading it): that is `WRITE_FAILED`, the
+redacted log; readers and appends ignore it, and it can be deleted. On Windows the move fails while another process has
+the log open (a `status` or hook reading it): that is `WRITE_FAILED`, the
 log is unchanged, and running the same command again is safe.
 
 Replaying a `record` request whose entries were redacted returns `REQUEST_ID_REUSED`,

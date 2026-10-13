@@ -27,6 +27,9 @@ def redact(root, work_id, entry_id, reason=None):
     ws = store.as_workspace(root)
     home = store.handoff_home()
     path, _ = store._log_paths(ws, work_id)
+    store.guard(home, path)
+    if not path.exists():  # a mistyped work: refuse before the lock creates a stray .lock file
+        raise StoreError("ENTRY_NOT_FOUND")
     with store._log_lock(ws, work_id):
         store.guard(home, path)
         try:
