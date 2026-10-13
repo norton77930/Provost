@@ -89,6 +89,8 @@ def main(argv=None):
         parser.add_argument("--since")
         parser.add_argument("--limit")
         parser.add_argument("--show")
+        # search: --work keeps one work_id, --kind (decision|evidence) one entry kind.
+        parser.add_argument("--kind")
         parser.add_argument("--all-repos", action="store_true")
         options = parser.parse_args(args)
         root = workspace_root(options.workspace)
@@ -123,7 +125,8 @@ def main(argv=None):
                     result = search.show(root, options.show, all_repos=options.all_repos)
                 else:
                     result = search.find(root, options.query, all_repos=options.all_repos,
-                                         since=options.since, limit=options.limit)
+                                         since=options.since, limit=options.limit,
+                                         work=options.work, kind=options.kind)
             elif options.command == "prune":
                 result = prune(root, older_than_days=options.older_than_days,
                                expired_older_than_days=options.expired_older_than_days,
