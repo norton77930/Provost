@@ -37,6 +37,11 @@ A Python invocation is also documented in the pilot guide.
    continuations; never interpolate payload into executable shell text.
    A revision conflict means rerun status (with `--work "<work_id>"`) and
    reconcile, never overwrite.
+   `JOIN_REQUIRED` means another session already logged this work_id. Add
+   `--join` only when you intend to continue that work (or resume its snapshot
+   instead); otherwise choose a new work_id. Once this session has a card of the
+   work, later records need no flag. Read `CONCURRENT_SESSION` and `REOPENED`
+   warnings before continuing. Set phase `done` to close a finished work.
 4. Use `snapshot --workspace "<root>" --session "<id>" --request-id "<unique-id>"`.
    Report the returned snapshot ID and local path. On failure, say it was not
    saved; do not call an old snapshot current.

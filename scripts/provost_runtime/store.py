@@ -573,6 +573,60 @@ def latest(root, session):
     return _head(root, session, "snapshot")
 
 
+DONE_PHASE = "done"  # a card with this phase closes its work; a later card of another phase reopens it
+
+
+def work_states(root):
+    """Read-only: the newest state card of each work across the repo's sessions.
+
+    {"works": {work_id: state}, "skipped": [{"session_dir", "error"}]}. A state is the newest
+    head card of the work by `recorded_at` (`session`, `revision`, `phase`, `recorded_at`, `open`:
+    phase is not "done") plus `sessions`, the head card of each session holding the work in the
+    same shape without `open`, newest first. A session dir whose cards cannot be read is skipped
+    and listed with its error code; a dir without records holds no cards and is not listed.
+    """
+    ws = as_workspace(root)
+    home = handoff_home()
+    base = _base(ws) / "sessions"
+    guard(home, base)
+    works, skipped = {}, []
+    for folder in (sorted(base.iterdir()) if base.is_dir() else ()):
+        if not ID.fullmatch(folder.name):
+            continue
+        try:
+            guard(home, folder / "records")
+            session = None
+            for path in sorted((folder / "records").glob("*.json")) if (folder / "records").is_dir() else ():
+                if ID.fullmatch(path.stem):
+                    raw = _load(path)
+                    session = raw.get("session_id") if raw else None
+                    if not isinstance(session, str) or digest(session) != folder.name:
+                        raise StoreError("RECORD_IDENTITY_MISMATCH")
+                    break
+            if session is None:
+                continue
+            heads = cards(ws, session)
+        except (StoreError, OSError) as exc:
+            skipped.append({"session_dir": folder.name,
+                            "error": str(exc) if isinstance(exc, StoreError) else "CORRUPT_RECORD"})
+            continue
+        for head in heads:
+            works.setdefault(head["payload"]["work_id"], []).append(
+                {"session": session, "revision": head["revision"], "phase": head["payload"]["phase"],
+                 "recorded_at": head["recorded_at"]})
+
+    def key(item):
+        try:
+            return _when(item["recorded_at"]), item["revision"]
+        except StoreError:
+            return datetime.min.replace(tzinfo=timezone.utc), item["revision"]
+    states = {}
+    for work_id, items in works.items():
+        items.sort(key=key, reverse=True)
+        states[work_id] = {**items[0], "open": items[0]["phase"] != DONE_PHASE, "sessions": items}
+    return {"works": states, "skipped": skipped}
+
+
 # Decision log: one append-only JSON Lines file per work_id at the repo level of the
 # store, <repo dir>/logs/<sha256(work_id)>.jsonl, shared by every session of the repo
 # (a checkout and its worktrees). Line 1 is a header naming the repo and the work;
@@ -788,7 +842,14 @@ def _commit(root, session, payload, version, expected, request_id, *, cursor=Non
         previous = current(root, session, payload["work_id"])
         if expected != (previous["revision"] if previous else None):
             raise StoreError("REVISION_CONFLICT")
-        ids = _append_log(root, session, payload["work_id"], revision, entries, check) if entries else []
+        if entries:
+            ids = _append_log(root, session, payload["work_id"], revision, entries, check)
+        else:
+            ids = []
+            if check is not None:
+                # Nothing to append: the committed log is read without the lock (a torn append is ignored),
+                # so a card-only record creates no log or lock file.
+                check(payload["work_id"], read_log(root, payload["work_id"]), revision, [])
         data = _seal({"schema_version": version, "kind": "record", "workspace_id": root.repo_key,
                       "worktree_path": str(root.root),
                       "session_id": session, "revision": revision, "parent_record": expected,
