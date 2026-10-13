@@ -90,6 +90,14 @@ class NativeFactsTests(FixtureCase):
         data["tool_response"] = {"file_path": "/evil", "run_in_background": True}
         self.assertEqual(self.capture(json.dumps(data))[0]["p"], "/real/a.py")
 
+    def test_large_tool_response_is_cut_at_its_first_key(self):
+        # A real Write echoes the file in tool_response, so the cut point sits far from the end.
+        data = json.loads(event("Agent", {"prompt": "x"}))
+        data["tool_response"] = {"content": "line \"q\" \\ x\n" * 20000,
+                                 "tool_response": {"description": "evil", "subagent_type": "evil"}}
+        rows = self.capture(json.dumps(data))
+        self.assertEqual((rows[0]["role"], rows[0]["desc"]), ("general-purpose", ""))
+
     def test_windows_backslash_paths_round_trip(self):
         path = "C:\\Users\\x\\repo\\new\\tab\\\u00e9 \"q\".py"
         rows = self.capture(event("Edit", {"file_path": path}))
