@@ -1,12 +1,13 @@
 """Record checks and echo: what a `record` request may not do, what it may have missed, and what it wrote.
 
 Hard rejections raise StoreError with a code and a `detail`; nothing is written. Decision text
-is checked before the write; entry targets and duplicates are checked by Gate under the
-work's log lock, against the committed log. Soft warnings come back with a successful write
+is checked before the write; the join guard, entry targets and duplicates are checked by Gate
+under the work's log lock, against the committed log. Soft warnings come back with a successful write
 as {code, message} items. The echo is a short text (at most ECHO_MAX characters) of the
 assigned ids, the state card, open evidence, the newest decisions and the warnings.
 """
 import re
+from datetime import datetime, timezone
 
 from . import facts, search, store
 from .store import LOG_ENTRY_ID, StoreError
@@ -21,6 +22,8 @@ ECHO_ITEM = 200         # characters per echoed decision, evidence or warning li
 ECHO_IDS = 8            # assigned ids listed in the echo head; more are shortened to first, last and a count
 ECHO_WORK = 80          # characters of the work_id in the echo head
 PASSED = "pass-observed"
+CONCURRENT_MINUTES = 120  # another session's card of the work this recent warns
+SHORT_SESSION = 8       # characters of a session id named in a detail or warning
 HEX = re.compile(r"(?<![0-9a-z])[0-9a-f]{%d,40}(?![0-9a-z])" % HASH_PREFIX, re.IGNORECASE)
 
 
@@ -42,19 +45,30 @@ def check_texts(payload):
 
 
 class Gate:
-    """Target and duplicate checks, called by store under the work's log lock.
+    """Join, target and duplicate checks, called by store under the work's log lock.
 
     The committed log it checks against is every entry logged before this record's own
     entries (all of them when none is logged yet), so a replay of an interrupted request
     sees the log its first attempt saw. Returns the entries to append (duplicates skipped).
+    With a session and joined False (the session has no card of the work and the record has
+    no --join), a log holding entries of other sessions refuses the record (JOIN_REQUIRED).
     """
 
-    def __init__(self):
+    def __init__(self, session=None, joined=True):
+        self.session, self.joined = session, joined
         self.skipped = []  # (text, id of the current decision with that text, or None: earlier in this request)
 
     def __call__(self, work_id, logged, revision, entries):
         first = next((i for i, entry in enumerate(logged) if entry.get("record") == revision), len(logged))
         prior = logged[:first]
+        if not self.joined:
+            others = sorted({entry["session"] for entry in prior if entry["session"] != self.session})
+            if others:
+                raise StoreError("JOIN_REQUIRED", "work %s already has log entries from %d other session(s) (%s) and "
+                                                  "this session has no card of it: to continue that work, add --join "
+                                                  "to this record or resume a snapshot of it; for new work, use "
+                                                  "another work_id" % (_clip(work_id, ECHO_WORK), len(others),
+                                                                       ", ".join(_short(s) for s in others[:5])))
         known = {entry["id"]: entry for entry in prior}
         superseded = {entry["supersedes"]: entry["id"] for entry in prior
                       if entry["kind"] == "decision" and "supersedes" in entry}
@@ -131,15 +145,58 @@ def _last_record(root, session, request_id):
     return max(times) if times else None
 
 
-def record(root, session, payload, expected, request_id, *, config_path, cursor=None):
+def _short(session):
+    return session[:SHORT_SESSION]
+
+
+def _others(root, session, payload):
+    """Warnings from the work's cards across sessions, read before the write (read-only, fail-soft):
+    CONCURRENT_SESSION for another session's card under CONCURRENT_MINUTES old, REOPENED when the
+    work's newest card is done and this record's phase is not."""
+    work_id = payload.get("work_id") if isinstance(payload, dict) else None
+    if not isinstance(work_id, str):
+        return []
+    try:
+        state = store.work_states(root)["works"].get(work_id)
+        if state is None:
+            return []
+        now = datetime.now(timezone.utc).timestamp()
+        ages = [(item["session"], int((now - _epoch(item["recorded_at"])) // 60)) for item in state["sessions"]
+                if item["session"] != session]
+    except (StoreError, OSError, KeyError, TypeError, ValueError):
+        return []
+    recent = [(other, minutes) for other, minutes in ages if minutes < CONCURRENT_MINUTES]
+    warnings = []
+    if recent:
+        warnings.append(_warning("CONCURRENT_SESSION", "another session wrote work %s in the last %d minutes: %s; "
+                                 "coordinate before continuing in parallel"
+                                 % (_clip(work_id, ECHO_WORK), CONCURRENT_MINUTES,
+                                    ", ".join("session %s %d min ago" % (_short(other), max(minutes, 0))
+                                              for other, minutes in recent))))
+    if not state["open"] and payload.get("phase") != store.DONE_PHASE:
+        warnings.append(_warning("REOPENED", "work %s was closed (phase done) by session %s at %s; this record "
+                                             "reopens it" % (_clip(work_id, ECHO_WORK), _short(state["session"]),
+                                                            state["recorded_at"])))
+    return warnings
+
+
+def record(root, session, payload, expected, request_id, *, config_path, cursor=None, join=False):
     """store.record with the checks; its output plus `warnings` and `echo` (secret-like strings redacted).
 
-    config_path locates the facts spool; activity is read after the write, with no lock held.
+    config_path locates the facts spool; activity is read after the write, with no lock held. The
+    cross-session warnings are read before the write. join admits a first write to a work that other
+    sessions logged; a session whose card of the work `expected` names (written or adopted) has joined
+    it already (any other `expected` is a REVISION_CONFLICT before the join check runs).
     """
     check_texts(payload)
     after = _last_record(root, session, request_id) if isinstance(request_id, str) else False
-    gate = Gate()
-    data = store.record(root, session, payload, expected, request_id, cursor=cursor, check=gate)
+    others = _others(root, session, payload)
+    joined = join or expected is not None
+    gate = Gate(session, joined=joined)
+    # A joined record with no entries has nothing to check: store then never reads the log.
+    entries = isinstance(payload, dict) and any(payload.get(field) for field in store.LOG_FIELDS)
+    data = store.record(root, session, payload, expected, request_id, cursor=cursor,
+                        check=gate if entries or not joined else None)
     work_id = data["payload"]["work_id"]
     try:
         log = store.read_log(root, work_id)
@@ -147,7 +204,7 @@ def record(root, session, payload, expected, request_id, *, config_path, cursor=
         log = None  # written, but unreadable now: no log sections
     ids = data.get("log_entries", [])
     entries = {entry["id"]: entry for entry in log or ()}
-    warnings = []
+    warnings = list(others)
     short = [i for i in ids if i in entries and entries[i]["kind"] == "decision"
              and len(entries[i]["text"].strip()) < SHORT_TEXT]
     if short:
