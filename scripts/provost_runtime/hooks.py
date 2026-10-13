@@ -6,8 +6,8 @@ from pathlib import Path
 from . import facts
 from .config import ConfigError, handoff_home, load_config, resolve_mode, workspace_key
 from .notifications import PARTIAL, notice
-from .store import (CACHE_SESSION, FACTS_MARKER, StoreError, _base, as_workspace, atomic_write, current, digest,
-                    guard, latest, locate, session_dir, snapshot, storage_ready)
+from .store import (CACHE_SESSION, FACTS_MARKER, StoreError, _base, _chains, as_workspace, atomic_write, current,
+                    digest, guard, latest, locate, newest_entries, read_log, session_dir, snapshot, storage_ready)
 
 PLUGIN = Path(__file__).resolve().parents[2]
 RECOVERY_PAYLOAD_LIMIT = 4500     # inline the payload in full up to this size; digest is capped to it too
@@ -16,7 +16,9 @@ SESSION_START_BUDGET = 8000       # Claude Code swaps a larger additionalContext
 RECOVERY_FILES = 10               # edited files listed after compaction; the rest are counted
 RECOVERY_DISPATCHES = 5           # newest dispatches listed since the last record
 RECOVERY_COMMITS = 3              # newest commits listed per repo since the last record
-RECOVERY_LINE_LIMIT = 300         # per-repo commit line cap
+RECOVERY_LINE_LIMIT = 300         # per-repo commit line cap; also per other-work line
+RECOVERY_DECISIONS = 15           # newest non-superseded decisions of the current work, filled newest first
+RECOVERY_NEXT_LIMIT = 160         # next step cap in an other-work line
 PARTIAL_STATUS = ("Save status: the last compaction saved facts only. Before continuing, write a decision record "
                   "from the compaction summary: run status (it prefills facts and template.sources), then record.")
 NEVER_RECORDED = ("No handoff checkpoint: this session has not recorded yet; continue from the compact summary "
@@ -161,11 +163,13 @@ LOG_POINTER = ("Decisions and evidence are in the work's decision log, not in th
                "status --work <work_id> shows its newest entries (log field).\n")
 
 
-def _recovery(root, session):
-    """(header, payload, checkpoint path, checkpoint) of the newest checkpoint, or (message, None, None, None)."""
+def _recovery(root, session, chains=None):
+    """(header, payload, checkpoint path, checkpoint) of the newest checkpoint, or (message, None, None, None).
+
+    chains: the session's record chains when the caller already read them (None reads the store)."""
     # The latest milestone may be newer than the last compaction snapshot.
     root = as_workspace(root)
-    data = current(root, session)
+    data = current(root, session) if chains is None else (chains[0][0] if chains else None)
     if data is None:
         data = latest(root, session)
     if data is None:
@@ -175,12 +179,12 @@ def _recovery(root, session):
     path = session_dir(root, session) / kind / (ident + ".json")
     return ("Saved observations, not current facts. Verify sources, code, evidence and worker state before acting. "
             "Do not duplicate a possibly running worker. Checkpoints can lag later decisions.\n"
-            + "Checkpoint: " + str(path) + "\nRevision: " + data["revision"]
+            + ("Checkpoint (old format, not migrated): " if data.get("schema_version") == 1 else "Checkpoint: ")
+            + str(path) + "\nRevision: " + data["revision"]
             + "\nTranscript cursor: " + ("available (not a freshness guarantee)" if data.get("transcript_cursor") else "unavailable; gaps must be checked")
             + "\nRead this JSON file for the complete checkpoint.\n"
             + "If any assignment is not marked completed, verify that worker's actual state before dispatching; "
-            + "read the checkpoint file for full details.\n"
-            + (LOG_POINTER if data.get("schema_version") == 2 else "")), data["payload"], path, data
+            + "read the checkpoint file for full details.\n"), data["payload"], path, data
 
 
 def _never_recorded(root, session):
@@ -192,8 +196,104 @@ def _never_recorded(root, session):
 
 
 def recovery_context(root, session):
-    header, payload, _, _ = _recovery(root, session)
-    return header if payload is None else header + _payload_text(payload)
+    header, payload, _, data = _recovery(root, session)
+    if payload is None:
+        return header
+    return header + (LOG_POINTER if data.get("schema_version") == 2 else "") + _payload_text(payload)
+
+
+def _other_works(chains):
+    """Variants of the session's other open works (every chain head but the current; phase done is closed)."""
+    others = [chain[0]["payload"] for chain in chains[1:] if chain[0]["payload"]["phase"] != "done"]
+    if not others:
+        return []
+    lines = ["Other open works in this session (status --work <work_id> shows a card):"]
+    lines += [_clip("- %s [%s] next: %s" % (p["work_id"], p["phase"], _clip(p["next"], RECOVERY_NEXT_LIMIT)),
+                    RECOVERY_LINE_LIMIT) for p in others]
+    return ["\n".join(lines), "Other open works in this session: %d, omitted for size; status lists them "
+                              "as other_works." % len(others)]
+
+
+def _decision_line(entry):
+    extra = ""
+    if entry.get("refs"):
+        extra += " [refs: " + ", ".join(entry["refs"]) + "]"
+    if entry.get("supersedes"):
+        extra += " [replaces " + entry["supersedes"] + "]"
+    return "- %s (%s) %s%s" % (entry["id"], entry["at"][:10], entry["text"], extra)
+
+
+def _evidence_line(item):
+    """A log evidence entry (with id) or a schema 1 evidence item (without)."""
+    return "- %s[%s] %s (ref: %s)" % (item["id"] + " " if "id" in item else "", item["state"], item["claim"],
+                                      item["ref"])
+
+
+def _evidence_variants(title, items, passed):
+    """Open evidence (oldest first) and the passed count: the full list, then counts only. Empty without any."""
+    if not items:
+        return ["%s: none open. Passed claims: %d." % (title, passed)] if passed else []
+    return ["\n".join(["%s (latest state per claim, not pass-observed). Passed claims: %d." % (title, passed)]
+                      + [_evidence_line(item) for item in items]),
+            "%s: %d open, list omitted for size; status --work <work_id> shows the log. Passed claims: %d."
+            % (title, len(items), passed)]
+
+
+def _decision_variants(title, lines, total, note=""):
+    """The newest RECOVERY_DECISIONS of `lines` (oldest first), then one fewer per variant, then counts only."""
+    shown = lines[-RECOVERY_DECISIONS:]
+    if not shown:
+        return []
+    variants = ["\n".join(["%s (newest %d of %d, oldest first%s):" % (title, k, total, note)] + shown[-k:])
+                for k in range(len(shown), 0, -1)]
+    return variants + ["%s: %d, omitted for size%s; status --work <work_id> shows the newest." % (title, total, note)]
+
+
+def _log_state(entries):
+    """(newest current decisions, current count, open evidence, passed count) of a work's log.
+
+    Superseded decisions are dropped; each evidence chain (linked by updates) counts by its
+    newest entry. Lists are oldest first by store.newest_entries (time, then log order)."""
+    superseded = {e["supersedes"] for e in entries if e["kind"] == "decision" and "supersedes" in e}
+    updated = {e["updates"] for e in entries if e["kind"] == "evidence" and "updates" in e}
+    live = [e for e in entries if e["kind"] == "decision" and e["id"] not in superseded]
+    heads = [e for e in entries if e["kind"] == "evidence" and e["id"] not in updated]
+    pending = [e for e in heads if e["state"] != "pass-observed"]
+    return (newest_entries(live, RECOVERY_DECISIONS), len(live), newest_entries(pending, len(pending)),
+            len(heads) - len(pending))
+
+
+def _work_sections(root, session, chains, checkpoint):
+    """(other works, open evidence, decisions) variants for the checkpoint's work.
+
+    A schema 1 checkpoint shows its own decisions in the payload. A work without a log falls
+    back to the newest schema 1 card of its chain, labelled not migrated. An unreadable log
+    becomes one line: the log never breaks injection."""
+    others = _other_works(chains)
+    if checkpoint is None or checkpoint.get("schema_version") == 1:
+        return others, [], []
+    work = checkpoint["payload"]["work_id"]
+    try:
+        entries = read_log(root, work)
+    except (StoreError, OSError) as exc:
+        code = str(exc) if isinstance(exc, StoreError) else "READ_FAILED"
+        return others, [], ["Decision log of work %s could not be read (%s): its decisions and open evidence are "
+                            "not shown; status --work <work_id> reports the error." % (work, code)]
+    if entries:
+        decisions, total, pending, passed = _log_state(entries)
+        return (others, _evidence_variants("Open evidence of work " + work, pending, passed),
+                _decision_variants("Decisions of work " + work, [_decision_line(e) for e in decisions], total))
+    chain = next((c for c in chains if c[0]["payload"]["work_id"] == work), [])
+    old = next((card for card in chain if card.get("schema_version") == 1), None)
+    if old is None:
+        return others, [], ["Decision log of work %s: no entries yet." % work]
+    path = session_dir(root, session) / "records" / (old["revision"] + ".json")
+    label = " (not migrated: no decision log yet; from its old-format card %s)" % path
+    evidence, decisions = old["payload"]["evidence"], old["payload"]["decisions"]
+    pending = [item for item in evidence if item["state"] != "pass-observed"]
+    return (others, _evidence_variants("Open evidence of work " + work + label, pending, len(evidence) - len(pending)),
+            _decision_variants("Decisions of work " + work + label, ["- " + text for text in decisions],
+                               len(decisions)))
 
 
 def _checkpoint_variants(header, payload, path):
@@ -456,8 +556,9 @@ def handle_event(event, config_path):
             shortest = (short + "\nRuntime: " + runtime + "\nWorkspace: " + str(root.root) + "\nSession: " + session + "\n"
                         + ("Use Bash: bash <quoted-runtime-path> status --workspace <quoted-workspace> --session <quoted-session>."
                            if enabled else "Handoff: disabled; do not record or snapshot."))
-            # Display order: identity, save status, facts, checkpoint, activity since it, edited files.
-            sections = [[policy + info, short + info, shortest], [], [], [], [], []]
+            # Display order: identity, save status, facts, checkpoint, other open works, open evidence,
+            # decisions, activity since the checkpoint, edited files.
+            sections = [[policy + info, short + info, shortest], [], [], [], [], [], [], [], []]
             status, warning, partial = [], "", False
             if enabled:
                 # Only a session PreCompact could fold for: the marker this SessionStart creates does not count.
@@ -473,10 +574,12 @@ def handle_event(event, config_path):
                             fold_facts(config_path, root, session)
                         # Facts first: a corrupt checkpoint raises and must not drop them.
                         stored, stored_path = _stored_facts(root, session)
-                        sections[2], sections[5] = _facts_variants(stored, stored_path)
-                        header, payload, path, checkpoint = _recovery(root, session)
+                        sections[2], sections[8] = _facts_variants(stored, stored_path)
+                        chains = _chains(root, session, "record")[0]
+                        header, payload, path, checkpoint = _recovery(root, session, chains)
                         sections[3] = _checkpoint_variants(header, payload, path)
-                        sections[4] = _since_variants(stored, stored_path, checkpoint)
+                        sections[7] = _since_variants(stored, stored_path, checkpoint)
+                        sections[4], sections[5], sections[6] = _work_sections(root, session, chains, checkpoint)
                     elif source in ("startup", "clear", "fork"):
                         status.append("New work context: do not load or start old work unless explicitly requested.")
                     else:
@@ -504,9 +607,11 @@ def handle_event(event, config_path):
                     warning = notice(key, code, state_dir)["message"]
                     status.append("Checkpoint unavailable; verify current sources. Error: " + code)
             sections[1] = ["\n".join(status)] if status else []
-            # Edited files go first; the activity since the checkpoint shrinks to its headline (which
-            # keeps the staleness line) before the checkpoint loses its digest.
-            steps = (5, 3, 4, 3, 2, 0, 0)
+            # Edited files go first; then decisions drop one at a time, oldest shown first, so they fill
+            # what the other sections leave; then open evidence and other works shrink to counts. The
+            # activity since the checkpoint shrinks to its headline (which keeps the staleness line)
+            # before the checkpoint loses its digest.
+            steps = (8,) + (6,) * len(sections[6]) + (5, 4, 3, 7, 3, 2, 0, 0)
             return _context(_fit(sections, steps)) | _notification(warning, True)
         if not enabled:
             return {}

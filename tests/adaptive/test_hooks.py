@@ -94,10 +94,10 @@ class HookTests(FixtureCase):
     def test_unreadable_never_recorded_check_keeps_the_failed_save_wording(self):
         from provost_runtime import hooks
         handle_event(self.event("PreCompact"), self.config_path)  # NO_CHECKPOINT
-        # _recovery reads the store first (None); the never-recorded check then cannot read it.
-        with mock.patch.object(hooks, "current", side_effect=[None, StoreError("CORRUPT_RECORD")]) as read:
+        # Recovery reads the store first (no chains); the never-recorded check then cannot read it.
+        with mock.patch.object(hooks, "current", side_effect=StoreError("CORRUPT_RECORD")) as read:
             output = handle_event(self.event("SessionStart", "compact"), self.config_path)
-        self.assertEqual(read.call_count, 2)
+        self.assertEqual(read.call_count, 1)
         self.assertEqual(output["systemMessage"],
                          "Provost: previous handoff save failed; verify any older checkpoint before continuing.")
         self.assertNotIn("has not recorded yet", json.dumps(output))
