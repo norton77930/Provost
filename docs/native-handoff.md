@@ -441,47 +441,64 @@ cannot hold (`INVALID_DECISION` for empty decision text, `INVALID_EVIDENCE` for 
 empty claim). Schema 2 cards hold nothing to import and are not listed. Source
 files are only read, never modified.
 
-Per work_id, sources are read in time order: a record's or archive file's
-`recorded_at`, a snapshot's `captured_at` (ties: records, then snapshots, then
-archive files, then path).
+A source stands for the card it holds. A snapshot or archive file carries its
+card's `recorded_at` and `revision`, so every copy of one card has the same time and
+identity, whichever copies still exist. Per work_id, sources are read in time order
+by `recorded_at`. Equal times are ordered by `parent_record` descent (a card after
+its ancestors), then records before snapshots before archive files, then by path.
 
 - Decisions are deduplicated by exact text: the first occurrence is imported, with
   its time, session and card.
 - Evidence with the same `claim` text forms one chain: its first state is one entry,
   each later different state a new entry whose `updates` names the previous one, and
-  a state equal to the previous one adds nothing.
+  a state equal to the previous one adds nothing. Sessions interleave by time.
 
-Imported entries take `at` from the source time, `session` from the source's
-session, `record` from the card's revision (a snapshot's `snapshot_id` for a
-snapshot), and `migrated: true`. Their ids continue after the work's highest
-existing ids; entries already in the log are kept as they are, and every view
-orders by `at`, so older imported entries sort before newer live ones. Migrated
-chains never link to live entries.
+Imported entries take `at` from the card's `recorded_at`, `session` from the card's
+session, `record` from the card's revision, and `migrated: true`. Their ids continue
+after the work's highest existing ids; entries already in the log are kept as they
+are, and every view orders by `at`, so older imported entries sort before newer live
+ones. Migrated chains never link to live entries. Expected consequences: a decision
+re-logged as a live entry can coexist with a migrated entry of the same text, and
+when a claim has both a migrated chain and a live chain, its current state is the
+entry with the newest `at`.
 
-Idempotent: an imported decision is identified by its text, an imported evidence
-entry by (`record`, `claim`, `state`), each among the work's entries with
-`migrated: true`. Candidates already in the log are counted under
-`already_migrated` and not imported again, so a second `--apply` imports nothing
-(and makes no backup).
+Idempotent: all of one work's new entries go out in one write, so a candidate whose
+card revision already appears as `record` among the work's `migrated: true`
+entries was handled by an earlier run and is not imported again; as a secondary
+guard, neither is a decision whose text a migrated decision already has. A later
+chain link to an earlier import resolves by position among that card's migrated
+entries, else by (`record`, `claim`, `state`); when neither finds it the work fails
+with `MIGRATE_CHAIN_UNRESOLVED` and nothing is appended to it. Skipped candidates
+are counted under `already_migrated`, so a second `--apply` imports nothing (and
+makes no backup), also after a source card was trimmed (a surviving copy is the same
+card) or a migrated entry's text was rewritten.
 
 Output: `applied`, `backup` (null unless something was imported), `works` and
 `skipped`. Each work lists `work_id`, `sources` (source files contributing to it),
 `decisions` and `evidence` (entries the dry run would import, or `--apply`
-imported) and `already_migrated`. A work whose log cannot be read or appended to
-(`CORRUPT_LOG`, `FOREIGN_REPO`, `STORE_BUSY`) has `error` instead of the counts and
-is left untouched; other works continue.
+imported) and `already_migrated`. A work whose log cannot be read, backed up or
+appended to (`CORRUPT_LOG`, `FOREIGN_REPO`, `STORE_BUSY`, `WRITE_FAILED`,
+`MIGRATE_CHAIN_UNRESOLVED`) has `error` instead of the counts and gets nothing
+appended; other works continue.
 
-`--apply` first copies every `logs/*.jsonl` file into a new
-`<store home>/v2/repos/<repo dir>/backups/logs-<UTC time>/` (a failed backup imports
-nothing), then appends each work's entries in one write under its log lock (the
-same lock `record` uses). Run it while no session is recording: an entry a session
-appends between the backup and the import is not in the backup.
+`--apply` takes each work's log lock (the same lock `record` uses, waiting up to 10
+seconds), copies that work's committed log bytes into
+`<store home>/v2/repos/<repo dir>/backups/logs-<UTC time>/<log file name>` (an
+empty file when the work had no log; fsynced), and only then appends the work's
+entries in one write and cuts any torn tail. A failed backup aborts that work before
+anything is appended, and an empty backup dir is removed. This store-level
+`backups/` is not the installer's `<config dir>/provost/backups`. Nothing prunes it,
+and its copies hold log text unredacted (a later `redact` does not reach them):
+delete backup dirs by hand once the migration is settled.
 
-Rollback: delete `logs/` (or replace its `.jsonl` files with the backup's) and
-reinstall the previous runtime. Record, snapshot and archive files are unchanged, so
-schema 1 cards still hold their decisions and evidence. Deleting `logs/` also
-deletes entries written after the install; restoring the backup keeps those written
-before the migration. A runtime with the decision log but without `migrate` reads
+Rollback, keeping live entries recorded after the migration: remove every line with
+`migrated: true` from the logs. A live entry whose `updates` or `supersedes` named a
+migrated id then points at a missing entry; fix or accept that residue. Full revert:
+replace each log with its copy in the oldest backup (a copy that is an empty file
+means the work had no log: delete that log), which also drops every entry recorded
+after the migration. Either way, reinstall the previous runtime if needed. Record,
+snapshot and archive files are never modified, so schema 1 cards still hold their
+decisions and evidence. A runtime with the decision log but without `migrate` reads
 migrated entries as they are.
 
 ## Reminder hook
