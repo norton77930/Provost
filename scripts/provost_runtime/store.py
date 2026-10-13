@@ -775,7 +775,11 @@ def _commit(root, session, payload, version, expected, request_id, *, cursor=Non
             prior = _read(root, path, session, "record")
             log = read_log(root, payload["work_id"]) if version != 1 else []
             if check is not None and entries:
-                entries = check(payload["work_id"], log, revision, entries)
+                # A card that logged nothing (every entry a skipped duplicate) is checked against the log
+                # as it was when the card was written, not against entries other sessions appended since.
+                seen = log if prior.get("log_entries") else [
+                    entry for entry in log if _when(entry["at"]) <= _when(prior["recorded_at"])]
+                entries = check(payload["work_id"], seen, revision, entries)
             logged = [_log_entry_fields(entry) for entry in log if entry.get("record") == revision]
             if (prior["payload"] != payload or prior.get("adopted_from") != adopted_from
                     or prior["schema_version"] != version or logged != entries):

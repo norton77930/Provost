@@ -139,6 +139,8 @@ class RecordChecksTests(FixtureCase):
         data.pop("checksum")
         data["agents"] = [{"role": role, "desc": desc, "bg": False, "ts": ts} for role, desc, ts in agents]
         data["repos"][0]["commits"] = [{"hash": h, "subject": "s", "ts": ts} for h, ts in commits]
+        # The fixture repo root does not exist: changes() keeps these stored commits when git fails.
+        data["repos"][0]["first_touched_at"] = data["repos"][0]["last_touched_at"] = "2026-10-01T00:00:00+00:00"
         data["files"] = [{"path": "C:/repo/%s" % name, "count": 1, "last_ts": ts, "agents": [""]}
                          for name, ts in files]
         from provost_runtime.config import handoff_home
@@ -273,3 +275,108 @@ class RecordChecksTests(FixtureCase):
             self.assertIn(field, out)
         self.assertEqual(out["warnings"], [])
         self.assertIsInstance(out["echo"], str)
+
+    # --- review follow-ups ------------------------------------------------------------------
+
+    def spool(self, *events):
+        """Append hook events to s1's live facts spool (what the next PreCompact would fold)."""
+        path = self.config_path.parent / "cache" / "facts" / "s1.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("ab") as stream:
+            for event in events:
+                stream.write((json.dumps(dict({"v": 1, "cwd": str(self.root), "agent": ""}, **event)) + "\n")
+                             .encode("utf-8"))
+
+    def test_an_unfolded_dispatch_is_seen_without_facts_json(self):
+        first = self.seeded()
+        self.spool({"k": "agent", "ts": self.later(first), "role": "implementer", "desc": "build parser", "bg": False})
+        out = self.record(self.request(decisions=[{"text": LONG + " again"}]), first["revision"], "r2")
+        self.assertEqual(self.codes(out), ["UNMENTIONED_DISPATCHES"])
+        self.assertIn("implementer: build parser", out["warnings"][0]["message"])
+
+    def record_in_process(self, data, expected, request_id):
+        """`record` through cli.main in this process, so the temp-dir fixture repo can count as a repo
+        (facts.OUTSIDE ignores temp dirs by default)."""
+        import contextlib
+        import io
+        from unittest import mock
+        from provost_runtime import cli, facts
+        payload = self.root.parent / (self.root.name + "-%s.json" % request_id)
+        payload.write_text(json.dumps(data), encoding="utf-8")
+        self.addCleanup(payload.unlink)
+        stdout = io.StringIO()
+        with mock.patch.dict(os.environ, PROVOST_CONFIG=str(self.config_path)), \
+                mock.patch.object(facts, "OUTSIDE", ("/.claude/jobs/", "/.claude/projects/")), \
+                contextlib.redirect_stdout(stdout):
+            cli.main(["record", "--workspace", str(self.root), "--session", "s1", "--expected", expected,
+                      "--request-id", request_id, "--input", str(payload)])
+        return json.loads(stdout.getvalue())
+
+    def test_a_commit_after_the_last_record_is_seen_live_from_git(self):
+        self.isolate_user_git_config()
+        self.git("init", "-q")
+        self.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty",
+                 "-m", "init")
+        bind(self.root, "s1", {})
+        first = self.seeded()
+        time.sleep(1.1)
+        self.spool({"k": "edit", "ts": int(time.time()) - 1, "p": str(self.root / "parser.py")})
+        self.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty",
+                 "-m", "feat: parser")
+        head = self.git("rev-parse", "HEAD")
+        out = self.record_in_process(self.request(decisions=[{"text": LONG + " again"}]), first["revision"], "r2")
+        self.assertEqual(self.codes(out), ["UNREFERENCED_COMMITS"])
+        self.assertIn(head[:7], out["warnings"][0]["message"])
+        out = self.record_in_process(self.request(decisions=[{"text": LONG + " once more", "refs": [head[:7]]}]),
+                                     out["revision"], "r3")
+        self.assertEqual(self.codes(out), [])
+
+    def test_echo_head_is_shortened_so_the_card_always_fits(self):
+        work = "w" * 3000
+        out = self.record(self.request(work, decisions=[{"text": "%s %03d" % (LONG, i)} for i in range(300)]))
+        echo = out["echo"]
+        self.assertLessEqual(len(echo), 1500)
+        self.assertIn("D1, D2, D3", echo)
+        self.assertIn("D299, D300 (300 entries)", echo)
+        self.assertIn("next: next step", echo)
+        self.assertNotIn("w" * 81, echo)
+
+    def test_a_replay_of_a_record_whose_entries_were_all_skipped_returns_its_card(self):
+        first = self.seeded()
+        dup = self.request(decisions=[{"text": LONG}])
+        second = self.record(dup, first["revision"], "r2")
+        self.assertEqual((second["log_entries"], self.codes(second)), ([], ["DUPLICATE_SKIPPED"]))
+        # Another session supersedes D1 afterwards: the replay still sees the log as it was.
+        bind(self.root, "s2", {})
+        code, other = self.runtime("record", "--expected", "null", "--request-id", "x1", session="s2",
+                                   data=self.request(decisions=[{"text": LONG + " (corrected)", "supersedes": "D1"}]))
+        self.assertEqual(code, 0, other)
+        replay = self.record(dup, first["revision"], "r2")
+        self.assertEqual((replay["revision"], replay["log_entries"]), (second["revision"], []))
+        self.assertEqual(self.log()["total"], 3)
+
+    def test_a_correction_is_never_skipped_as_a_duplicate(self):
+        first = self.record(self.request(decisions=[{"text": LONG}, {"text": LONG + " (other)"}]))
+        # Same text as current D2, but it supersedes D1: appended, and a replay returns the same card.
+        data = self.request(decisions=[{"text": LONG + " (other)", "supersedes": "D1"}])
+        second = self.record(data, first["revision"], "r2")
+        self.assertEqual((second["log_entries"], self.codes(second)), (["D3"], []))
+        replay = self.record(data, first["revision"], "r2")
+        self.assertEqual((replay["revision"], replay["log_entries"]), (second["revision"], ["D3"]))
+        self.assertEqual(self.log()["total"], 3)
+
+    def test_text_superseded_earlier_in_the_same_record_is_not_a_duplicate(self):
+        first = self.seeded()
+        out = self.record(self.request(decisions=[{"text": LONG + " (new)", "supersedes": "D1"}, {"text": LONG}]),
+                          first["revision"], "r2")
+        self.assertEqual((out["log_entries"], self.codes(out)), (["D2", "D3"], []))
+
+    def test_warnings_and_echo_are_redacted(self):
+        token = "ghp_" + "A1b2C3d4" * 4
+        text = "%s %s" % (token, LONG)  # the token falls inside the clipped duplicate text of the warning
+        first = self.record(self.request(decisions=[{"text": text}]))
+        out = self.record(self.request(decisions=[{"text": text}]), first["revision"], "r2")
+        self.assertEqual(self.codes(out), ["DUPLICATE_SKIPPED"])
+        self.assertNotIn(token, json.dumps(out["warnings"]))
+        self.assertNotIn(token, out["echo"])
+        self.assertIn("[REDACTED]", out["echo"])

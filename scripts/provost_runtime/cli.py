@@ -199,7 +199,8 @@ def main(argv=None):
                     payload = json.loads(raw)
                     result = checks.record(root, options.session, payload,
                                            None if options.expected == "null" else options.expected,
-                                           options.request_id, cursor=cursor(resolve_transcript(source.get("transcript_path"))))
+                                           options.request_id, config_path=config_path(),
+                                           cursor=cursor(resolve_transcript(source.get("transcript_path"))))
                     clear_reminder_flags(config_path(), options.session)
                 elif options.command == "snapshot":
                     if not options.request_id:

@@ -221,7 +221,8 @@ naming the entry (`new_decisions[i]` / `new_evidence[i]`):
 
 The text checks run before anything is read; the target checks run under the work's
 log lock against the committed log (for a replayed request, the log as it was before
-that request's own entries).
+that request's own entries, or, when its card logged nothing, the log as it was when
+the card was written).
 
 Soft warnings come back with a successful write as `warnings`, a list of
 `{code, message}` (empty when there is nothing to report):
@@ -229,7 +230,9 @@ Soft warnings come back with a successful write as `warnings`, a list of
 - `SHORT_DECISION`: a new decision under 40 characters (it is still written).
 - `DUPLICATE_SKIPPED`: a new decision whose exact text equals a current (not
   superseded) decision of this work, or an earlier decision of the same record. It is
-  not appended and gets no id; the message names the existing id.
+  not appended and gets no id; the message names the existing id. A decision with
+  `supersedes` is never skipped, and a decision superseded earlier in the same record
+  no longer counts as current.
 - `UNREFERENCED_COMMITS`: a commit captured since the session's last record of any
   work whose hash shares no prefix of at least 7 characters with a hex token
   (7 to 40 characters, case-insensitive) in this record's entries: decision `text`
@@ -242,20 +245,24 @@ Soft warnings come back with a successful write as `warnings`, a list of
   but the record appends no decision (skipped duplicates do not count).
 - `LOG_LARGE`: the work's log holds more than 300 entries; consider splitting the work.
 
-The commit, dispatch and activity warnings read the session's stored `facts.json`
-(the same facts SessionStart reports as "Since the last record"), so they see what
-the last PreCompact folded, not live git: without facts there are none. "Since the
+The commit, dispatch and activity warnings read the session's facts as of the
+record, the way `changes` does: the stored `facts.json` merged with the spool lines
+not folded yet, plus a fresh bounded `git` query of the touched repos. This runs after
+the write, with no lock held, and is read-only; when it fails there are no such
+warnings. "Since the
 last record" is after the newest `recorded_at` of the session's cards of any work
 (all captured activity before the session's first record).
 
 Successful output keeps every earlier field and adds `echo`, a text of at most 1500
-characters: the work and the ids just assigned, the state card (phase, next,
+characters: the work (its first 80 characters) and the ids just assigned (more than 8
+are shortened to the first 6, the last 2 and a count), the state card (phase, next,
 blockers, assignments), open evidence (the latest entry of each `updates` chain that
 is not `pass-observed`, oldest first), the 3 newest current decisions (newest first,
 by `at`) and the warnings. Each listed item is clipped to 200 characters. Over the
 cap it drops the oldest shown decisions first, then the oldest open evidence, then the
 last warnings, and counts what it dropped as `N more, see status`; the card is always
-kept (clipped only when it alone does not fit).
+kept (clipped only when it alone does not fit). Secret-like strings in `warnings` and
+`echo` are replaced by `[REDACTED]`, as in search output.
 
 ## Search past decisions
 

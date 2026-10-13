@@ -7,9 +7,8 @@ as {code, message} items. The echo is a short text (at most ECHO_MAX characters)
 assigned ids, the state card, open evidence, the newest decisions and the warnings.
 """
 import re
-from datetime import datetime
 
-from . import facts, store
+from . import facts, search, store
 from .store import LOG_ENTRY_ID, StoreError
 
 TEXT_MAX = 1000         # decision text over this is refused
@@ -19,6 +18,8 @@ HASH_PREFIX = 7         # shortest hash prefix that references a commit
 ECHO_MAX = 1500         # echo characters
 ECHO_DECISIONS = 3      # newest current decisions in the echo
 ECHO_ITEM = 200         # characters per echoed decision, evidence or warning line
+ECHO_IDS = 8            # assigned ids listed in the echo head; more are shortened to first, last and a count
+ECHO_WORK = 80          # characters of the work_id in the echo head
 PASSED = "pass-observed"
 HEX = re.compile(r"(?<![0-9a-z])[0-9a-f]{%d,40}(?![0-9a-z])" % HASH_PREFIX, re.IGNORECASE)
 
@@ -84,7 +85,12 @@ class Gate:
         kept, self.skipped = [], []
         for kind, fields in entries:
             if kind == "decision":
-                if fields["text"] in current:
+                if "supersedes" in fields:
+                    # A correction is always appended; the text it replaces is current no longer.
+                    replaced = known[fields["supersedes"]]["text"]
+                    if current.get(replaced) == fields["supersedes"]:
+                        del current[replaced]
+                elif fields["text"] in current:
                     self.skipped.append((fields["text"], current[fields["text"]]))
                     continue
                 current[fields["text"]] = None
@@ -111,7 +117,7 @@ def _target(work_id, known, target, kind, where):
 
 
 def _epoch(text):
-    return datetime.fromisoformat(text).timestamp()
+    return store._when(text).timestamp()  # naive times are UTC, as store reads them
 
 
 def _last_record(root, session, request_id):
@@ -125,8 +131,11 @@ def _last_record(root, session, request_id):
     return max(times) if times else None
 
 
-def record(root, session, payload, expected, request_id, *, cursor=None):
-    """store.record with the checks; its output plus `warnings` and `echo`."""
+def record(root, session, payload, expected, request_id, *, config_path, cursor=None):
+    """store.record with the checks; its output plus `warnings` and `echo` (secret-like strings redacted).
+
+    config_path locates the facts spool; activity is read after the write, with no lock held.
+    """
     check_texts(payload)
     after = _last_record(root, session, request_id) if isinstance(request_id, str) else False
     gate = Gate()
@@ -152,11 +161,12 @@ def record(root, session, payload, expected, request_id, *, cursor=None):
                                      for text, ident in gate.skipped))))
     if after is not False:
         decided = any(i.startswith("D") for i in ids)
-        warnings += _activity(root, session, after, payload, decided)
+        warnings += _activity(config_path, root, session, after, payload, decided)
     if log is not None and len(log) > LOG_LARGE:
         warnings.append(_warning("LOG_LARGE", "the log of work %s has %d entries (over %d); consider splitting the "
                                               "work" % (work_id, len(log), LOG_LARGE)))
-    return {**data, "warnings": warnings, "echo": echo(data, log, warnings)}
+    warnings = search.redact(warnings)
+    return {**data, "warnings": warnings, "echo": echo(search.redact(data), search.redact(log), warnings)}
 
 
 def _warning(code, message):
@@ -178,13 +188,12 @@ def _referenced(commit, tokens):
                for token in tokens)
 
 
-def _activity(root, session, after, payload, decided):
-    """Warnings from the session's stored facts (as hooks read them): activity after `after` (None: all)."""
+def _activity(config_path, root, session, after, payload, decided):
+    """Warnings from the session's facts as of now (facts.changes: stored facts, the unfolded spool and a
+    fresh bounded git query; read-only): activity after `after` (None: all of it)."""
     try:
-        data, _ = facts.stored(root, session)
-    except (StoreError, OSError):
-        return []
-    if not data:
+        data = facts.changes(config_path, root, session)["facts"]
+    except (StoreError, OSError, KeyError, TypeError, AttributeError, ValueError):
         return []
     try:
         found = facts.since(data, after)
@@ -228,7 +237,10 @@ def echo(data, log, warnings):
     then the oldest open evidence, then the last warnings, counting each, and finally clips the card."""
     card = data["payload"]
     ids = data.get("log_entries", [])
-    head = "Recorded %s (revision %s): %s" % (card["work_id"], data["revision"][:12], ", ".join(ids) or "no new entries")
+    listed = (", ".join(ids) if len(ids) <= ECHO_IDS
+              else "%s, ... %s (%d entries)" % (", ".join(ids[:ECHO_IDS - 2]), ", ".join(ids[-2:]), len(ids)))
+    head = "Recorded %s (revision %s): %s" % (_clip(card["work_id"], ECHO_WORK), data["revision"][:12],
+                                              listed or "no new entries")
     lines = ["Card: phase: %s; next: %s" % (card["phase"], card["next"])]
     if card["blockers"]:
         lines.append("Blockers: " + "; ".join(card["blockers"]))
