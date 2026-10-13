@@ -199,6 +199,71 @@ After REVISION_CONFLICT rerun status and reconcile. Never force an overwrite.
 Record approved plan, dispatch, results and changed decisions/blockers. Do not
 record after every tool call. Main owns records; workers report observations.
 
+## Record checks and echo
+
+`record` refuses a request that would put a broken entry into the log, warns about
+what it may have missed, and echoes what the work looks like after the write.
+
+Hard rejections write nothing (no entry, no card) and return `error` with a `detail`
+naming the entry (`new_decisions[i]` / `new_evidence[i]`):
+
+- `DECISION_TEXT_EMPTY`: decision text that is empty or whitespace only.
+- `DECISION_TEXT_TOO_LONG`: decision text over 1000 characters.
+- `TARGET_NOT_FOUND`: a `supersedes`/`updates` id that is not in this work's log, or
+  that is not an entry id at all. Targets are bare ids of the same work (`D3`, `E2`);
+  an entry of this record cannot be a target.
+- `TARGET_OTHER_WORK`: a target written as `<other work_id>:<id>`.
+- `TARGET_WRONG_KIND`: `supersedes` naming an evidence id or `updates` naming a
+  decision id.
+- `ALREADY_SUPERSEDED`: superseding a decision that another entry already supersedes;
+  the detail names the latest entry of that chain, which is the one to supersede. Two
+  entries of one record superseding the same decision are refused the same way.
+
+The text checks run before anything is read; the target checks run under the work's
+log lock against the committed log (for a replayed request, the log as it was before
+that request's own entries, or, when its card logged nothing, the log as it was when
+the card was written).
+
+Soft warnings come back with a successful write as `warnings`, a list of
+`{code, message}` (empty when there is nothing to report):
+
+- `SHORT_DECISION`: a new decision under 40 characters (it is still written).
+- `DUPLICATE_SKIPPED`: a new decision whose exact text equals a current (not
+  superseded) decision of this work, or an earlier decision of the same record. It is
+  not appended and gets no id; the message names the existing id. A decision with
+  `supersedes` is never skipped, and a decision superseded earlier in the same record
+  no longer counts as current.
+- `UNREFERENCED_COMMITS`: a commit captured since the session's last record of any
+  work whose hash shares no prefix of at least 7 characters with a hex token
+  (7 to 40 characters, case-insensitive) in this record's entries: decision `text`
+  and `refs`, evidence `claim` and `ref`.
+- `UNMENTIONED_DISPATCHES`: a subagent dispatch captured since that last record whose
+  role and description both appear nowhere (case-insensitive substring) in this
+  record's entries or card `assignments` (`task`, `agent_id`). This is best effort:
+  naming a role once covers every dispatch of that role.
+- `NO_NEW_DECISION`: edits, dispatches or commits were captured since that last record
+  but the record appends no decision (skipped duplicates do not count).
+- `LOG_LARGE`: the work's log holds more than 300 entries; consider splitting the work.
+
+The commit, dispatch and activity warnings read the session's facts as of the
+record, the way `changes` does: the stored `facts.json` merged with the spool lines
+not folded yet, plus a fresh bounded `git` query of the touched repos. This runs after
+the write, with no lock held, and is read-only; when it fails there are no such
+warnings. "Since the
+last record" is after the newest `recorded_at` of the session's cards of any work
+(all captured activity before the session's first record).
+
+Successful output keeps every earlier field and adds `echo`, a text of at most 1500
+characters: the work (its first 80 characters) and the ids just assigned (more than 8
+are shortened to the first 6, the last 2 and a count), the state card (phase, next,
+blockers, assignments), open evidence (the latest entry of each `updates` chain that
+is not `pass-observed`, oldest first), the 3 newest current decisions (newest first,
+by `at`) and the warnings. Each listed item is clipped to 200 characters. Over the
+cap it drops the oldest shown decisions first, then the oldest open evidence, then the
+last warnings, and counts what it dropped as `N more, see status`; the card is always
+kept (clipped only when it alone does not fit). Secret-like strings in `warnings` and
+`echo` are replaced by `[REDACTED]`, as in search output.
+
 ## Search past decisions
 
 ```bash

@@ -691,13 +691,14 @@ def _log_lock(ws, work_id):
         raise StoreError("WRITE_FAILED") from exc
 
 
-def _append_log(ws, session, work_id, revision, entries):
+def _append_log(ws, session, work_id, revision, entries, check=None):
     """Append entries for the card `revision` under the work's lock; returns the ids of all its entries.
 
     Entries already logged for this revision (an earlier attempt that appended but never
     wrote its card) must be the start of `entries`; only the rest is appended, so a replay
     never appends twice. Anything else is REQUEST_ID_REUSED. Ids continue the work's
-    highest D/E number. All new lines go out in one write, then fsync.
+    highest D/E number. All new lines go out in one write, then fsync. `check(work_id, logged, revision,
+    entries)` (checks.Gate) may refuse the entries or drop some, against the committed log.
     """
     home = handoff_home()
     path, _ = _log_paths(ws, work_id)
@@ -710,6 +711,8 @@ def _append_log(ws, session, work_id, revision, entries):
         except OSError as exc:
             raise StoreError("WRITE_FAILED") from exc
         logged, end = _parse_log(ws, work_id, raw)
+        if check is not None:
+            entries = check(work_id, logged, revision, entries)
         mine = [entry for entry in logged if entry.get("record") == revision]
         if len(mine) > len(entries) or [_log_entry_fields(e) for e in mine] != entries[:len(mine)]:
             raise StoreError("REQUEST_ID_REUSED")
@@ -741,17 +744,19 @@ def _append_log(ws, session, work_id, revision, entries):
         return ids
 
 
-def record(root, session, payload, expected, request_id, *, cursor=None):
+def record(root, session, payload, expected, request_id, *, cursor=None, check=None):
     """Write a schema 2 state card from a record request and append its new log entries.
 
     The entries are appended (under the per-work log lock) before the card is written, so
     a card always follows its entries; replaying the request completes an interrupted one.
     """
     card, entries = split_request(payload)
-    return _commit(root, session, card, RECORD_SCHEMA, expected, request_id, cursor=cursor, entries=entries)
+    return _commit(root, session, card, RECORD_SCHEMA, expected, request_id, cursor=cursor, entries=entries,
+                   check=check)
 
 
-def _commit(root, session, payload, version, expected, request_id, *, cursor=None, adopted_from=None, entries=()):
+def _commit(root, session, payload, version, expected, request_id, *, cursor=None, adopted_from=None, entries=(),
+            check=None):
     """Under the session lock, write a card of schema `version` on its work chain (idempotent per request id)."""
     validate_payload(payload, version)
     entries = list(entries)
@@ -768,8 +773,14 @@ def _commit(root, session, payload, version, expected, request_id, *, cursor=Non
         _expired(root, session, "record", revision)
         if path.exists():
             prior = _read(root, path, session, "record")
-            logged = [_log_entry_fields(entry) for entry in read_log(root, payload["work_id"])
-                      if entry.get("record") == revision] if version != 1 else []
+            log = read_log(root, payload["work_id"]) if version != 1 else []
+            if check is not None and entries:
+                # A card that logged nothing (every entry a skipped duplicate) is checked against the log
+                # as it was when the card was written, not against entries other sessions appended since.
+                seen = log if prior.get("log_entries") else [
+                    entry for entry in log if _when(entry["at"]) <= _when(prior["recorded_at"])]
+                entries = check(payload["work_id"], seen, revision, entries)
+            logged = [_log_entry_fields(entry) for entry in log if entry.get("record") == revision]
             if (prior["payload"] != payload or prior.get("adopted_from") != adopted_from
                     or prior["schema_version"] != version or logged != entries):
                 raise StoreError("REQUEST_ID_REUSED")
@@ -777,7 +788,7 @@ def _commit(root, session, payload, version, expected, request_id, *, cursor=Non
         previous = current(root, session, payload["work_id"])
         if expected != (previous["revision"] if previous else None):
             raise StoreError("REVISION_CONFLICT")
-        ids = _append_log(root, session, payload["work_id"], revision, entries) if entries else []
+        ids = _append_log(root, session, payload["work_id"], revision, entries, check) if entries else []
         data = _seal({"schema_version": version, "kind": "record", "workspace_id": root.repo_key,
                       "worktree_path": str(root.root),
                       "session_id": session, "revision": revision, "parent_record": expected,
