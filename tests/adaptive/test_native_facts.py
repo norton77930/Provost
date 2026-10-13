@@ -93,8 +93,10 @@ class NativeFactsTests(FixtureCase):
     def test_large_tool_response_is_cut_at_its_first_key(self):
         # A real Write echoes the file in tool_response, so the cut point sits far from the end.
         data = json.loads(event("Agent", {"prompt": "x"}))
-        data["tool_response"] = {"content": "line \"q\" \\ x\n" * 20000,
-                                 "tool_response": {"description": "evil", "subagent_type": "evil"}}
+        # The spoofed keys sit between the first and a nested "tool_response":, so a cut
+        # at the last occurrence would read them.
+        data["tool_response"] = {"description": "evil", "subagent_type": "evil",
+                                 "content": "line \"q\" \\ x\n" * 20000, "tool_response": {}}
         rows = self.capture(json.dumps(data))
         self.assertEqual((rows[0]["role"], rows[0]["desc"]), ("general-purpose", ""))
 
