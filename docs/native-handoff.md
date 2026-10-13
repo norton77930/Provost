@@ -573,8 +573,15 @@ evidence state must match at every position), else by a (`record`, `claim`,
 the work fails with `MIGRATE_CHAIN_UNRESOLVED` and nothing is appended to it.
 Skipped candidates are counted under `already_migrated`, so a second `--apply`
 imports nothing (and makes no backup), also after a source card was trimmed (a
-surviving copy is the same card) or a migrated entry was redacted. A work that
-failed in one run (for example `STORE_BUSY`) is imported by the next.
+surviving copy is the same card). A work that failed in one run (for example
+`STORE_BUSY`) is imported by the next.
+
+After a migrated entry is redacted (`migrated: true` with `redacted_at`), its work
+is no longer migrated automatically: the dry run and `--apply` both report it with
+error `REDACTED_ENTRIES` and append nothing, while other works continue. With the
+original text gone, no guard could tell a card that restated it apart, so this is
+what keeps the redacted text from coming back. Re-log anything from that work's
+schema 1 cards that still matters as new entries.
 
 Resuming a schema 1 snapshot after migrating creates a new schema 1 card, which the
 next `--apply` imports: its evidence states are `unverified`, chained onto the
@@ -585,7 +592,7 @@ Output: `applied`, `backup` (null unless something was imported), `works` and
 `decisions` and `evidence` (entries the dry run would import, or `--apply`
 imported) and `already_migrated`. A work whose log cannot be read, backed up or
 appended to (`CORRUPT_LOG`, `FOREIGN_REPO`, `STORE_BUSY`, `WRITE_FAILED`,
-`MIGRATE_CHAIN_UNRESOLVED`) has `error` instead of the counts and gets nothing
+`MIGRATE_CHAIN_UNRESOLVED`, `REDACTED_ENTRIES`) has `error` instead of the counts and gets nothing
 appended; other works continue.
 
 `--apply` takes each work's log lock (the same lock `record` uses, waiting up to 10

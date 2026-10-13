@@ -23,7 +23,9 @@ run evaluated every source up to it, so restatements of a since redacted entry s
 nor a decision whose text a migrated decision already has. A chain link to an earlier
 import resolves by position among that card's migrated entries (kind and state must match
 at every position), else by a unique (record, claim, state); MIGRATE_CHAIN_UNRESOLVED
-when neither finds exactly one entry.
+when neither finds exactly one entry. A work whose log holds a redacted migrated entry
+(`migrated: true` with `redacted_at`) is not migrated any more (REDACTED_ENTRIES): with
+the original text gone, no guard could keep a restatement of it out.
 """
 import hashlib
 import json
@@ -203,6 +205,9 @@ def _shape(entry):
 def new_entries(logged, items):
     """(entries of items not yet imported, count already imported); ids continue after the log's highest."""
     migrated = [entry for entry in logged if entry.get("migrated") is True]
+    if any("redacted_at" in entry for entry in migrated):
+        # Its original text is gone, so no guard can tell a restatement of it apart: stop here.
+        raise StoreError("REDACTED_ENTRIES")
     done, keys = {}, {}
     for entry in migrated:
         done.setdefault(entry.get("record"), []).append(entry)

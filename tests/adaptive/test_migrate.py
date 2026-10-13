@@ -320,19 +320,36 @@ class MigrateTests(FixtureCase):
         self.assertEqual(self.chain(), [("E1", "fail", None, "s1", parent["revision"]),
                                         ("E2", "pass-observed", "E1", "s1", child["revision"])])
 
-    def test_a_redacted_decision_restated_by_an_older_surviving_card_is_not_imported_again(self):
+    def test_a_rewritten_decision_restated_by_an_older_surviving_card_is_not_imported_again(self):
+        self.card("s1", "A", ["Decision edited by hand later"])
+        self.card("s2", "A", ["Decision edited by hand later"])  # restates it: run 1 imports nothing from it
+        self.card("s1", "A", ["Later decision"])
+        self.migrate("--apply")
+        self.rewrite_log(lambda entries: [dict(e, text="edited") if e["id"] == "D1" else e for e in entries])
+        for _ in range(4):
+            self.card("s1", "A")  # trims the card the decision was imported from
+        self.assertRerunImportsNothing()  # the high-water mark keeps the older restatement out
+
+    def test_a_work_with_a_redacted_migrated_entry_is_no_longer_migrated(self):
         secret = "Decision quoting ghp_" + "x" * 30
         self.card("s1", "A", [secret])
-        self.card("s2", "A", [secret])  # restates it and adds nothing: run 1 imports nothing from this card
         self.card("s1", "A", ["Later decision"])
+        self.card("s2", "A", [secret])  # the newest card only restates: the high-water mark does not cover it
+        self.card("s1", "B", ["Decision of B"])
         self.migrate("--apply")
         self.assertEqual([e["text"] for e in self.log("A")], [secret, "Later decision"])
         self.assertTrue(self.runtime("redact", "--work", "A", "--entry", "D1")["changed"])
         for _ in range(4):
             self.card("s1", "A")  # trims the card the decision was imported from
+        self.card("s1", "B", ["Another decision of B"])
         path, _ = store._log_paths(store.as_workspace(self.root), "A")
-        self.assertRerunImportsNothing()
-        self.assertNotIn(b"ghp_", path.read_bytes())
+        before = path.read_bytes()
+        for args in ((), ("--apply",)):
+            out = self.migrate(*args)
+            self.assertEqual(self.works(out)["A"], {"sources": 2, "error": "REDACTED_ENTRIES"})
+        self.assertEqual(self.works(out)["B"]["decisions"], 1)  # other works continue
+        self.assertEqual(path.read_bytes(), before)
+        self.assertNotIn(b"ghp_", before)
 
     def test_a_work_left_busy_by_one_run_is_imported_by_the_next(self):
         from unittest import mock
