@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import facts, search
+from . import facts, migrate, search
 from .config import ConfigError, config_path, handoff_home, load_config, resolve_mode
 from .hooks import (binding, cursor, handle_event, last_binding_at, recovery_context,
                     resolve_transcript, workspace_root)
@@ -71,7 +71,8 @@ def main(argv=None):
         return 0
     try:
         parser = Parser()
-        parser.add_argument("command", choices=["doctor", "record", "snapshot", "list", "resume", "status", "changes", "prune", "search"])
+        parser.add_argument("command", choices=["doctor", "record", "snapshot", "list", "resume", "status", "changes",
+                                                "prune", "search", "migrate"])
         parser.add_argument("--workspace", required=True)
         parser.add_argument("--session")
         parser.add_argument("--expected")
@@ -124,6 +125,8 @@ def main(argv=None):
                 else:
                     result = search.find(root, options.query, all_repos=options.all_repos,
                                          since=options.since, limit=options.limit)
+            elif options.command == "migrate":
+                result = migrate.migrate(root, apply=options.apply)
             elif options.command == "prune":
                 result = prune(root, older_than_days=options.older_than_days,
                                expired_older_than_days=options.expired_older_than_days,

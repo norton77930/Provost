@@ -419,6 +419,71 @@ bash "<runtime>/hooks/runtime" prune --workspace "<root>" --session "<session>"
 Show the listed candidates to the user before running the same command with
 `--apply`.
 
+## Migrate
+
+```bash
+bash "<runtime>/hooks/runtime" migrate --workspace "<root>" [--apply]
+```
+
+A one-time import of the decisions and evidence that schema 1 cards carried into
+the decision logs. Without `--apply` it is a dry run that writes nothing (no files,
+locks or directories). Like `prune`, it needs handoff enabled for the workspace.
+Run the dry run, show it to the user, and run `--apply` only after the user has
+reviewed it. Migrate soon after installing: a schema 1 card trimmed from its chain
+(5 newer records of the work) is no longer a source unless a snapshot or archive
+file still holds it.
+
+Sources are the repo's valid schema 1 records and snapshots in every session dir
+(including `.pruning-` leftovers) and its valid `archive/` files. Unreadable,
+checksum-invalid, mismatched or foreign files are skipped and listed under
+`skipped` (`file` relative to the repo dir, `reason`), as are single items the log
+cannot hold (`INVALID_DECISION` for empty decision text, `INVALID_EVIDENCE` for an
+empty claim). Schema 2 cards hold nothing to import and are not listed. Source
+files are only read, never modified.
+
+Per work_id, sources are read in time order: a record's or archive file's
+`recorded_at`, a snapshot's `captured_at` (ties: records, then snapshots, then
+archive files, then path).
+
+- Decisions are deduplicated by exact text: the first occurrence is imported, with
+  its time, session and card.
+- Evidence with the same `claim` text forms one chain: its first state is one entry,
+  each later different state a new entry whose `updates` names the previous one, and
+  a state equal to the previous one adds nothing.
+
+Imported entries take `at` from the source time, `session` from the source's
+session, `record` from the card's revision (a snapshot's `snapshot_id` for a
+snapshot), and `migrated: true`. Their ids continue after the work's highest
+existing ids; entries already in the log are kept as they are, and every view
+orders by `at`, so older imported entries sort before newer live ones. Migrated
+chains never link to live entries.
+
+Idempotent: an imported decision is identified by its text, an imported evidence
+entry by (`record`, `claim`, `state`), each among the work's entries with
+`migrated: true`. Candidates already in the log are counted under
+`already_migrated` and not imported again, so a second `--apply` imports nothing
+(and makes no backup).
+
+Output: `applied`, `backup` (null unless something was imported), `works` and
+`skipped`. Each work lists `work_id`, `sources` (source files contributing to it),
+`decisions` and `evidence` (entries the dry run would import, or `--apply`
+imported) and `already_migrated`. A work whose log cannot be read or appended to
+(`CORRUPT_LOG`, `FOREIGN_REPO`, `STORE_BUSY`) has `error` instead of the counts and
+is left untouched; other works continue.
+
+`--apply` first copies every `logs/*.jsonl` file into a new
+`<store home>/v2/repos/<repo dir>/backups/logs-<UTC time>/` (a failed backup imports
+nothing), then appends each work's entries in one write under its log lock (the
+same lock `record` uses). Run it while no session is recording: an entry a session
+appends between the backup and the import is not in the backup.
+
+Rollback: delete `logs/` (or replace its `.jsonl` files with the backup's) and
+reinstall the previous runtime. Record, snapshot and archive files are unchanged, so
+schema 1 cards still hold their decisions and evidence. Deleting `logs/` also
+deletes entries written after the install; restoring the backup keeps those written
+before the migration. A runtime with the decision log but without `migrate` reads
+migrated entries as they are.
+
 ## Reminder hook
 
 `hooks/native-facts` captures facts and reminds the main session, which otherwise
