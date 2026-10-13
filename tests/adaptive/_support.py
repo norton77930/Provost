@@ -13,10 +13,21 @@ sys.path.insert(0, str(REPO / "scripts"))
 # PROVOST_TEST_BASH picks another bash (e.g. a non-default Git for Windows install).
 BASH = (os.environ.get("PROVOST_TEST_BASH")
         or ("C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash")))
+# `git rev-parse --local-env-vars`: inherited from a git hook or `git rebase -x`, they
+# point every fixture git call at that repository instead of the fixture's own.
+GIT_REPO_ENV = ("GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+                "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE",
+                "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX",
+                "GIT_SHALLOW_FILE", "GIT_COMMON_DIR")
 
 
 class FixtureCase(unittest.TestCase):
     def setUp(self):
+        git_env = mock.patch.dict(os.environ)
+        git_env.start()
+        self.addCleanup(git_env.stop)
+        for name in GIT_REPO_ENV:
+            os.environ.pop(name, None)
         tmp = tempfile.TemporaryDirectory(prefix="provost-test-")
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
