@@ -483,8 +483,8 @@ class ExpiredPruneTests(FixtureCase):
 
         writer = threading.Thread(target=write)
 
-        def current_then_pause(root, session):
-            found = real_current(root, session)
+        def current_then_pause(root, session, *work_id):
+            found = real_current(root, session, *work_id)
             if threading.current_thread() is writer:
                 read.set()
                 go.wait(10)
@@ -669,10 +669,10 @@ class ArchivePruneTests(FixtureCase):
     def session(self, name, age_days, *works, snapshot=False):
         """A session recording one record per (work_id, next) in order, stamped age_days ago."""
         bind(self.root, name, {})
-        previous = None
+        heads = {}  # each work_id has its own card chain
         for index, (work, step) in enumerate(works):
-            previous = record(self.root, name, dict(self.payload(step), work_id=work), previous,
-                              "r%d" % index)["revision"]
+            heads[work] = record(self.root, name, dict(self.payload(step), work_id=work), heads.get(work),
+                                 "r%d" % index)["revision"]
         if snapshot:
             store_snapshot(self.root, name, "e1")
         directory = session_dir(self.root, name)
@@ -807,11 +807,19 @@ class ArchivePruneTests(FixtureCase):
         self.assertTrue((leftover / "records").is_dir())
 
     def test_a_snapshot_keeps_a_trimmed_record_archivable(self):
+        from provost_runtime.config import handoff_home
+        from provost_runtime.store import _seal, atomic_write
         bind(self.root, "trim", {})
         first = record(self.root, "trim", dict(self.payload("a1"), work_id="alpha"), None, "r0")
         store_snapshot(self.root, "trim", "e1")
-        previous = first["revision"]
-        for index in range(1, 6):
+        # A chain written before per-work cards: beta continued alpha's chain, so trimming
+        # beta's chain removes the alpha record.
+        previous = digest("trim\0record\0r1")
+        atomic_write(handoff_home(), session_dir(self.root, "trim") / "records" / (previous + ".json"),
+                     _seal({k: v for k, v in first.items() if k != "checksum"}
+                           | {"revision": previous, "parent_record": first["revision"],
+                              "payload": dict(self.payload("b1"), work_id="beta")}))
+        for index in range(2, 6):
             previous = record(self.root, "trim", dict(self.payload("b%d" % index), work_id="beta"), previous,
                               "r%d" % index)["revision"]
         old = session_dir(self.root, "trim")

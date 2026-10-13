@@ -10,7 +10,7 @@ from .config import ConfigError, config_path, handoff_home, load_config, resolve
 from .hooks import (binding, cursor, handle_event, last_binding_at, recovery_context,
                     resolve_transcript, workspace_root)
 from .facts import SPOOL_SESSION
-from .store import (FACTS_FLAGS, StoreError, current, guard, list_snapshots, prune, record, resume, snapshot,
+from .store import (FACTS_FLAGS, StoreError, cards, guard, list_snapshots, prune, record, resume, snapshot,
                     storage_ready)
 
 
@@ -77,6 +77,8 @@ def main(argv=None):
         parser.add_argument("--request-id")
         parser.add_argument("--from", dest="source")
         parser.add_argument("--input")
+        # status: the card of this work_id instead of the session's most recently written one.
+        parser.add_argument("--work")
         # Prune ages: binding-only dirs (default 14 days) and expired sessions (default 30).
         parser.add_argument("--older-than-days", type=int, default=None)
         parser.add_argument("--expired-older-than-days", type=int, default=None)
@@ -133,7 +135,11 @@ def main(argv=None):
                 if not source:
                     raise StoreError("SESSION_NOT_BOUND")
                 if options.command == "status":
-                    checkpoint = current(root, options.session)
+                    if options.work == "":
+                        raise StoreError("INVALID_ARGUMENTS")
+                    heads = cards(root, options.session)
+                    work = options.work if options.work is not None else heads[0]["payload"]["work_id"] if heads else None
+                    checkpoint = next((head for head in heads if head["payload"]["work_id"] == work), None)
                     result = {"workspace": str(root.root), "session_id": options.session,
                               "expected": checkpoint["revision"] if checkpoint else None,
                               "checkpoint": checkpoint,
@@ -141,6 +147,11 @@ def main(argv=None):
                               "template": {"work_id": "", "phase": "", "sources": [],
                                            "assignments": [], "decisions": [], "blockers": [],
                                            "evidence": [], "next": "", "suggested_skills": []}}
+                    others = [{"work_id": head["payload"]["work_id"], "phase": head["payload"]["phase"],
+                               "revision": head["revision"], "recorded_at": head["recorded_at"]}
+                              for head in heads if head["payload"]["work_id"] != work]
+                    if others:  # only for a session with several works: single-work output is unchanged
+                        result["other_works"] = others
                     try:
                         stored, stored_path = facts.stored(root, options.session)
                     except (StoreError, OSError):

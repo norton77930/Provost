@@ -15,10 +15,24 @@ mid-session keeps the same records, and deleting a worktree deletes none of them
 A home inside a Git work tree is refused (`STORE_INSIDE_REPO`) unless Git ignores
 it. `doctor` reports `store_home` and `repo_key`.
 
-Each session keeps its newest 5 records and 3 snapshots; older ones are removed
-when a new one is written, and `horizon.json` records where the chain was cut so
-reads still verify it. Retrying the request ID of the most recently removed record
-returns `REQUEST_ID_EXPIRED` (see Known limits below).
+Records are state cards kept per (session, `payload.work_id`): each work of a
+session has its own chain in the session's `records/` dir, linked by
+`parent_record`, and a chain belongs to the work_id of its newest record (its head).
+The session's current card is the head written most recently (newest `recorded_at`;
+`current.json` breaks a tie). Each work chain keeps its newest 5 records and the
+session its newest 3 snapshots; older ones are removed when a new one is written,
+and `horizon.json` records where each chain was cut so reads still verify it (one
+id for a single cut chain, a list of ids when several work chains were cut).
+Retrying the request ID of the most recently removed record of any chain returns
+`REQUEST_ID_EXPIRED` (see Known limits below). Request IDs stay unique per session:
+reusing one for another work's content is `REQUEST_ID_REUSED`.
+
+Sessions written before per-work cards hold one chain whose records may carry
+several work_ids. They are read as they are, with no migration: that chain is the
+chain of its head's work_id, and the older works inside it have no chain of their
+own. The first write for the head's work continues it (`--expected` the head, as
+`status` reports); the first write for any other work starts a new chain
+(`--expected null`, as `status --work <work_id>` reports).
 
 ## Excluding workspaces
 
@@ -46,6 +60,12 @@ Output: expected (revision or null), checkpoint (complete current record or null
 facts (summary of the session's `facts.json`, or null before the first PreCompact)
 and template (all required fields). Read-only. SESSION_NOT_BOUND means fix the
 session startup/workspace configuration; do not fabricate binding files.
+
+`expected` and `checkpoint` belong to the session's current card. Add
+`--work "<work_id>"` to read that work's card instead (both null when the session
+has not recorded it). When the session has cards of other works, `other_works` lists
+them, most recently written first, as `work_id`, `phase`, `revision` and
+`recorded_at`; a session with a single work has no `other_works` field.
 
 `facts` holds `path` (the facts.json file), `updated_at`, `last_change_at`, `repos`
 (at most 5: `root`, `branch`, `dirty` listed/`dirty_total` uncommitted entries,
@@ -120,6 +140,8 @@ Keep each runtime call a single plain command: no heredoc, pipe, command
 substitution, env-var prefix or line continuation, because worktree guards refuse those.
 
 Use a new request ID for new content; retry the same ID only with identical content.
+`--expected` is the head of the payload's work chain: when switching to another
+work, read it with `status --work "<work_id>"` first.
 After REVISION_CONFLICT rerun status and reconcile. Never force an overwrite.
 Record approved plan, dispatch, results and changed decisions/blockers. Do not
 record after every tool call. Main owns records; workers report observations.
@@ -308,8 +330,10 @@ with nothing archivable is still removed.
 Known limits: `horizon.json` carries no checksum, so tampering with it can hide or
 remove records; a reader that overlaps a trim can see a transient
 `CORRUPT_RECORD`/`INCOMPLETE_CHAIN` that a retry clears; `REQUEST_ID_EXPIRED`
-covers the newest trimmed id and on-disk leftovers, while an older trimmed id
-reused against the current head records a new entry (the chain stays valid); submodules, bare-backed and
+covers the newest trimmed id of each chain and on-disk leftovers, while an older trimmed id
+reused against the current head records a new entry (the chain stays valid); a session
+with cards of several works cannot be read by a runtime older than per-work cards
+(`AMBIGUOUS_CHAIN`, or `CORRUPT_RECORD` once several chains were cut); submodules, bare-backed and
 separate-git-dir checkouts are refused (`REPO_KEY_UNRESOLVED`); Git older than
 2.31 is refused (`GIT_UNSUPPORTED`); on Windows without long-path support a long
 user or `PROVOST_HOME` path can exceed 260 characters.

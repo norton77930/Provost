@@ -329,7 +329,11 @@ CHAINS = {"record": "records", "snapshot": "snapshots"}
 
 
 def _horizon(directory):
-    """Newest trimmed id of each chain from horizon.json; both None without the file."""
+    """Horizon entry of each collection from horizon.json; both None without the file.
+
+    An entry is None, the newest trimmed id of the collection's one chain, or (records
+    of a session with several trimmed work chains) a list of such ids, one per chain.
+    """
     path = directory / "horizon.json"
     guard(handoff_home(), path)
     try:
@@ -338,19 +342,51 @@ def _horizon(directory):
         return dict.fromkeys(CHAINS.values())
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise StoreError("CORRUPT_RECORD") from exc
-    if (not isinstance(data, dict) or set(data) != set(CHAINS.values())
-            or any(v is not None and not (isinstance(v, str) and ID.fullmatch(v)) for v in data.values())):
+    if not isinstance(data, dict) or set(data) != set(CHAINS.values()):
         raise StoreError("CORRUPT_RECORD")
+    for value in data.values():
+        ids = value if isinstance(value, list) else [] if value is None else [value]
+        if (any(not (isinstance(v, str) and ID.fullmatch(v)) for v in ids)
+                or (isinstance(value, list) and (not value or len(set(value)) != len(value)))):
+            raise StoreError("CORRUPT_RECORD")
     return data
 
 
-def _chain(root, session, kind):
-    """(chain newest first, trimmed ids) for one session chain.
+def _horizon_ids(value):
+    """The horizon ids of one horizon.json entry."""
+    return [] if value is None else list(value) if isinstance(value, list) else [value]
 
-    Trimmed ids are the horizon and any of its ancestors still on disk (left by a
-    trim interrupted between the horizon write and the deletes); they take no part
-    in head selection. Only the oldest live object may miss its parent, and only
-    when that parent is the horizon.
+
+def _horizon_entry(ids):
+    """The horizon.json entry for ids: None, one id (the single-chain form), or a sorted list."""
+    return None if not ids else ids[0] if len(ids) == 1 else sorted(ids)
+
+
+def _recency(directory):
+    """Sort key of a record chain head: newest recorded_at first; the current.json hint breaks ties."""
+    index = directory / "current.json"
+    guard(handoff_home(), index)
+    hint = (_load(index) or {}).get("revision")
+
+    def key(head):
+        try:
+            when = _when(head.get("recorded_at"))
+        except StoreError:
+            when = datetime.min.replace(tzinfo=timezone.utc)
+        return when, head["revision"] == hint, head["revision"]
+    return key
+
+
+def _chains(root, session, kind):
+    """(chains, trimmed) of one session collection.
+
+    chains: lists of objects newest first, ordered by recency of their head. A
+    snapshot collection has at most one chain; a record collection has one per
+    work_id, named by its head's payload.work_id (a chain written before per-work
+    cards may hold older records of other works). trimmed: {horizon: [horizon and
+    its ancestors still on disk]} (left by a trim interrupted between the horizon
+    write and the deletes); they take no part in head selection. Only the oldest
+    live object of a chain may miss its parent, and only when that parent is a horizon.
     """
     root = as_workspace(root)
     home = handoff_home()
@@ -359,7 +395,7 @@ def _chain(root, session, kind):
     collection = directory / CHAINS[kind]
     guard(home, collection)
     guard(home, index)
-    horizon = _horizon(directory)[CHAINS[kind]]
+    horizons = _horizon_ids(_horizon(directory)[CHAINS[kind]])
     id_key = "revision" if kind == "record" else "snapshot_id"
     parent_key = "parent_record" if kind == "record" else "parent_snapshot"
     # Index files are hints, never authority: a completed object can outlive
@@ -371,71 +407,85 @@ def _chain(root, session, kind):
             if not ID.fullmatch(path.stem):
                 continue
             objects[path.stem] = _read(root, path, session, kind)
-    trimmed = []
-    if horizon is not None:
-        trimmed.append(horizon)
+    trimmed = {}
+    for horizon in horizons:
+        trimmed[horizon] = [horizon]
         node = objects.get(horizon)
         while node is not None:
             del objects[node[id_key]]
             node = objects.get(node.get(parent_key))
             if node is not None:
-                trimmed.append(node[id_key])
-        # A trim always keeps newer objects, the oldest of which names the horizon.
+                trimmed[horizon].append(node[id_key])
+    # A trim always keeps newer objects, the oldest of which names the horizon.
+    for horizon in horizons:
         if not any(obj.get(parent_key) == horizon for obj in objects.values()):
             raise StoreError("CORRUPT_RECORD")
     if not objects:
         return [], trimmed
     parents = {obj.get(parent_key) for obj in objects.values() if obj.get(parent_key)}
-    if parents - objects.keys() - {horizon}:
+    if parents - objects.keys() - set(horizons):
         raise StoreError("INCOMPLETE_CHAIN")
-    heads = set(objects) - parents
-    if len(heads) != 1:
+    heads = [objects[ident] for ident in set(objects) - parents]
+    names = [head["payload"]["work_id"] for head in heads] if kind == "record" else [None] * len(heads)
+    if not heads or len(set(names)) != len(names):
         raise StoreError("AMBIGUOUS_CHAIN")
-    chain, visited = [], set()
-    node = objects[heads.pop()]
-    while node:
-        ident = node[id_key]
-        if ident in visited:
-            raise StoreError("AMBIGUOUS_CHAIN")
-        visited.add(ident)
-        chain.append(node)
-        node = objects.get(node.get(parent_key))
+    chains, visited = [], set()
+    for node in heads:
+        chain = []
+        while node:
+            ident = node[id_key]
+            if ident in visited:  # a fork or a cycle
+                raise StoreError("AMBIGUOUS_CHAIN")
+            visited.add(ident)
+            chain.append(node)
+            node = objects.get(node.get(parent_key))
+        chains.append(chain)
     if len(visited) != len(objects):
         raise StoreError("AMBIGUOUS_CHAIN")
-    return chain, trimmed
+    if len(chains) > 1:
+        recency = _recency(directory)
+        chains.sort(key=lambda chain: recency(chain[0]), reverse=True)
+    return chains, trimmed
 
 
 def _head(root, session, kind):
-    chain, _ = _chain(root, session, kind)
-    return chain[0] if chain else None
+    chains, _ = _chains(root, session, kind)
+    return chains[0][0] if chains else None
 
 
 def _expired(root, session, kind, ident):
-    """Refuse an id that a trim already removed: rewriting it would resurrect it
-    below the horizon (or close a cycle with the oldest live object)."""
-    if _horizon(session_dir(root, session))[CHAINS[kind]] is not None and ident in _chain(root, session, kind)[1]:
+    """Refuse an id that a trim already removed from any chain: rewriting it would
+    resurrect it below a horizon (or close a cycle with the oldest live object)."""
+    if any(ident in ids for ids in _chains(root, session, kind)[1].values()):
         raise StoreError("REQUEST_ID_EXPIRED")
 
 
-def _trim(root, session, kind, keep):
-    """Under the session lock: drop live objects beyond `keep` and trimmed leftovers.
+def _trim(root, session, kind, keep, work_id=None):
+    """Under the session lock: drop live objects beyond `keep` and trimmed leftovers
+    of one chain (records: the chain of work_id; snapshots: the only chain).
 
-    The new horizon is written atomically before any delete, and deletes run
-    oldest first, so an interruption leaves the newest removed object (the
-    horizon) last; reads skip whatever remains and the next trim removes it.
+    The chain's new horizon replaces its old one in horizon.json, written atomically
+    before any delete, and deletes run oldest first, so an interruption leaves the
+    newest removed object (the horizon) last; reads skip whatever remains and the
+    chain's next trim removes it. Other chains and their horizons are untouched.
     Best effort: the new object is already durable, so a failed trim is left for
     the next write rather than failing this one.
     """
     directory = session_dir(root, session)
     collection = directory / CHAINS[kind]
+    id_key = "revision" if kind == "record" else "snapshot_id"
+    parent_key = "parent_record" if kind == "record" else "parent_snapshot"
     try:
-        chain, trimmed = _chain(root, session, kind)
-        surplus = [obj["revision" if kind == "record" else "snapshot_id"] for obj in chain[keep:]]
+        chains, trimmed = _chains(root, session, kind)
+        chain = next((c for c in chains if kind != "record" or c[0]["payload"]["work_id"] == work_id), [])
+        old = chain[-1].get(parent_key) if chain and chain[-1].get(parent_key) in trimmed else None
+        surplus = [obj[id_key] for obj in chain[keep:]]
         if surplus:
             horizon = _horizon(directory)
-            horizon[CHAINS[kind]] = surplus[0]
+            ids = [ident for ident in _horizon_ids(horizon[CHAINS[kind]]) if ident != old]
+            horizon[CHAINS[kind]] = _horizon_entry(ids + [surplus[0]])
             atomic_write(handoff_home(), directory / "horizon.json", horizon)
-        for ident in list(reversed(trimmed)) + list(reversed(surplus)):
+        for ident in list(reversed(trimmed.get(old, []))) + list(reversed(surplus)):
             path = collection / (ident + ".json")
             guard(handoff_home(), path)
             path.unlink(missing_ok=True)
@@ -443,8 +493,17 @@ def _trim(root, session, kind, keep):
         pass
 
 
-def current(root, session):
-    return _head(root, session, "record")
+def cards(root, session):
+    """The head card of each of the session's work chains, most recently written first."""
+    return [chain[0] for chain in _chains(root, session, "record")[0]]
+
+
+def current(root, session, work_id=None):
+    """The session's most recently written card, or with work_id the head card of that work (None if absent)."""
+    heads = cards(root, session)
+    if work_id is None:
+        return heads[0] if heads else None
+    return next((head for head in heads if head["payload"]["work_id"] == work_id), None)
 
 
 def latest(root, session):
@@ -467,7 +526,7 @@ def record(root, session, payload, expected, request_id, *, cursor=None, adopted
             if prior["payload"] != payload or prior.get("adopted_from") != adopted_from:
                 raise StoreError("REQUEST_ID_REUSED")
             return prior
-        previous = current(root, session)
+        previous = current(root, session, payload["work_id"])
         if expected != (previous["revision"] if previous else None):
             raise StoreError("REVISION_CONFLICT")
         data = _seal({"schema_version": 1, "kind": "record", "workspace_id": root.repo_key,
@@ -477,7 +536,7 @@ def record(root, session, payload, expected, request_id, *, cursor=None, adopted
                       "transcript_cursor": cursor, "adopted_from": adopted_from, "payload": copy.deepcopy(payload)})
         atomic_write(home, path, data)
         atomic_write(home, directory / "current.json", {"revision": revision})
-        _trim(root, session, "record", KEEP_RECORDS)
+        _trim(root, session, "record", KEEP_RECORDS, payload["work_id"])
         return data
 
 

@@ -36,6 +36,16 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   found no context-loss corrections; these were the only gaps against
   ctx-handoff-mod's handoff checklist.
 
+### Changed
+
+- Handoff records are state cards per (session, work_id) (#18): `record` checks
+  `--expected` against, appends to and trims (newest 5) only the chain of the
+  payload's work_id, so recording one work no longer overwrites another's. The
+  session's current card is its most recently written one; `status --work
+  <work_id>` reads another work's card and `status` lists the session's
+  `other_works`. Single-work sessions behave as before, and existing single-chain
+  sessions are read without migration (the chain belongs to its head's work_id).
+
 ### Fixed
 
 - Hooks run on macOS `/bin/bash` 3.2.
