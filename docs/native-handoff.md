@@ -558,14 +558,27 @@ entry with the newest `at`.
 
 Idempotent: all of one work's new entries go out in one write, so a candidate whose
 card revision already appears as `record` among the work's `migrated: true`
-entries was handled by an earlier run and is not imported again; as a secondary
-guard, neither is a decision whose text a migrated decision already has. A later
-chain link to an earlier import resolves by position among that card's migrated
-entries, else by (`record`, `claim`, `state`); when neither finds it the work fails
-with `MIGRATE_CHAIN_UNRESOLVED` and nothing is appended to it. Skipped candidates
-are counted under `already_migrated`, so a second `--apply` imports nothing (and
-makes no backup), also after a source card was trimmed (a surviving copy is the same
-card) or a migrated entry's text was rewritten.
+entries was handled by an earlier run and is not imported again. A high-water mark
+applies as well: a candidate whose card time is at or before the newest `at` among
+the work's migrated entries is not imported, because an earlier run already
+evaluated every source up to that time. This keeps a redacted entry from coming
+back through another card that restated it once the card it was imported from is
+trimmed. In consequence, a source that only becomes readable later with an older
+time (for example a repaired file) is not imported; an adopted schema 1 card (see
+below) has a newer time and is. As a further guard, a decision whose text a
+migrated decision already has is not imported again. A later chain link to an
+earlier import resolves by position among that card's migrated entries (kind and
+evidence state must match at every position), else by a (`record`, `claim`,
+`state`) that exactly one migrated entry has; when neither finds exactly one entry
+the work fails with `MIGRATE_CHAIN_UNRESOLVED` and nothing is appended to it.
+Skipped candidates are counted under `already_migrated`, so a second `--apply`
+imports nothing (and makes no backup), also after a source card was trimmed (a
+surviving copy is the same card) or a migrated entry was redacted. A work that
+failed in one run (for example `STORE_BUSY`) is imported by the next.
+
+Resuming a schema 1 snapshot after migrating creates a new schema 1 card, which the
+next `--apply` imports: its evidence states are `unverified`, chained onto the
+claims' migrated entries, and its restated decisions are deduplicated.
 
 Output: `applied`, `backup` (null unless something was imported), `works` and
 `skipped`. Each work lists `work_id`, `sources` (source files contributing to it),
