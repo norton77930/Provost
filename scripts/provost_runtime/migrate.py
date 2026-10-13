@@ -6,7 +6,8 @@ A dry run writes nothing; apply appends under each work's log lock, after backin
 that work's log under the same lock.
 
 A source stands for the card it holds: a snapshot or archive file carries its card's
-`recorded_at` and `revision`, so copies of one card share time and identity. Per work_id,
+`recorded_at` and `revision` (a snapshot is one source per card it holds), so copies of
+one card share time and identity. Per work_id,
 sources are read in time order (`recorded_at`; equal times: by parent_record descent,
 then records before snapshots before archive files, then path):
 - a decision is imported once per exact text, at its first occurrence (its time, session
@@ -17,10 +18,15 @@ then records before snapshots before archive files, then path):
 
 Idempotency: a work's candidates go out in one write, so a candidate whose card revision
 already appears as `record` among the work's `migrated: true` entries was handled by an
-earlier run and is not imported again. As a secondary guard, a decision whose text a
-migrated decision already has is not imported again either. A chain link to an earlier
-import resolves by position among that card's migrated entries, else by (record, claim,
-state); MIGRATE_CHAIN_UNRESOLVED when neither finds it.
+earlier run and is not imported again. Neither is a candidate whose card time is at or
+before the newest `at` among the work's migrated entries (the high-water mark: an earlier
+run evaluated every source up to it, so restatements of a since redacted entry stay out),
+nor a decision whose text a migrated decision already has. A chain link to an earlier
+import resolves by position among that card's migrated entries (kind and state must match
+at every position), else by a unique (record, claim, state); MIGRATE_CHAIN_UNRESOLVED
+when neither finds exactly one entry. A work whose log holds a redacted migrated entry
+(`migrated: true` with `redacted_at`) is not migrated any more (REDACTED_ENTRIES): with
+the original text gone, no guard could keep a restatement of it out.
 """
 import hashlib
 import json
@@ -31,7 +37,7 @@ from datetime import datetime, timezone
 from .config import handoff_home
 from .store import (CHAINS, ID, LOG_ENTRY_ID, LOG_KINDS, LOG_SCHEMA, STAGING, StoreError, _archive_path, _base,
                     _log_lock, _log_paths, _parse_log, _read, _valid_decision, _valid_evidence, _when, as_workspace,
-                    digest, encoded, guard, read_log, storage_ready, validate_payload)
+                    digest, encoded, guard, read_log, snapshot_cards, storage_ready, validate_payload)
 
 SOURCE_RANK = {"record": 0, "snapshot": 1, "archive": 2}
 BAD_SOURCE = (StoreError, OSError, UnicodeError, ValueError, TypeError, KeyError, AttributeError)
@@ -61,15 +67,16 @@ def _card_source(data, kind, rel, session):
                   data["revision"], data.get("parent_record"), data["payload"])
 
 
-def _session_source(ws, home, path, name, kind, rel):
-    """The schema 1 source of a record or snapshot file (None for schema 2); StoreError when invalid."""
+def _session_sources(ws, home, path, name, kind, rel):
+    """The schema 1 sources of a record file or of every card a snapshot holds; StoreError when invalid."""
     guard(home, path)
     raw = json.loads(path.read_text(encoding="utf-8"))
     session = raw.get("session_id") if isinstance(raw, dict) else None
     if not isinstance(session, str) or digest(session) != name:
         raise StoreError("RECORD_IDENTITY_MISMATCH")
     data = _read(ws, path, session, kind)
-    return _card_source(data, kind, rel, session) if data["schema_version"] == 1 else None
+    held = snapshot_cards(data) if kind == "snapshot" else [data]
+    return [_card_source(card, kind, rel, session) for card in held if card["schema_version"] == 1]
 
 
 def _archive_source(ws, home, path, rel):
@@ -123,12 +130,9 @@ def sources(ws):
                     continue
                 rel = rel_dir + "/" + path.name
                 try:
-                    source = _session_source(ws, home, path, name, kind, rel)
+                    found += _session_sources(ws, home, path, name, kind, rel)
                 except BAD_SOURCE as exc:
                     skipped.append({"file": rel, "reason": _reason(exc)})
-                    continue
-                if source is not None:
-                    found.append(source)
     for path in listing("archive", base / "archive"):
         rel = "archive/" + path.name
         try:
@@ -192,21 +196,31 @@ def _evidence_key(entry):
     return entry.get("record"), entry["claim"], entry["state"]
 
 
+def _shape(entry):
+    """What position-wise resolution compares: kind, and an evidence entry's state (kept by redaction)."""
+    return entry["kind"], entry.get("state")
+
+
 def new_entries(logged, items):
     """(entries of items not yet imported, count already imported); ids continue after the log's highest."""
     migrated = [entry for entry in logged if entry.get("migrated") is True]
+    if any("redacted_at" in entry for entry in migrated):
+        # Its original text is gone, so no guard can tell a restatement of it apart: stop here.
+        raise StoreError("REDACTED_ENTRIES")
     done, keys = {}, {}
     for entry in migrated:
         done.setdefault(entry.get("record"), []).append(entry)
         if entry["kind"] == "evidence":
-            keys.setdefault(_evidence_key(entry), entry["id"])
+            keys.setdefault(_evidence_key(entry), []).append(entry["id"])
     texts = {entry["text"] for entry in migrated if entry["kind"] == "decision"}
+    # High-water mark: an earlier run evaluated every source up to its newest imported time.
+    mark = max((_when(entry["at"]) for entry in migrated), default=None)
     ids, groups = {}, {}  # ids: candidate index -> logged id
     for index, item in enumerate(items):
         groups.setdefault(item["entry"]["record"], []).append(index)
     for record, indexes in groups.items():
         imported = done.get(record, [])
-        if [entry["kind"] for entry in imported] == [items[i]["kind"] for i in indexes]:
+        if [_shape(entry) for entry in imported] == [_shape(items[i]["entry"]) for i in indexes]:
             ids.update((i, entry["id"]) for i, entry in zip(indexes, imported))
     last = {"D": 0, "E": 0}
     for entry in logged:
@@ -215,16 +229,20 @@ def new_entries(logged, items):
     new, already = [], 0
     for index, item in enumerate(items):
         entry = item["entry"]
-        if entry["record"] in done or (item["kind"] == "decision" and entry["text"] in texts):
+        if (entry["record"] in done or (mark is not None and _when(entry["at"]) <= mark)
+                or (item["kind"] == "decision" and entry["text"] in texts)):
             already += 1
             continue
         letter = LOG_KINDS[item["kind"]]
         last[letter] += 1
         created = {"id": letter + str(last[letter]), **entry}
         if item["prev"] is not None:
-            target = ids.get(item["prev"]) or keys.get(_evidence_key(items[item["prev"]]["entry"]))
+            target = ids.get(item["prev"])
             if target is None:
-                raise StoreError("MIGRATE_CHAIN_UNRESOLVED")
+                found = keys.get(_evidence_key(items[item["prev"]]["entry"]), [])
+                if len(found) != 1:  # missing or ambiguous: never guess a link
+                    raise StoreError("MIGRATE_CHAIN_UNRESOLVED")
+                target = found[0]
             created["updates"] = target
         ids[index] = created["id"]
         new.append(created)

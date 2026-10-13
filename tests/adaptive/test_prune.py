@@ -51,16 +51,20 @@ def age_activity(directory, days):
 
 def backdate(directory, days):
     """Move every activity stamp of a session dir days into the past: stored and file
-    mtimes of records/snapshots, and the session-level files' mtimes. Stored stamps
-    keep their order and the files stay checksum-valid."""
+    mtimes of records/snapshots (and of the other cards a snapshot holds), and the
+    session-level files' mtimes. Stored stamps keep their order and the files stay checksum-valid."""
     from provost_runtime.store import _seal
+
+    def shift(data, keys):
+        data = {k: v for k, v in data.items() if k != "checksum"}
+        for key in keys:
+            data[key] = (datetime.fromisoformat(data[key]) - timedelta(days=days)).isoformat()
+        if "other_cards" in data:
+            data["other_cards"] = [shift(card, ("recorded_at",)) for card in data["other_cards"]]
+        return _seal(data)
     for kind, keys in (("records", ("recorded_at",)), ("snapshots", ("recorded_at", "captured_at"))):
         for path in (directory / kind).glob("*.json"):
-            data = json.loads(path.read_text(encoding="utf-8"))
-            data.pop("checksum", None)
-            for key in keys:
-                data[key] = (datetime.fromisoformat(data[key]) - timedelta(days=days)).isoformat()
-            path.write_text(json.dumps(_seal(data)), encoding="utf-8")
+            path.write_text(json.dumps(shift(json.loads(path.read_text(encoding="utf-8")), keys)), encoding="utf-8")
             age(path, days)
     age_activity(directory, days)
 

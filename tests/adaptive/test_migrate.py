@@ -22,12 +22,16 @@ class MigrateTests(FixtureCase):
         env.pop("PROVOST_PYTHON", None)
         return env
 
-    def migrate(self, *args, code=0):
-        result = subprocess.run([BASH, str(RUNTIME), "migrate", "--workspace", str(self.root), *args],
+    def runtime(self, command, *args, code=0):
+        """Parsed JSON output of `bash hooks/runtime <command> --workspace <root> <args>`."""
+        result = subprocess.run([BASH, str(RUNTIME), command, "--workspace", str(self.root), *args],
                                 capture_output=True, text=True, encoding="utf-8", env=self.env(), timeout=60)
         out = json.loads(result.stdout or "null")
         self.assertEqual(result.returncode, code, (out, result.stderr))
         return out
+
+    def migrate(self, *args, code=0):
+        return self.runtime("migrate", *args, code=code)
 
     def card(self, session, work, decisions=(), evidence=(), step="next", request_id=None):
         """Write a schema 1 card on the session's chain of work; returns the stored record."""
@@ -63,13 +67,13 @@ class MigrateTests(FixtureCase):
         self.card("s1", "A", ["Keep the parser API because callers pin it", "Split the lexer out"],
                   [self.evidence("suite green", "pass-observed")])
         self.card("s1", "B", ["Use one lock per work"])
-        store.snapshot(self.root, "s1", "e1")  # copies the card of B
+        store.snapshot(self.root, "s1", "e1")  # copies the open cards of B and A
         self.card("s2", "A", ["Split the lexer out", "Ship behind a flag"])
         before, tree = self.files(), self.tree()
         out = self.migrate()
         self.assertEqual((out["applied"], out["backup"], out["skipped"]), (False, None, []))
         self.assertEqual(self.works(out), {
-            "A": {"sources": 3, "decisions": 3, "evidence": 2, "already_migrated": 0},
+            "A": {"sources": 4, "decisions": 3, "evidence": 2, "already_migrated": 0},
             "B": {"sources": 2, "decisions": 1, "evidence": 0, "already_migrated": 0}})
         self.assertEqual((self.files(), self.tree()), (before, tree))
 
@@ -315,3 +319,99 @@ class MigrateTests(FixtureCase):
         self.migrate("--apply")
         self.assertEqual(self.chain(), [("E1", "fail", None, "s1", parent["revision"]),
                                         ("E2", "pass-observed", "E1", "s1", child["revision"])])
+
+    def test_a_rewritten_decision_restated_by_an_older_surviving_card_is_not_imported_again(self):
+        self.card("s1", "A", ["Decision edited by hand later"])
+        self.card("s2", "A", ["Decision edited by hand later"])  # restates it: run 1 imports nothing from it
+        self.card("s1", "A", ["Later decision"])
+        self.migrate("--apply")
+        self.rewrite_log(lambda entries: [dict(e, text="edited") if e["id"] == "D1" else e for e in entries])
+        for _ in range(4):
+            self.card("s1", "A")  # trims the card the decision was imported from
+        self.assertRerunImportsNothing()  # the high-water mark keeps the older restatement out
+
+    def test_a_work_with_a_redacted_migrated_entry_is_no_longer_migrated(self):
+        secret = "Decision quoting ghp_" + "x" * 30
+        self.card("s1", "A", [secret])
+        self.card("s1", "A", ["Later decision"])
+        self.card("s2", "A", [secret])  # the newest card only restates: the high-water mark does not cover it
+        self.card("s1", "B", ["Decision of B"])
+        self.migrate("--apply")
+        self.assertEqual([e["text"] for e in self.log("A")], [secret, "Later decision"])
+        self.assertTrue(self.runtime("redact", "--work", "A", "--entry", "D1")["changed"])
+        for _ in range(4):
+            self.card("s1", "A")  # trims the card the decision was imported from
+        self.card("s1", "B", ["Another decision of B"])
+        path, _ = store._log_paths(store.as_workspace(self.root), "A")
+        before = path.read_bytes()
+        for args in ((), ("--apply",)):
+            out = self.migrate(*args)
+            self.assertEqual(self.works(out)["A"], {"sources": 2, "error": "REDACTED_ENTRIES"})
+        self.assertEqual(self.works(out)["B"]["decisions"], 1)  # other works continue
+        self.assertEqual(path.read_bytes(), before)
+        self.assertNotIn(b"ghp_", before)
+
+    def test_a_work_left_busy_by_one_run_is_imported_by_the_next(self):
+        from unittest import mock
+        from provost_runtime import migrate
+        self.card("s1", "A", ["Decision of A"])
+        self.card("s1", "B", ["Decision of B"], [self.evidence("b claim", "fail")])
+        _, lock = store._log_paths(store.as_workspace(self.root), "B")
+        lock.parent.mkdir(parents=True)
+        with mock.patch.object(store, "LOG_LOCK_WAIT", 0.2), store._locked(lock):
+            first = migrate.migrate(self.root, apply=True)
+        self.assertEqual((self.works(first)["A"]["decisions"], self.works(first)["B"]),
+                         (1, {"sources": 1, "error": "STORE_BUSY"}))
+        self.assertEqual(self.log("B"), [])
+        again = self.migrate("--apply")
+        self.assertEqual(self.works(again), {
+            "A": {"sources": 1, "decisions": 0, "evidence": 0, "already_migrated": 1},
+            "B": {"sources": 1, "decisions": 1, "evidence": 1, "already_migrated": 0}})
+        self.assertEqual([e["id"] for e in self.log("A") + self.log("B")], ["D1", "D1", "E1"])
+
+    def adopt(self, session="s9"):
+        """Resume s1's current card from its newest snapshot into session: a new schema 1 card with evidence
+        unverified. The snapshot holds every open card of s1, so the work is named."""
+        snap = store.snapshot(self.root, "s1", "adopt-%d" % next(self.requests))
+        return store.resume(self.root, session, snap["snapshot_id"], [snap["payload"]["work_id"]])
+
+    def test_an_adopted_schema_1_card_is_imported_by_the_next_apply(self):
+        first = self.card("s1", "A", ["Decision before adoption"], [self.evidence("claim", "pass-observed")])
+        self.migrate("--apply")
+        adopted = self.adopt()
+        self.assertEqual(adopted["schema_version"], 1)
+        out = self.migrate("--apply")
+        # Sources: the card, the snapshot resume read (same card), and the adopted card.
+        self.assertEqual(self.works(out)["A"], {"sources": 3, "decisions": 0, "evidence": 1, "already_migrated": 2})
+        self.assertEqual(self.chain(), [("E1", "pass-observed", None, "s1", first["revision"]),
+                                        ("E2", "unverified", "E1", "s9", adopted["revision"])])
+
+    def rewrite_log(self, change, work="A"):
+        """Rewrite the entries of a work's log through change(entries) -> entries (a hand edit)."""
+        path, _ = store._log_paths(store.as_workspace(self.root), work)
+        header, *lines = path.read_bytes().splitlines()
+        entries = change([json.loads(line) for line in lines])
+        path.write_bytes(b"".join(line + b"\n" for line in [header] + [store.encoded(e) for e in entries]))
+
+    def test_a_link_falls_back_to_a_unique_record_claim_and_state(self):
+        self.card("s1", "A", ["Decision of the card"], [self.evidence("claim", "fail")])
+        self.migrate("--apply")
+        self.rewrite_log(lambda entries: [e for e in entries if e["kind"] == "evidence"])  # position no longer matches
+        adopted = self.adopt()
+        self.migrate("--apply")
+        self.assertEqual(self.chain(), [("E1", "fail", None, "s1", self.log("A")[0]["record"]),
+                                        ("E2", "unverified", "E1", "s9", adopted["revision"])])
+        self.assertEqual([e["kind"] for e in self.log("A")], ["evidence", "evidence"])  # the decision stays out
+
+    def test_an_ambiguous_link_fails_the_work_with_migrate_chain_unresolved(self):
+        self.card("s1", "B", ["Decision of B"])
+        self.card("s1", "A", ["Decision of the card"], [self.evidence("claim", "fail")])  # s1's current card
+        self.migrate("--apply")
+        self.rewrite_log(lambda entries: entries + [dict(entries[-1], id="E2")])  # two matches for one key
+        path, _ = store._log_paths(store.as_workspace(self.root), "A")
+        before = path.read_bytes()
+        self.adopt()
+        out = self.migrate("--apply")
+        self.assertEqual(self.works(out)["A"], {"sources": 3, "error": "MIGRATE_CHAIN_UNRESOLVED"})
+        self.assertEqual(self.works(out)["B"]["already_migrated"], 1)
+        self.assertEqual(path.read_bytes(), before)
