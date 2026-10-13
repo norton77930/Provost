@@ -304,7 +304,10 @@ decisions), its checkpoint line labelled `Checkpoint (old format, not migrated)`
 A schema 2 card whose work has no decision log yet falls back to the newest schema 1
 card of the same work chain in this session: its decisions and open evidence are
 shown labelled `not migrated` with that card's path; without such a card the section
-says the log has no entries yet. An unreadable decision log (for example `CORRUPT_LOG`) never breaks the
+says the log has no entries yet (schema 1 cards of other works in the same chain are
+never used). The card payload, other-work lines, decisions and evidence are passed
+through the same secret redaction as search; each decision or evidence line is capped
+at 400 characters and a work_id in a section title at 80. An unreadable decision log (for example `CORRUPT_LOG`) never breaks the
 injection: one line names the error code and every other section is kept.
 
 The save status names a genuine failure as `previous handoff save failed; verify

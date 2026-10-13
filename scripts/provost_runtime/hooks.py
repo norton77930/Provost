@@ -6,6 +6,7 @@ from pathlib import Path
 from . import facts
 from .config import ConfigError, handoff_home, load_config, resolve_mode, workspace_key
 from .notifications import PARTIAL, notice
+from .search import redact
 from .store import (CACHE_SESSION, FACTS_MARKER, StoreError, _base, _chains, as_workspace, atomic_write, current,
                     digest, guard, latest, locate, newest_entries, read_log, session_dir, snapshot, storage_ready)
 
@@ -19,6 +20,8 @@ RECOVERY_COMMITS = 3              # newest commits listed per repo since the las
 RECOVERY_LINE_LIMIT = 300         # per-repo commit line cap; also per other-work line
 RECOVERY_DECISIONS = 15           # newest non-superseded decisions of the current work, filled newest first
 RECOVERY_NEXT_LIMIT = 160         # next step cap in an other-work line
+RECOVERY_ITEM_LIMIT = 400         # per decision or evidence line, so one huge entry cannot empty its section
+RECOVERY_WORK_ID_LIMIT = 80       # work_id cap in section titles and count lines
 PARTIAL_STATUS = ("Save status: the last compaction saved facts only. Before continuing, write a decision record "
                   "from the compaction summary: run status (it prefills facts and template.sources), then record.")
 NEVER_RECORDED = ("No handoff checkpoint: this session has not recorded yet; continue from the compact summary "
@@ -184,7 +187,7 @@ def _recovery(root, session, chains=None):
             + "\nTranscript cursor: " + ("available (not a freshness guarantee)" if data.get("transcript_cursor") else "unavailable; gaps must be checked")
             + "\nRead this JSON file for the complete checkpoint.\n"
             + "If any assignment is not marked completed, verify that worker's actual state before dispatching; "
-            + "read the checkpoint file for full details.\n"), data["payload"], path, data
+            + "read the checkpoint file for full details.\n"), redact(data["payload"]), path, data
 
 
 def _never_recorded(root, session):
@@ -208,10 +211,20 @@ def _other_works(chains):
     if not others:
         return []
     lines = ["Other open works in this session (status --work <work_id> shows a card):"]
-    lines += [_clip("- %s [%s] next: %s" % (p["work_id"], p["phase"], _clip(p["next"], RECOVERY_NEXT_LIMIT)),
+    lines += [_clip(redact("- %s [%s] next: %s" % (p["work_id"], p["phase"], _clip(p["next"], RECOVERY_NEXT_LIMIT))),
                     RECOVERY_LINE_LIMIT) for p in others]
     return ["\n".join(lines), "Other open works in this session: %d, omitted for size; status lists them "
                               "as other_works." % len(others)]
+
+
+def _work_name(work):
+    """A work_id as shown in titles: redacted and capped, so the final budget clip never cuts an item."""
+    return _clip(redact(work), RECOVERY_WORK_ID_LIMIT)
+
+
+def _item(line):
+    """One decision or evidence line: redacted, then capped to RECOVERY_ITEM_LIMIT."""
+    return _clip(redact(line), RECOVERY_ITEM_LIMIT)
 
 
 def _decision_line(entry):
@@ -220,13 +233,13 @@ def _decision_line(entry):
         extra += " [refs: " + ", ".join(entry["refs"]) + "]"
     if entry.get("supersedes"):
         extra += " [replaces " + entry["supersedes"] + "]"
-    return "- %s (%s) %s%s" % (entry["id"], entry["at"][:10], entry["text"], extra)
+    return _item("- %s (%s) %s%s" % (entry["id"], entry["at"][:10], entry["text"], extra))
 
 
 def _evidence_line(item):
     """A log evidence entry (with id) or a schema 1 evidence item (without)."""
-    return "- %s[%s] %s (ref: %s)" % (item["id"] + " " if "id" in item else "", item["state"], item["claim"],
-                                      item["ref"])
+    return _item("- %s[%s] %s (ref: %s)" % (item["id"] + " " if "id" in item else "", item["state"],
+                                            item["claim"], item["ref"]))
 
 
 def _evidence_variants(title, items, passed):
@@ -273,26 +286,29 @@ def _work_sections(root, session, chains, checkpoint):
     if checkpoint is None or checkpoint.get("schema_version") == 1:
         return others, [], []
     work = checkpoint["payload"]["work_id"]
+    name = _work_name(work)
     try:
         entries = read_log(root, work)
     except (StoreError, OSError) as exc:
         code = str(exc) if isinstance(exc, StoreError) else "READ_FAILED"
         return others, [], ["Decision log of work %s could not be read (%s): its decisions and open evidence are "
-                            "not shown; status --work <work_id> reports the error." % (work, code)]
+                            "not shown; status --work <work_id> reports the error." % (name, code)]
     if entries:
         decisions, total, pending, passed = _log_state(entries)
-        return (others, _evidence_variants("Open evidence of work " + work, pending, passed),
-                _decision_variants("Decisions of work " + work, [_decision_line(e) for e in decisions], total))
+        return (others, _evidence_variants("Open evidence of work " + name, pending, passed),
+                _decision_variants("Decisions of work " + name, [_decision_line(e) for e in decisions], total))
     chain = next((c for c in chains if c[0]["payload"]["work_id"] == work), [])
-    old = next((card for card in chain if card.get("schema_version") == 1), None)
+    # A chain written before per-work cards may also hold older cards of other works.
+    old = next((card for card in chain if card.get("schema_version") == 1 and card["payload"]["work_id"] == work),
+               None)
     if old is None:
-        return others, [], ["Decision log of work %s: no entries yet." % work]
+        return others, [], ["Decision log of work %s: no entries yet." % name]
     path = session_dir(root, session) / "records" / (old["revision"] + ".json")
     label = " (not migrated: no decision log yet; from its old-format card %s)" % path
     evidence, decisions = old["payload"]["evidence"], old["payload"]["decisions"]
     pending = [item for item in evidence if item["state"] != "pass-observed"]
-    return (others, _evidence_variants("Open evidence of work " + work + label, pending, len(evidence) - len(pending)),
-            _decision_variants("Decisions of work " + work + label, ["- " + text for text in decisions],
+    return (others, _evidence_variants("Open evidence of work " + name + label, pending, len(evidence) - len(pending)),
+            _decision_variants("Decisions of work " + name + label, [_item("- " + text) for text in decisions],
                                len(decisions)))
 
 
