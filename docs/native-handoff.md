@@ -77,8 +77,8 @@ Entries logged by an interrupted request that is never replayed stay in the log.
 Cards have `schema_version` 2 and no `decisions`/`evidence` fields; they carry
 `log_entries`, the ids the record appended. Cards of schema 1 (written before the
 decision log) stay readable as they are, with their decisions and evidence, and a
-work's chain may mix both versions. Resuming a schema 1 snapshot adopts it as a
-schema 1 card; resume never writes to the log.
+work's chain may mix both versions. Resuming a schema 1 card a snapshot holds
+adopts it as a schema 1 card; resume never writes to the log.
 
 Sessions written before per-work cards hold one chain whose records may carry
 several work_ids. They are read as they are, with no migration: that chain is the
@@ -200,8 +200,11 @@ Write UTF-8 JSON with Write/Edit to an allowed scratch file, for example:
 Then record it with a single-line command:
 
 ```bash
-bash "<runtime>/hooks/runtime" record --workspace "<root>" --session "<session>" --expected "<revision-or-null>" --request-id "<unique-milestone-id>" --input "<payload-file>"
+bash "<runtime>/hooks/runtime" record --workspace "<root>" --session "<session>" --expected "<revision-or-null>" --request-id "<unique-milestone-id>" [--join] --input "<payload-file>"
 ```
+
+`--join` is only for a first record of a work that other sessions have logged (see
+Joining work below); leave it out otherwise.
 
 Keep each runtime call a single plain command: no heredoc, pipe, command
 substitution, env-var prefix or line continuation, because worktree guards refuse those.
@@ -313,14 +316,18 @@ refused with `JOIN_REQUIRED`, whether or not the record has entries. A session t
 already has a card of the work (written earlier or adopted, the card `--expected`
 names) has joined it: later records need no flag, and `--join` on them changes
 nothing. A work whose log holds only this session's entries, or none, needs no join.
-Two sessions starting the same new work at once are serialized by the log lock: the
-first to append wins, and the other is refused unless it joins.
+Sessions that start the same new work at once with records that have entries are
+serialized by the log lock: the first to append wins, and the others are refused unless
+they join. Records without entries, and works with no log yet, are not serialized: two
+such first writes can both succeed, and only `CONCURRENT_SESSION` reports the overlap.
+An exact replay of a record whose card was already written needs no `--join`.
 
 Joining does not lock anyone out: `CONCURRENT_SESSION` warns while another session's
 card of the work is under 120 minutes old.
 
-A card with phase `done` closes its work: the work is closed while its newest card
-across sessions is done. Any later record of the work with another phase reopens it,
+A card with phase `done` (ignoring case and surrounding whitespace, so `Done` and
+` done ` count) closes its work: the work is closed while its newest card across
+sessions is done. Any later record of the work with another phase reopens it,
 with a `REOPENED` warning; a closed work's log is kept like any other.
 
 ## Search past decisions
@@ -340,7 +347,7 @@ the store home. Like `list`, it needs handoff enabled for the workspace
 
 The corpus is every entry of every decision log of the repo (`logs/*.jsonl`), each
 session's newest valid record **per work_id** (a session that worked on several works
-contributes one card for each), every valid snapshot, and every valid file in
+contributes one card for each), every card each valid snapshot holds, and every valid file in
 `archive/`. A log is read header first: its header must name this repo and a `work_id`
 whose digest is the file name, and every entry must parse (under "Where records live"). A log
 that fails (`FOREIGN_REPO`, `CORRUPT_LOG`, a name that does not match its header) and
@@ -380,7 +387,11 @@ entries.)
 
 `--show <ref>` returns one hit in full. Refs of record, snapshot and archive results are
 opaque (`r:`, `s:` or `a:` prefix) and returned as before: the full `payload` with
-`ref`, `source`, `recorded_at`, `worktree_path`, `work_id` and `phase`. A log entry's
+`ref`, `source`, `recorded_at`, `worktree_path`, `work_id` and `phase`. A snapshot ref
+names the snapshot's current card; each other card it holds has its own ref, the
+snapshot ref plus `:` and the first 12 characters of that card's revision. The suffix
+form is matched against every card the snapshot holds, the current one included;
+a prefix matching several is `REF_AMBIGUOUS`. A log entry's
 ref is `<work_id>:<entry id>`, for example `hook-perf:D2` (the entry id is the part after
 the last `:`, so a work_id may contain colons). Outside the workspace's repo (with
 `--all-repos`) it carries the repo dir as a prefix, `@<repo dir>:<work_id>:<entry id>`,
@@ -418,13 +429,70 @@ success. For continuation: select exact work/workspace; error entries are not
 usable candidates. Ask when multiple candidates remain. Same-session compact or
 resume already supplies observations: do not adopt that session into itself.
 
+A snapshot (explicit `snapshot` or PreCompact) holds every open card of the
+session: the head card of each work chain whose phase is not `done`, most recently
+written first. When no card is open it holds the session's current card alone, so a
+snapshot is never empty. The snapshot file is a copy of the first held card (its
+`schema_version`, `revision`, `recorded_at`, `payload` and the rest of the record)
+plus `snapshot_id`, `captured_at`, `parent_snapshot`, `snapshot_version: 2` and
+`other_cards`: the other held cards, each exactly as stored in `records/` (sealed,
+with its own checksum). The top-level copy marks the snapshot's current card.
+Snapshots written before multi-card snapshots have neither `snapshot_version` nor
+`other_cards` and hold their one card; every reader accepts both. A snapshot whose
+`other_cards` are not cards of the same repo and session, one per work_id, is
+unreadable (`CORRUPT_RECORD` or `RECORD_IDENTITY_MISMATCH`) like any other damaged
+snapshot, as is one with `other_cards` but no `snapshot_version` or with a
+`snapshot_version` below 2. A `snapshot_version` above 2 (written by a newer runtime)
+is read as its current card only: its `other_cards` are ignored, not checked.
+
+`list` returns, per snapshot, `snapshot_id`, `session_id`, `captured_at`,
+`parent_snapshot`, the current card's `work_id` and `phase`, and `works`: every
+held card as `{work_id, phase, recorded_at, revision}`, current card first. A
+snapshot of a newer `snapshot_version` also has a `note` saying only its current card
+is read.
+
+`resume --from <snapshot-id>` adopts the snapshot's only card. When the snapshot
+holds several, it adopts nothing and fails with `WORK_CHOICE_REQUIRED`, returning
+`snapshot_id` and `choices` (`work_id`, `phase`, `next`, `recorded_at` per held card,
+current first): ask which works to continue, then run it again with one
+`--work "<work_id>"` per work to adopt (repeatable; only `resume` accepts more than
+one). A named work the snapshot does not hold is `WORK_NOT_IN_SNAPSHOT` (with the same
+`choices`). One adopted work returns its new card; several return `adopted_from` and
+`cards` (in the snapshot's order); `reconciliation` follows either way. Each adopted
+work starts its own chain in the new session: assignments are marked
+`needs-verification`, a schema 1 card's evidence `unverified`, nothing is written to
+any decision log, and the card records `adopted_from` (the snapshot id) and
+`adopted_at` (the adoption time). The adopted works keep the snapshot's order, so its
+most recently written chosen card becomes the session's current card. Adopting into
+the snapshot's own session is `SAME_SESSION_ADOPTION`; naming a work the session
+already has a chain for is `REVISION_CONFLICT` with that `work_id`. Existing chains
+are checked for every named work before any is adopted, so a conflict that exists
+when resume starts adopts nothing. A record of a named work written concurrently
+(`REVISION_CONFLICT` with its `work_id`) or a busy session lock (`STORE_BUSY`) can
+stop resume after some works were adopted: replaying the same resume (same snapshot,
+same `--work` set) returns the cards already adopted and adopts the rest. Replaying a
+completed resume returns the cards it adopted. Error results quote card text
+(`choices`) through the same secret redaction as search.
+
+`adopted_at` is the join marker of an adopted work: every later card of that chain
+inherits it (a card that was not adopted has none), so it survives trimming.
+Adoption counts as joining the adopted works: a later join check reads a session's
+head card of the work and treats `adopted_at` as joined, needing no `--join`.
+
 Verify current sources, affected evidence and worker ownership before dispatch.
 A closed ticket and recorded running worker are observations, not proof of
 completion or current ownership. Do not duplicate uncertain live work.
 
 SessionStart context stays within 8,000 characters (Claude Code replaces a larger
 one with a 2 KB preview) and never fails for its size. Startup, clear and fork
-carry identity, operations and the new-work notice only. Compact and resume add,
+carry identity, operations and the new-work notice, plus a menu of joinable works:
+up to 5 works of the repository whose newest card is not `done` (from `work_states`,
+across all sessions), newest card first, one line each with the work_id (cut to 80
+characters), phase, last update (UTC) and the first 8 characters of the session that
+wrote that card, then a hint to continue with `/handoff resume <snapshot-id>` or to
+record the work_id with `--join` on the first write. The menu is redacted and loads no
+card content, decisions or evidence; it is omitted without error when the store cannot
+be read. Compact and resume add,
 in priority order: the save status with the required action (after a facts-only
 save: write a record from the compaction summary; status prefills facts and
 `template.sources`), the facts summary (one line per repo, at most 5: branch,
@@ -436,7 +504,10 @@ full, or its digest when over 4,500 characters), one line per other open card of
 session (`work_id`, phase and next step cut to 160 characters; a card with phase
 `done` is closed and not listed), the open evidence of the current work (the newest
 entry of each claim chain linked by `updates` whose state is not `pass-observed`,
-oldest first, plus `Passed claims: N`), the current work's decisions (the newest 15
+oldest first, plus `Passed claims: N`; on an adopted card, see `adopted_at` above, a
+claim whose newest entry is `pass-observed` with an `at` before the adoption time is
+listed after the open ones as `[passed before adoption, not re-verified]` and not
+counted as passed), the current work's decisions (the newest 15
 that no entry supersedes, ordered by `at` then log order and listed oldest first,
 with id, date, text, refs and the id each replaces), the activity since the last record, and the edited repo
 files, most recent first (at most 10, then `N more not listed` with the facts.json
@@ -466,7 +537,9 @@ A schema 2 card whose work has no decision log yet falls back to the newest sche
 card of the same work chain in this session: its decisions and open evidence are
 shown labelled `not migrated` with that card's path; without such a card the section
 says the log has no entries yet (schema 1 cards of other works in the same chain are
-never used). The card payload, other-work lines, decisions and evidence are passed
+never used). A session with no record left falls back to its newest snapshot: the
+snapshot's current card is the checkpoint and its other open cards are the
+other-work lines. The card payload, other-work lines, decisions and evidence are passed
 through the same secret redaction as search; each decision or evidence line is capped
 at 400 characters and a work_id in a section title at 80. An unreadable decision log (for example `CORRUPT_LOG`) never breaks the
 injection: one line names the error code and every other section is kept.
@@ -493,8 +566,8 @@ current, and the next fold where git answers clears `error`. A repo with no prev
 entry gets `branch` null, no dirty entries and no commits. Kept dirty entries never
 date a change; `last_change_at` keeps the previous value plus what this fold read.
 
-PreCompact folds the facts spool into facts.json and snapshots an existing record,
-without a model call. Without a record the save is partial ("decision record
+PreCompact folds the facts spool into facts.json and snapshots the session's open
+cards (see Explicit save and resume) when it has a record, without a model call. Without a record the save is partial ("decision record
 missing"), never an empty snapshot; a record older than the latest change is
 partial-stale. The fold and these save levels apply only to a session with the
 enablement marker `<provost dir>/cache/facts/<session_id>.enabled`, which the
@@ -577,7 +650,15 @@ remove records; a reader that overlaps a trim can see a transient
 covers the newest trimmed id of each chain and on-disk leftovers, while an older trimmed id
 reused against the current head records a new entry (the chain stays valid); a session
 with cards of several works cannot be read by a runtime older than per-work cards
-(`AMBIGUOUS_CHAIN`, or `CORRUPT_RECORD` once several chains were cut); leftovers of
+(`AMBIGUOUS_CHAIN`, or `CORRUPT_RECORD` once several chains were cut); a runtime older
+than multi-card snapshots reads only the current card of a `snapshot_version` 2
+snapshot and ignores its `other_cards`, and its prune archives that current card with
+`snapshot_version` and `other_cards` left inside the archived record (this runtime
+still reads such an archive file); a record written by such an older runtime on an
+adopted chain drops `adopted_at`, and the marker is not restored after upgrading
+again; record fields must never use the names a snapshot reserves (`snapshot_id`,
+`captured_at`, `parent_snapshot`, `snapshot_version`, `other_cards`), since they are
+dropped when a snapshot's current card is read back; leftovers of
 an interrupted trim stay on disk until that work's chain is trimmed again, so a chain
 never written again keeps them (reads skip them); submodules, bare-backed and
 separate-git-dir checkouts are refused (`REPO_KEY_UNRESOLVED`); Git older than
@@ -687,7 +768,8 @@ files are only read, never modified.
 
 A source stands for the card it holds. A snapshot or archive file carries its
 card's `recorded_at` and `revision`, so every copy of one card has the same time and
-identity, whichever copies still exist. Per work_id, sources are read in time order
+identity, whichever copies still exist; a snapshot holding several cards is one
+source per schema 1 card. Per work_id, sources are read in time order
 by `recorded_at`. Equal times are ordered by `parent_record` descent (a card after
 its ancestors), then records before snapshots before archive files, then by path.
 

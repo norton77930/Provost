@@ -7,8 +7,9 @@ from . import facts
 from .config import ConfigError, handoff_home, load_config, resolve_mode, workspace_key
 from .notifications import PARTIAL, notice
 from .search import redact
-from .store import (CACHE_SESSION, FACTS_MARKER, StoreError, _base, _chains, as_workspace, atomic_write, current,
-                    digest, guard, latest, locate, newest_entries, read_log, session_dir, snapshot, storage_ready)
+from .store import (CACHE_SESSION, FACTS_MARKER, StoreError, _base, _chains, _when, as_workspace, atomic_write, current,
+                    digest, guard, is_done, latest, locate, newest_entries, read_log, session_dir, snapshot,
+                    snapshot_cards, storage_ready, work_states)
 
 PLUGIN = Path(__file__).resolve().parents[2]
 RECOVERY_PAYLOAD_LIMIT = 4500     # inline the payload in full up to this size; digest is capped to it too
@@ -22,6 +23,8 @@ RECOVERY_DECISIONS = 15           # newest non-superseded decisions of the curre
 RECOVERY_NEXT_LIMIT = 160         # next step cap in an other-work line
 RECOVERY_ITEM_LIMIT = 400         # per decision or evidence line, so one huge entry cannot empty its section
 RECOVERY_WORK_ID_LIMIT = 80       # work_id cap in section titles and count lines
+MENU_WORKS = 5                    # joinable works listed at startup, clear and fork
+MENU_PHASE_LIMIT = 40
 PARTIAL_STATUS = ("Save status: the last compaction saved facts only. Before continuing, write a decision record "
                   "from the compaction summary: run status (it prefills facts and template.sources), then record.")
 NEVER_RECORDED = ("No handoff checkpoint: this session has not recorded yet; continue from the compact summary "
@@ -207,7 +210,7 @@ def recovery_context(root, session):
 
 def _other_works(chains):
     """Variants of the session's other open works (every chain head but the current; phase done is closed)."""
-    others = [chain[0]["payload"] for chain in chains[1:] if chain[0]["payload"]["phase"] != "done"]
+    others = [chain[0]["payload"] for chain in chains[1:] if not is_done(chain[0]["payload"]["phase"])]
     if not others:
         return []
     lines = ["Other open works in this session (status --work <work_id> shows a card):"]
@@ -215,6 +218,37 @@ def _other_works(chains):
                     RECOVERY_LINE_LIMIT) for p in others]
     return ["\n".join(lines), "Other open works in this session: %d, omitted for size; status lists them "
                               "as other_works." % len(others)]
+
+
+def _joinable_menu(root):
+    """Notice lines listing up to MENU_WORKS open works of the repo, newest card first; [] on any failure.
+
+    Names only: work_id, phase, last update and the writing session. No card content, decisions or evidence.
+    """
+    try:
+        open_works = [(work, state) for work, state in work_states(root)["works"].items() if state["open"]]
+        floor = datetime.min.replace(tzinfo=timezone.utc)
+
+        def when(state):
+            try:
+                return _when(state["recorded_at"])
+            except StoreError:
+                return floor
+        open_works.sort(key=lambda item: (when(item[1]), item[1]["revision"]), reverse=True)
+        lines = []
+        for work, state in open_works[:MENU_WORKS]:
+            stamp = when(state)
+            updated = "unknown time" if stamp == floor else stamp.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            text = "- %s [%s] updated %s, session %s" % (
+                _work_name(work), _clip(redact(str(state["phase"])), MENU_PHASE_LIMIT), updated,
+                redact(str(state["session"]))[:8])
+            lines.append(_clip(" ".join(text.split()), RECOVERY_LINE_LIMIT))
+        if not lines:
+            return []
+        return (["Joinable works in this repository (nothing is loaded):"] + lines
+                + ["Continue one with /handoff resume <snapshot-id>, or record its work_id with --join on the first write."])
+    except Exception:  # fail-soft: the notice stays, the menu is omitted
+        return []
 
 
 def _work_name(work):
@@ -236,20 +270,27 @@ def _decision_line(entry):
     return _item("- %s (%s) %s%s" % (entry["id"], entry["at"][:10], entry["text"], extra))
 
 
-def _evidence_line(item):
-    """A log evidence entry (with id) or a schema 1 evidence item (without)."""
-    return _item("- %s[%s] %s (ref: %s)" % (item["id"] + " " if "id" in item else "", item["state"],
+PRE_ADOPTION = "passed before adoption, not re-verified"
+
+
+def _evidence_line(item, state=None):
+    """A log evidence entry (with id) or a schema 1 evidence item (without); state replaces the shown state."""
+    return _item("- %s[%s] %s (ref: %s)" % (item["id"] + " " if "id" in item else "", state or item["state"],
                                             item["claim"], item["ref"]))
 
 
-def _evidence_variants(title, items, passed):
-    """Open evidence (oldest first) and the passed count: the full list, then counts only. Empty without any."""
-    if not items:
+def _evidence_variants(title, items, passed, before=()):
+    """Open evidence (oldest first), then evidence that passed before the card's adoption, and the passed
+    count: the full list, then counts only. Empty without any."""
+    if not items and not before:
         return ["%s: none open. Passed claims: %d." % (title, passed)] if passed else []
-    return ["\n".join(["%s (latest state per claim, not pass-observed). Passed claims: %d." % (title, passed)]
-                      + [_evidence_line(item) for item in items]),
-            "%s: %d open, list omitted for size; status --work <work_id> shows the log. Passed claims: %d."
-            % (title, len(items), passed)]
+    scope = "not pass-observed" + (", or passed before adoption" if before else "")
+    stale = ", %d %s" % (len(before), PRE_ADOPTION) if before else ""
+    return ["\n".join(["%s (latest state per claim, %s). Passed claims: %d." % (title, scope, passed)]
+                      + [_evidence_line(item) for item in items]
+                      + [_evidence_line(item, PRE_ADOPTION) for item in before]),
+            "%s: %d open%s, list omitted for size; status --work <work_id> shows the log. Passed claims: %d."
+            % (title, len(items), stale, passed)]
 
 
 def _decision_variants(title, lines, total, note=""):
@@ -262,18 +303,22 @@ def _decision_variants(title, lines, total, note=""):
     return variants + ["%s: %d, omitted for size%s; status --work <work_id> shows the newest." % (title, total, note)]
 
 
-def _log_state(entries):
-    """(newest current decisions, current count, open evidence, passed count) of a work's log.
+def _log_state(entries, adopted_at=None):
+    """(newest current decisions, current count, open evidence, passed count, passed before adoption) of a log.
 
     Superseded decisions are dropped; each evidence chain (linked by updates) counts by its
-    newest entry. Lists are oldest first by store.newest_entries (time, then log order)."""
+    newest entry. With adopted_at (the card's adoption time), a pass-observed newest entry
+    whose `at` precedes it is listed as passed before adoption, not counted as passed. Lists
+    are oldest first by store.newest_entries (time, then log order)."""
     superseded = {e["supersedes"] for e in entries if e["kind"] == "decision" and "supersedes" in e}
     updated = {e["updates"] for e in entries if e["kind"] == "evidence" and "updates" in e}
     live = [e for e in entries if e["kind"] == "decision" and e["id"] not in superseded]
     heads = [e for e in entries if e["kind"] == "evidence" and e["id"] not in updated]
     pending = [e for e in heads if e["state"] != "pass-observed"]
+    before = [e for e in heads if e["state"] == "pass-observed" and adopted_at is not None
+              and _utc(e["at"]) < adopted_at]
     return (newest_entries(live, RECOVERY_DECISIONS), len(live), newest_entries(pending, len(pending)),
-            len(heads) - len(pending))
+            len(heads) - len(pending) - len(before), newest_entries(before, len(before)))
 
 
 def _work_sections(root, session, chains, checkpoint):
@@ -281,12 +326,16 @@ def _work_sections(root, session, chains, checkpoint):
 
     A schema 1 checkpoint shows its own decisions in the payload. A work without a log falls
     back to the newest schema 1 card of its chain, labelled not migrated. An unreadable log
-    becomes one line: the log never breaks injection."""
+    becomes one line: the log never breaks injection. A snapshot checkpoint (the session has no
+    record left) takes its other works from the cards the snapshot holds."""
+    if not chains and checkpoint is not None and checkpoint.get("kind") == "snapshot":
+        chains = [[card] for card in snapshot_cards(checkpoint)]
     others = _other_works(chains)
     if checkpoint is None or checkpoint.get("schema_version") == 1:
         return others, [], []
     work = checkpoint["payload"]["work_id"]
     name = _work_name(work)
+    adopted_at = _utc(checkpoint["adopted_at"]) if checkpoint.get("adopted_at") else None  # validated on read
     try:
         entries = read_log(root, work)
     except (StoreError, OSError) as exc:
@@ -294,8 +343,8 @@ def _work_sections(root, session, chains, checkpoint):
         return others, [], ["Decision log of work %s could not be read (%s): its decisions and open evidence are "
                             "not shown; status --work <work_id> reports the error." % (name, code)]
     if entries:
-        decisions, total, pending, passed = _log_state(entries)
-        return (others, _evidence_variants("Open evidence of work " + name, pending, passed),
+        decisions, total, pending, passed, before = _log_state(entries, adopted_at)
+        return (others, _evidence_variants("Open evidence of work " + name, pending, passed, before),
                 _decision_variants("Decisions of work " + name, [_decision_line(e) for e in decisions], total))
     chain = next((c for c in chains if c[0]["payload"]["work_id"] == work), [])
     # A chain written before per-work cards may also hold older cards of other works.
@@ -598,6 +647,7 @@ def handle_event(event, config_path):
                         sections[4], sections[5], sections[6] = _work_sections(root, session, chains, checkpoint)
                     elif source in ("startup", "clear", "fork"):
                         status.append("New work context: do not load or start old work unless explicitly requested.")
+                        status.extend(_joinable_menu(root))
                     else:
                         status.append("Unrecognized session source: no automatic continuation.")
                     cache = state_dir / (digest(key) + ".json")

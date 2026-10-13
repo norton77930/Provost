@@ -22,11 +22,13 @@ ID = re.compile(r"^[a-f0-9]{64}$")
 
 
 class StoreError(ValueError):
-    """str() is the error code; detail, when given, is guidance for the caller."""
+    """str() is the error code; detail, when given, is guidance for the caller; extra, when given,
+    holds further output fields (for example the choices of WORK_CHOICE_REQUIRED)."""
 
-    def __init__(self, code, detail=None):
+    def __init__(self, code, detail=None, extra=None):
         super().__init__(code)
         self.detail = detail
+        self.extra = extra
 
 
 @dataclass(frozen=True)
@@ -377,7 +379,65 @@ def _read(root, path, session, kind):
     if checksum != hashlib.sha256(encoded(body)).hexdigest():
         raise StoreError("CORRUPT_RECORD")
     validate_payload(data.get("payload"), data["schema_version"])
+    if "adopted_at" in data:
+        _when(data["adopted_at"])
+    if kind == "snapshot":
+        _check_other_cards(ws, data, session)
     return data
+
+
+def _check_other_cards(ws, data, session):
+    """A snapshot_version 2 snapshot's other_cards: sealed cards of this repo and session, one per work_id.
+
+    A newer snapshot_version is read as its top-level card only (see snapshot_cards); a version
+    below 2, or other_cards without a version, is corrupt."""
+    if "snapshot_version" not in data and "other_cards" not in data:
+        return  # a single-card snapshot written before multi-card snapshots
+    if _newer_snapshot(data):
+        return
+    others = data.get("other_cards")
+    if (type(data.get("snapshot_version")) is not int or data["snapshot_version"] != SNAPSHOT_VERSION
+            or not isinstance(others, list)):
+        raise StoreError("CORRUPT_RECORD")
+    works, revisions = {data["payload"]["work_id"]}, {data.get("revision")}
+    for card in others:
+        if not isinstance(card, dict) or card.get("kind") != "record":
+            raise StoreError("CORRUPT_RECORD")
+        if card.get("workspace_id") != ws.repo_key or card.get("session_id") != session:
+            raise StoreError("RECORD_IDENTITY_MISMATCH")
+        body = {k: v for k, v in card.items() if k != "checksum"}
+        if (card.get("checksum") != hashlib.sha256(encoded(body)).hexdigest()
+                or card.get("schema_version") not in (1, 2) or isinstance(card.get("schema_version"), bool)
+                or not isinstance(card.get("revision"), str) or not ID.fullmatch(card["revision"])):
+            raise StoreError("CORRUPT_RECORD")
+        validate_payload(card.get("payload"), card["schema_version"])
+        _when(card.get("recorded_at"))
+        if "adopted_at" in card:
+            _when(card["adopted_at"])
+        if card["payload"]["work_id"] in works or card["revision"] in revisions:
+            raise StoreError("CORRUPT_RECORD")
+        works.add(card["payload"]["work_id"])
+        revisions.add(card["revision"])
+
+
+# Keys a snapshot adds to the card it copies (see snapshot()); dropping them and
+# resealing with kind "record" restores that card exactly.
+SNAPSHOT_KEYS = ("checksum", "snapshot_id", "captured_at", "parent_snapshot", "snapshot_version", "other_cards")
+SNAPSHOT_VERSION = 2  # absent: one card (written before multi-card snapshots); 2: plus other_cards
+
+
+def _newer_snapshot(data):
+    """True for a snapshot_version newer than this runtime writes (read as its top-level card only)."""
+    version = data.get("snapshot_version")
+    return type(version) is int and version > SNAPSHOT_VERSION
+
+
+def snapshot_cards(data):
+    """The cards a validated snapshot holds, sealed as stored in records/: its current card (the
+    top-level copy) first, then its other_cards (none in a snapshot written before them, and
+    none read from a newer snapshot_version)."""
+    top = _seal({k: v for k, v in data.items() if k not in SNAPSHOT_KEYS} | {"kind": "record"})
+    return [top] + ([] if _newer_snapshot(data) else copy.deepcopy(data.get("other_cards", [])))
 
 
 def _seal(data):
@@ -653,16 +713,22 @@ def latest(root, session):
 DONE_PHASE = "done"  # a card with this phase closes its work; a later card of another phase reopens it
 
 
+def is_done(phase):
+    """True when a card's phase closes its work: "done", ignoring case and surrounding whitespace."""
+    return isinstance(phase, str) and phase.strip().lower() == DONE_PHASE
+
+
 def work_states(root):
     """Read-only: the newest state card of each work across the repo's sessions.
 
     {"works": {work_id: state}, "skipped": [{"session_dir", "error"}], "broken": [{"session",
     "work_id", "error"}]}. A state is the newest head card of the work by `recorded_at`
-    (`session`, `revision`, `phase`, `recorded_at`, `open`: phase is not "done") plus `sessions`,
+    (`session`, `revision`, `phase`, `recorded_at`, `open`: not is_done(phase)) plus `sessions`,
     the head card of each session holding the work in the same shape without `open`, newest
-    first. A work chain that fails validation is left out and listed under `broken`; a session
-    dir whose cards cannot be read at all (a session-wide failure) is skipped and listed with its
-    error code; a dir without records holds no cards and is not listed.
+    first. A work chain that fails validation is left out and listed under `broken` (also when
+    all of a session's chains are broken); a session dir whose cards cannot be read at all (a
+    session-wide failure) is skipped and listed with its error code; a dir without records
+    holds no cards and is not listed.
     """
     ws = as_workspace(root)
     home = handoff_home()
@@ -678,7 +744,9 @@ def work_states(root):
             for path in sorted((folder / "records").glob("*.json")) if (folder / "records").is_dir() else ():
                 if ID.fullmatch(path.stem):
                     raw = _load(path)
-                    session = raw.get("session_id") if raw else None
+                    if raw is None:
+                        raise StoreError("CORRUPT_RECORD")
+                    session = raw.get("session_id")
                     if not isinstance(session, str) or digest(session) != folder.name:
                         raise StoreError("RECORD_IDENTITY_MISMATCH")
                     break
@@ -704,7 +772,7 @@ def work_states(root):
     states = {}
     for work_id, items in works.items():
         items.sort(key=key, reverse=True)
-        states[work_id] = {**items[0], "open": items[0]["phase"] != DONE_PHASE, "sessions": items}
+        states[work_id] = {**items[0], "open": not is_done(items[0]["phase"]), "sessions": items}
     return {"works": states, "skipped": skipped, "broken": broken}
 
 
@@ -917,7 +985,8 @@ def _commit(root, session, payload, version, expected, request_id, *, cursor=Non
                 # as it was when the card was written, not against entries other sessions appended since.
                 seen = log if prior.get("log_entries") else [
                     entry for entry in log if _when(entry["at"]) <= _when(prior["recorded_at"])]
-                entries = check(payload["work_id"], seen, revision, entries)
+                # This session's card of the request exists: the replay has joined the work.
+                entries = check(payload["work_id"], seen, revision, entries, replay=True)
             logged = [_log_entry_fields(entry) for entry in log if entry.get("record") == revision]
             if (prior["payload"] != payload or prior.get("adopted_from") != adopted_from
                     or prior["schema_version"] != version or logged != entries):
@@ -937,11 +1006,15 @@ def _commit(root, session, payload, version, expected, request_id, *, cursor=Non
                 # Nothing to append: the committed log is read without the lock (a torn append is ignored),
                 # so a card-only record creates no log or lock file.
                 check(payload["work_id"], read_log(root, payload["work_id"]), revision, [])
+        now = datetime.now(timezone.utc).isoformat()
+        # The adoption marker: an adoption card records its time, every later card of its chain inherits it.
+        adopted_at = now if adopted_from is not None else (previous or {}).get("adopted_at")
         data = _seal({"schema_version": version, "kind": "record", "workspace_id": root.repo_key,
                       "worktree_path": str(root.root),
                       "session_id": session, "revision": revision, "parent_record": expected,
-                      "recorded_at": datetime.now(timezone.utc).isoformat(),
+                      "recorded_at": now,
                       "transcript_cursor": cursor, "adopted_from": adopted_from, "payload": copy.deepcopy(payload),
+                      **({"adopted_at": adopted_at} if adopted_at is not None else {}),
                       **({"log_entries": ids} if version >= 2 else {})})
         atomic_write(home, path, data)
         atomic_write(home, directory / "current.json", {"revision": revision})
@@ -961,13 +1034,16 @@ def snapshot(root, session, event_key):
         _expired(root, session, "snapshot", ident)
         if path.exists():
             return _read(root, path, session, "snapshot")
-        source = current(root, session)
-        if source is None:
+        heads = cards(root, session)
+        if not heads:
             raise StoreError("NO_CHECKPOINT")
+        # Every open card (phase not done), most recently written first; with none open, the current card.
+        held = [head for head in heads if not is_done(head["payload"]["phase"])] or heads[:1]
         previous = latest(root, session)
-        data = {k: v for k, v in source.items() if k != "checksum"}
+        data = {k: v for k, v in held[0].items() if k != "checksum"}
         data.update(kind="snapshot", snapshot_id=ident, captured_at=datetime.now(timezone.utc).isoformat(),
-                    parent_snapshot=previous["snapshot_id"] if previous else None)
+                    parent_snapshot=previous["snapshot_id"] if previous else None,
+                    snapshot_version=SNAPSHOT_VERSION, other_cards=copy.deepcopy(held[1:]))
         data = _seal(data)
         atomic_write(home, path, data)
         atomic_write(home, directory / "latest.json", {"snapshot_id": ident})
@@ -1004,13 +1080,32 @@ def list_snapshots(root, snapshot_id=None):
                 result.append({"snapshot_id": path.stem, "error": code})
                 continue
             result.append({k: data[k] for k in ("snapshot_id", "session_id", "captured_at", "parent_snapshot")}
-                          | {"work_id": data["payload"]["work_id"], "phase": data["payload"]["phase"]})
+                          | {"work_id": data["payload"]["work_id"], "phase": data["payload"]["phase"],
+                             "works": [{k: card["payload"][k] for k in ("work_id", "phase")}
+                                       | {k: card[k] for k in ("recorded_at", "revision")}
+                                       for card in snapshot_cards(data)]}
+                          | ({"note": "snapshot_version %d is newer than this runtime: only its current card "
+                                      "is read" % data["snapshot_version"]} if _newer_snapshot(data) else {}))
     return result
 
 
-def resume(root, session, snapshot_id):
+def _choices(held):
+    return [{"work_id": card["payload"]["work_id"], "phase": card["payload"]["phase"],
+             "next": card["payload"]["next"], "recorded_at": card["recorded_at"]} for card in held]
+
+
+def resume(root, session, snapshot_id, works=None):
+    """Adopt works of a snapshot into `session` (see adopt); nothing is written to the decision logs.
+
+    works names the work_ids to adopt. Without it a snapshot holding one card adopts that card,
+    and one holding several raises WORK_CHOICE_REQUIRED with the choices, adopting nothing. One
+    adopted card is returned as it is; several as {"adopted_from", "cards"} in the snapshot's order.
+    """
     if not isinstance(snapshot_id, str) or not ID.fullmatch(snapshot_id):
         raise StoreError("INVALID_SNAPSHOT_ID")
+    works = list(dict.fromkeys(works or ()))
+    if any(not isinstance(work, str) or not work for work in works):
+        raise StoreError("INVALID_ARGUMENTS")
     root = as_workspace(root)
     matches =[item for item in list_snapshots(root, snapshot_id) if item["snapshot_id"] == snapshot_id]
     if len(matches) != 1:
@@ -1021,21 +1116,53 @@ def resume(root, session, snapshot_id):
     if original == session:
         raise StoreError("SAME_SESSION_ADOPTION")
     source = _read(root, session_dir(root, original) / "snapshots" / (snapshot_id + ".json"), original, "snapshot")
-    return adopt(root, session, source, snapshot_id)
+    held = snapshot_cards(source)
+    extra = {"snapshot_id": snapshot_id, "choices": _choices(held)}
+    if not works and len(held) > 1:
+        raise StoreError("WORK_CHOICE_REQUIRED", "the snapshot holds several works: run resume again with "
+                         "--work <work_id> (repeatable) for each work to adopt", extra)
+    names = {card["payload"]["work_id"] for card in held}
+    if any(work not in names for work in works):
+        raise StoreError("WORK_NOT_IN_SNAPSHOT", None, extra)
+    chosen = [card for card in held if not works or card["payload"]["work_id"] in works]
+    # A one-card snapshot keeps the request id of single-card adoption, so its replay stays idempotent.
+    # Otherwise one per work (its digest: a work_id may exceed the request id limit).
+    request = {card["revision"]: "adopt:" + snapshot_id if len(held) == 1
+               else "adopt:%s:%s" % (snapshot_id, digest(card["payload"]["work_id"])) for card in chosen}
+    records = session_dir(root, session) / "records"
+    for card in chosen:  # an existing chain of any named work refuses the whole set before anything is adopted
+        path = records / (digest(session + "\0record\0" + request[card["revision"]]) + ".json")
+        guard(handoff_home(), path)
+        if not path.exists() and current(root, session, card["payload"]["work_id"]) is not None:
+            raise StoreError("REVISION_CONFLICT", None, {"work_id": card["payload"]["work_id"]})
+    # Oldest first, so the snapshot's most recently written chosen card becomes the session's current card.
+    # A record or lock racing in between can stop the loop after some adoptions: replaying the same set
+    # returns those (idempotent per request id) and adopts the rest.
+    adopted = []
+    for card in reversed(chosen):
+        try:
+            adopted.append(adopt(root, session, card, snapshot_id, request[card["revision"]]))
+        except StoreError as exc:
+            if str(exc) == "REVISION_CONFLICT":
+                raise StoreError("REVISION_CONFLICT", None, {"work_id": card["payload"]["work_id"]}) from exc
+            raise
+    adopted.reverse()
+    return adopted[0] if len(adopted) == 1 else {"adopted_from": snapshot_id, "cards": adopted}
 
 
-def adopt(root, session, source, snapshot_id):
-    """Start `session`'s chain from a validated snapshot, with its observed state marked unverified.
+def adopt(root, session, source, snapshot_id, request_id=None):
+    """Start `session`'s chain of a card's work from a card a validated snapshot holds, with its
+    observed state marked unverified and the adoption time recorded as adopted_at.
 
-    The card keeps the snapshot's schema version (a schema 1 card keeps its decisions and
-    evidence); nothing is written to the decision log.
+    The card keeps its schema version (a schema 1 card keeps its decisions and evidence);
+    nothing is written to the decision log.
     """
     payload = copy.deepcopy(source["payload"])
     for assignment in payload["assignments"]:
         assignment["observed_state"] = "needs-verification"
     for evidence in payload.get("evidence", ()):
         evidence["state"] = "unverified"
-    return _commit(root, session, payload, source["schema_version"], None, "adopt:" + snapshot_id,
+    return _commit(root, session, payload, source["schema_version"], None, request_id or "adopt:" + snapshot_id,
                    adopted_from=snapshot_id)
 
 

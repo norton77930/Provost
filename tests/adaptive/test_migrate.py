@@ -71,13 +71,13 @@ class MigrateTests(FixtureCase):
         self.card("s1", "A", ["Keep the parser API because callers pin it", "Split the lexer out"],
                   [self.evidence("suite green", "pass-observed")])
         self.card("s1", "B", ["Use one lock per work"])
-        store.snapshot(self.root, "s1", "e1")  # copies the card of B
+        store.snapshot(self.root, "s1", "e1")  # copies the open cards of B and A
         self.card("s2", "A", ["Split the lexer out", "Ship behind a flag"])
         before, tree = self.files(), self.tree()
         out = self.migrate()
         self.assertEqual((out["applied"], out["backup"], out["skipped"]), (False, None, []))
         self.assertEqual(self.works(out), {
-            "A": {"sources": 3, "decisions": 3, "evidence": 2, "already_migrated": 0},
+            "A": {"sources": 4, "decisions": 3, "evidence": 2, "already_migrated": 0},
             "B": {"sources": 2, "decisions": 1, "evidence": 0, "already_migrated": 0}})
         self.assertEqual((self.files(), self.tree()), (before, tree))
 
@@ -372,9 +372,10 @@ class MigrateTests(FixtureCase):
         self.assertEqual([e["id"] for e in self.log("A") + self.log("B")], ["D1", "D1", "E1"])
 
     def adopt(self, session="s9"):
-        """Resume the newest snapshot of s1 into session: a new schema 1 card with evidence unverified."""
+        """Resume s1's current card from its newest snapshot into session: a new schema 1 card with evidence
+        unverified. The snapshot holds every open card of s1, so the work is named."""
         snap = store.snapshot(self.root, "s1", "adopt-%d" % next(self.requests))
-        return store.resume(self.root, session, snap["snapshot_id"])
+        return store.resume(self.root, session, snap["snapshot_id"], [snap["payload"]["work_id"]])
 
     def test_an_adopted_schema_1_card_is_imported_by_the_next_apply(self):
         first = self.card("s1", "A", ["Decision before adoption"], [self.evidence("claim", "pass-observed")])

@@ -79,8 +79,9 @@ def main(argv=None):
         parser.add_argument("--request-id")
         parser.add_argument("--from", dest="source")
         parser.add_argument("--input")
-        # status: the card of this work_id instead of the session's most recently written one.
-        parser.add_argument("--work")
+        # status: the card of this work_id instead of the session's most recently written one;
+        # resume: a work_id of the snapshot to adopt (repeatable; other commands take at most one).
+        parser.add_argument("--work", action="append")
         # Prune ages: binding-only dirs (default 14 days) and expired sessions (default 30).
         parser.add_argument("--older-than-days", type=int, default=None)
         parser.add_argument("--expired-older-than-days", type=int, default=None)
@@ -99,6 +100,10 @@ def main(argv=None):
         parser.add_argument("--entry")
         parser.add_argument("--reason")
         options = parser.parse_args(args)
+        works = options.work or []
+        if len(works) > 1 and options.command != "resume":
+            raise StoreError("INVALID_ARGUMENTS")
+        options.work = works[0] if works else None
         root = workspace_root(options.workspace)
         cfg = load_config(config_path())
         mode = resolve_mode(cfg, root.root, root.main)
@@ -215,13 +220,16 @@ def main(argv=None):
                 else:
                     if not options.source:
                         raise StoreError("SNAPSHOT_ID_REQUIRED")
-                    result = resume(root, options.session, options.source)
+                    if any(work == "" for work in works):
+                        raise StoreError("INVALID_ARGUMENTS")
+                    result = resume(root, options.session, options.source, works)
                     result = {**result, "reconciliation": recovery_context(root, options.session)}
         print(json.dumps(result, ensure_ascii=True))
         return 0
     except (ConfigError, StoreError) as exc:
         detail = getattr(exc, "detail", None)
-        print(json.dumps({"error": str(exc), **({"detail": detail} if detail else {})}))
+        extra = search.redact(getattr(exc, "extra", None) or {})  # choices quote card text
+        print(json.dumps({"error": str(exc), **({"detail": detail} if detail else {}), **extra}))
         return 1
     except (OSError, UnicodeError, json.JSONDecodeError):
         print(json.dumps({"error": "INPUT_OR_IO_ERROR"}))

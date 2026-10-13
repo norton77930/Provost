@@ -246,7 +246,8 @@ class DecisionLogTests(FixtureCase):
         v2 = store.snapshot(self.root, "s1", "e2")
         self.assertEqual(v2["revision"], card["revision"])
         bind(self.root, "s3", {})
-        code, adopted = self.runtime("resume", "--from", v2["snapshot_id"], session="s3")
+        # The snapshot also holds the open schema 1 card of A: name the work to adopt.
+        code, adopted = self.runtime("resume", "--from", v2["snapshot_id"], "--work", "B", session="s3")
         self.assertEqual(code, 0, adopted)
         self.assertEqual((adopted["schema_version"], adopted["log_entries"]), (2, []))
         self.assertEqual(self.status("B", session="s3")["log"]["total"], 1)  # resume wrote nothing to the log

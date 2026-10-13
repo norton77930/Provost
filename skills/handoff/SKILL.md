@@ -30,7 +30,7 @@ A Python invocation is also documented in the pilot guide.
    status and next actions. Exclude credentials and full transcripts. Never treat
    an unfilled template as saved work.
 3. Write the payload to a file with the Write tool, then run one plain command:
-   `record --workspace "<root>" --session "<id>" --expected "<revision-or-null>" --request-id "<unique-id>" --input "<payload-file>"`,
+   `record --workspace "<root>" --session "<id>" --expected "<revision-or-null>" --request-id "<unique-id>" [--join] --input "<payload-file>"`,
    using the `expected` value status returned for the payload's work_id (`null`
    when there is none).
    Worktree guards refuse heredocs, pipes, command substitution and line
@@ -41,7 +41,7 @@ A Python invocation is also documented in the pilot guide.
    `--join` only when you intend to continue that work (or resume its snapshot
    instead); otherwise choose a new work_id. Once this session has a card of the
    work, later records need no flag. Read `CONCURRENT_SESSION` and `REOPENED`
-   warnings before continuing. Set phase `done` to close a finished work.
+   warnings before continuing. Set phase `done` (any case) to close a finished work.
 4. Use `snapshot --workspace "<root>" --session "<id>" --request-id "<unique-id>"`.
    Report the returned snapshot ID and local path. On failure, say it was not
    saved; do not call an old snapshot current.
@@ -49,16 +49,24 @@ A Python invocation is also documented in the pilot guide.
 ## Resume
 
 1. Only proceed when the user asks to continue or provides a snapshot ID.
-2. Use `list --workspace "<root>"`. Each entry identifies a source session, work,
-   time and parent snapshot. Match the requested work and exact workspace.
+2. Use `list --workspace "<root>"`. Each entry identifies a source session, time,
+   parent snapshot and `works` (every work the snapshot holds, with its phase).
+   Match the requested work and exact workspace.
    Do not select a global latest timestamp across different work.
    List entries with error are damaged candidates, not resumable snapshots; report
    them briefly and retain usable candidates. Never delete history to recover.
 3. If several candidates remain, ask which work/session. Never start a worker
    while the correct handoff or existing writer ownership remains unresolved.
-4. Use `resume --workspace "<root>" --session "<current-id>" --from "<snapshot-id>"`.
+4. Use `resume --workspace "<root>" --session "<current-id>" --from "<snapshot-id>"`,
+   adding one `--work "<work_id>"` per work the user chose. A snapshot with one
+   work needs no `--work`. When it holds several and none is named, resume adopts
+   nothing and returns `WORK_CHOICE_REQUIRED` with `choices` (work, phase, next
+   step): show them, ask which works to continue, and run resume again with
+   those `--work` flags. Never pick for the user.
    This adopts observations into the current session, not running worker ownership.
    For the same session use its supplied checkpoint rather than adopting itself.
+   Evidence that passed before the adoption is shown as "passed before adoption,
+   not re-verified": re-check it before relying on it.
 5. Read referenced sources and relevant working changes/evidence. A closed issue,
    checked task or archived change is not proof that behavior passes acceptance.
    Establish whether recorded workers remain active before re-dispatching.
