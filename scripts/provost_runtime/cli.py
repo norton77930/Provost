@@ -5,12 +5,12 @@ import json
 import sys
 from pathlib import Path
 
-from . import facts, migrate, redact, search
+from . import checks, facts, migrate, redact, search
 from .config import ConfigError, config_path, handoff_home, load_config, resolve_mode
 from .hooks import (binding, cursor, handle_event, last_binding_at, recovery_context,
                     resolve_transcript, workspace_root)
 from .facts import SPOOL_SESSION
-from .store import (FACTS_FLAGS, StoreError, cards, guard, list_snapshots, newest_entries, prune, read_log, record,
+from .store import (FACTS_FLAGS, StoreError, cards, guard, list_snapshots, newest_entries, prune, read_log,
                     resume, snapshot, storage_ready)
 
 
@@ -202,9 +202,10 @@ def main(argv=None):
                     if len(raw.encode("utf-8")) > 32768:
                         raise StoreError("PAYLOAD_TOO_LARGE")
                     payload = json.loads(raw)
-                    result = record(root, options.session, payload,
-                                    None if options.expected == "null" else options.expected,
-                                    options.request_id, cursor=cursor(resolve_transcript(source.get("transcript_path"))))
+                    result = checks.record(root, options.session, payload,
+                                           None if options.expected == "null" else options.expected,
+                                           options.request_id, config_path=config_path(),
+                                           cursor=cursor(resolve_transcript(source.get("transcript_path"))))
                     clear_reminder_flags(config_path(), options.session)
                 elif options.command == "snapshot":
                     if not options.request_id:

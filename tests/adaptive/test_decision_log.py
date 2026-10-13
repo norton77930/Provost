@@ -107,7 +107,7 @@ class DecisionLogTests(FixtureCase):
         self.assertEqual(list(self.store_home.glob("v2/repos/*/logs/*.jsonl")), [])
 
     def test_structurally_invalid_entries_are_rejected_before_anything_is_written(self):
-        cases = {"INVALID_DECISION": [{"text": 5}, {"text": ""}, {"refs": []}, {"text": "t", "refs": "abc"},
+        cases = {"INVALID_DECISION": [{"text": 5}, {"refs": []}, {"text": "t", "refs": "abc"},
                                       {"text": "t", "refs": [1]}, {"text": "t", "supersedes": 3},
                                       {"text": "t", "extra": 1}, "plain string"],
                  "INVALID_EVIDENCE": [{"claim": "c", "state": "passed", "ref": "r"}, {"claim": "c", "state": "fail"},
@@ -202,7 +202,8 @@ class DecisionLogTests(FixtureCase):
                                   text=True, encoding="utf-8", env=self.env())
                  for session in sessions]
         for proc, session in zip(procs, sessions):
-            proc.stdin.write(json.dumps(self.request(decisions=[{"text": "by " + session}, {"text": "again"}])))
+            proc.stdin.write(json.dumps(self.request(decisions=[{"text": "by " + session},
+                                                                {"text": "again by " + session}])))
             proc.stdin.close()
         outputs = []
         for proc in procs:

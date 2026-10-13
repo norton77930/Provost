@@ -199,6 +199,71 @@ After REVISION_CONFLICT rerun status and reconcile. Never force an overwrite.
 Record approved plan, dispatch, results and changed decisions/blockers. Do not
 record after every tool call. Main owns records; workers report observations.
 
+## Record checks and echo
+
+`record` refuses a request that would put a broken entry into the log, warns about
+what it may have missed, and echoes what the work looks like after the write.
+
+Hard rejections write nothing (no entry, no card) and return `error` with a `detail`
+naming the entry (`new_decisions[i]` / `new_evidence[i]`):
+
+- `DECISION_TEXT_EMPTY`: decision text that is empty or whitespace only.
+- `DECISION_TEXT_TOO_LONG`: decision text over 1000 characters.
+- `TARGET_NOT_FOUND`: a `supersedes`/`updates` id that is not in this work's log, or
+  that is not an entry id at all. Targets are bare ids of the same work (`D3`, `E2`);
+  an entry of this record cannot be a target.
+- `TARGET_OTHER_WORK`: a target written as `<other work_id>:<id>`.
+- `TARGET_WRONG_KIND`: `supersedes` naming an evidence id or `updates` naming a
+  decision id.
+- `ALREADY_SUPERSEDED`: superseding a decision that another entry already supersedes;
+  the detail names the latest entry of that chain, which is the one to supersede. Two
+  entries of one record superseding the same decision are refused the same way.
+
+The text checks run before anything is read; the target checks run under the work's
+log lock against the committed log (for a replayed request, the log as it was before
+that request's own entries, or, when its card logged nothing, the log as it was when
+the card was written).
+
+Soft warnings come back with a successful write as `warnings`, a list of
+`{code, message}` (empty when there is nothing to report):
+
+- `SHORT_DECISION`: a new decision under 40 characters (it is still written).
+- `DUPLICATE_SKIPPED`: a new decision whose exact text equals a current (not
+  superseded) decision of this work, or an earlier decision of the same record. It is
+  not appended and gets no id; the message names the existing id. A decision with
+  `supersedes` is never skipped, and a decision superseded earlier in the same record
+  no longer counts as current.
+- `UNREFERENCED_COMMITS`: a commit captured since the session's last record of any
+  work whose hash shares no prefix of at least 7 characters with a hex token
+  (7 to 40 characters, case-insensitive) in this record's entries: decision `text`
+  and `refs`, evidence `claim` and `ref`.
+- `UNMENTIONED_DISPATCHES`: a subagent dispatch captured since that last record whose
+  role and description both appear nowhere (case-insensitive substring) in this
+  record's entries or card `assignments` (`task`, `agent_id`). This is best effort:
+  naming a role once covers every dispatch of that role.
+- `NO_NEW_DECISION`: edits, dispatches or commits were captured since that last record
+  but the record appends no decision (skipped duplicates do not count).
+- `LOG_LARGE`: the work's log holds more than 300 entries; consider splitting the work.
+
+The commit, dispatch and activity warnings read the session's facts as of the
+record, the way `changes` does: the stored `facts.json` merged with the spool lines
+not folded yet, plus a fresh bounded `git` query of the touched repos. This runs after
+the write, with no lock held, and is read-only; when it fails there are no such
+warnings. "Since the
+last record" is after the newest `recorded_at` of the session's cards of any work
+(all captured activity before the session's first record).
+
+Successful output keeps every earlier field and adds `echo`, a text of at most 1500
+characters: the work (its first 80 characters) and the ids just assigned (more than 8
+are shortened to the first 6, the last 2 and a count), the state card (phase, next,
+blockers, assignments), open evidence (the latest entry of each `updates` chain that
+is not `pass-observed`, oldest first), the 3 newest current decisions (newest first,
+by `at`) and the warnings. Each listed item is clipped to 200 characters. Over the
+cap it drops the oldest shown decisions first, then the oldest open evidence, then the
+last warnings, and counts what it dropped as `N more, see status`; the card is always
+kept (clipped only when it alone does not fit). Secret-like strings in `warnings` and
+`echo` are replaced by `[REDACTED]`, as in search output.
+
 ## Search past decisions
 
 ```bash
@@ -645,21 +710,41 @@ entry with the newest `at`.
 
 Idempotent: all of one work's new entries go out in one write, so a candidate whose
 card revision already appears as `record` among the work's `migrated: true`
-entries was handled by an earlier run and is not imported again; as a secondary
-guard, neither is a decision whose text a migrated decision already has. A later
-chain link to an earlier import resolves by position among that card's migrated
-entries, else by (`record`, `claim`, `state`); when neither finds it the work fails
-with `MIGRATE_CHAIN_UNRESOLVED` and nothing is appended to it. Skipped candidates
-are counted under `already_migrated`, so a second `--apply` imports nothing (and
-makes no backup), also after a source card was trimmed (a surviving copy is the same
-card) or a migrated entry's text was rewritten.
+entries was handled by an earlier run and is not imported again. A high-water mark
+applies as well: a candidate whose card time is at or before the newest `at` among
+the work's migrated entries is not imported, because an earlier run already
+evaluated every source up to that time. This keeps a redacted entry from coming
+back through another card that restated it once the card it was imported from is
+trimmed. In consequence, a source that only becomes readable later with an older
+time (for example a repaired file) is not imported; an adopted schema 1 card (see
+below) has a newer time and is. As a further guard, a decision whose text a
+migrated decision already has is not imported again. A later chain link to an
+earlier import resolves by position among that card's migrated entries (kind and
+evidence state must match at every position), else by a (`record`, `claim`,
+`state`) that exactly one migrated entry has; when neither finds exactly one entry
+the work fails with `MIGRATE_CHAIN_UNRESOLVED` and nothing is appended to it.
+Skipped candidates are counted under `already_migrated`, so a second `--apply`
+imports nothing (and makes no backup), also after a source card was trimmed (a
+surviving copy is the same card). A work that failed in one run (for example
+`STORE_BUSY`) is imported by the next.
+
+After a migrated entry is redacted (`migrated: true` with `redacted_at`), its work
+is no longer migrated automatically: the dry run and `--apply` both report it with
+error `REDACTED_ENTRIES` and append nothing, while other works continue. With the
+original text gone, no guard could tell a card that restated it apart, so this is
+what keeps the redacted text from coming back. Re-log anything from that work's
+schema 1 cards that still matters as new entries.
+
+Resuming a schema 1 snapshot after migrating creates a new schema 1 card, which the
+next `--apply` imports: its evidence states are `unverified`, chained onto the
+claims' migrated entries, and its restated decisions are deduplicated.
 
 Output: `applied`, `backup` (null unless something was imported), `works` and
 `skipped`. Each work lists `work_id`, `sources` (source files contributing to it),
 `decisions` and `evidence` (entries the dry run would import, or `--apply`
 imported) and `already_migrated`. A work whose log cannot be read, backed up or
 appended to (`CORRUPT_LOG`, `FOREIGN_REPO`, `STORE_BUSY`, `WRITE_FAILED`,
-`MIGRATE_CHAIN_UNRESOLVED`) has `error` instead of the counts and gets nothing
+`MIGRATE_CHAIN_UNRESOLVED`, `REDACTED_ENTRIES`) has `error` instead of the counts and gets nothing
 appended; other works continue.
 
 `--apply` takes each work's log lock (the same lock `record` uses, waiting up to 10
