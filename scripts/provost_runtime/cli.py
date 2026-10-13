@@ -10,8 +10,8 @@ from .config import ConfigError, config_path, handoff_home, load_config, resolve
 from .hooks import (binding, cursor, handle_event, last_binding_at, recovery_context,
                     resolve_transcript, workspace_root)
 from .facts import SPOOL_SESSION
-from .store import (FACTS_FLAGS, StoreError, cards, guard, list_snapshots, newest_entries, prune, read_log,
-                    resume, snapshot, storage_ready)
+from .store import (FACTS_FLAGS, StoreError, broken_works, cards, guard, list_snapshots, newest_entries, prune,
+                    read_log, resume, snapshot, storage_ready)
 
 
 RUNTIME_ROOT = Path(__file__).resolve().parents[2]
@@ -168,6 +168,9 @@ def main(argv=None):
                               for head in heads if head["payload"]["work_id"] != work]
                     if others:  # only for a session with several works: single-work output is unchanged
                         result["other_works"] = others
+                    broken = broken_works(root, options.session)
+                    if broken:  # work chains that fail validation, left out of checkpoint and other_works
+                        result["broken_works"] = broken
                     try:
                         entries = read_log(root, work) if work is not None else []
                         result["log"] = {"total": len(entries), "newest": newest_entries(entries, STATUS_LOG)}

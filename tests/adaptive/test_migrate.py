@@ -47,6 +47,10 @@ class MigrateTests(FixtureCase):
     def base(self):
         return store._base(store.as_workspace(self.root))
 
+    def archive(self, card):
+        """An archive file of the card's work as prune wrote them before the decision log (it writes none now)."""
+        store.atomic_write(handoff_home(), store._archive_path(self.base() / "archive", card["payload"]["work_id"]), card)
+
     def files(self, *parts):
         """{relative path: bytes} of every file under the store home (or under base/<part> for each part)."""
         roots = [self.base() / part for part in parts] if parts else [self.store_home]
@@ -119,8 +123,7 @@ class MigrateTests(FixtureCase):
 
     def test_archive_files_are_sources(self):
         gone = self.card("gone", "A", ["Archived decision"], [self.evidence("archived claim", "pass-observed")])
-        ws = store.as_workspace(self.root)
-        store._archive(handoff_home(), ws, self.base() / "archive", {"A": gone})
+        self.archive(gone)
         shutil.rmtree(store.session_dir(self.root, "gone"))
         out = self.migrate("--apply")
         self.assertEqual(self.works(out)["A"]["sources"], 1)
@@ -148,8 +151,7 @@ class MigrateTests(FixtureCase):
                      old["revision"], "live")
         self.card("s1", "B", ["Decision of B"], [self.evidence("b claim", "fail")])
         store.snapshot(self.root, "s1", "e1")
-        ws = store.as_workspace(self.root)
-        store._archive(handoff_home(), ws, self.base() / "archive", {"A": old})
+        self.archive(old)
         sources = self.files("sessions", "archive")
         logs = self.files("logs")
         out = self.migrate("--apply")

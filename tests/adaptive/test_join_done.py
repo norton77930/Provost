@@ -175,7 +175,7 @@ class JoinAndDoneTests(FixtureCase):
 
     # --- work_states ----------------------------------------------------------------------
 
-    def test_work_states_reports_the_newest_card_per_work_and_skips_a_corrupt_session(self):
+    def test_work_states_reports_the_newest_card_per_work_and_lists_a_corrupt_chain(self):
         a1 = self.record(self.request())
         self.age(ONE, "A", 30)
         self.record(self.request("B", phase="done"), request_id="b1")
@@ -192,7 +192,8 @@ class JoinAndDoneTests(FixtureCase):
         self.assertEqual([(item["session"], item["revision"]) for item in a["sessions"]],
                          [(TWO, a2["revision"]), (ONE, a1["revision"])])
         self.assertEqual((states["works"]["B"]["session"], states["works"]["B"]["open"]), (ONE, False))
-        self.assertEqual(states["skipped"], [{"session_dir": store.digest(THREE), "error": "CORRUPT_RECORD"}])
+        self.assertEqual(states["skipped"], [])
+        self.assertEqual(states["broken"], [{"session": THREE, "work_id": "C", "error": "CORRUPT_RECORD"}])
 
     def test_work_states_is_empty_without_sessions(self):
-        self.assertEqual(store.work_states(self.root), {"works": {}, "skipped": []})
+        self.assertEqual(store.work_states(self.root), {"works": {}, "skipped": [], "broken": []})

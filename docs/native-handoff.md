@@ -27,11 +27,28 @@ Retrying the request ID of the most recently removed record of any chain returns
 `REQUEST_ID_EXPIRED` (see Known limits below). Request IDs stay unique per session:
 reusing one for another work's content is `REQUEST_ID_REUSED`.
 
+Chains are validated per work. Records linked by `parent_record` form one chain; a
+chain with a missing record (`INCOMPLETE_CHAIN`), an unreadable or tampered record
+(its read error, usually `CORRUPT_RECORD`), a fork or a cycle (`AMBIGUOUS_CHAIN`), or
+a work_id that heads two chains (`AMBIGUOUS_CHAIN`) is broken. An unreadable record
+file breaks the work its content still names (so an older card of that work is never
+served in place of a corrupt head) and the chain of the parent it names. A broken work
+is left out of `status`, injection, snapshots and cross-session work listings, `status` lists it
+under `broken_works`, and `record` refuses to write to it with the same code (starting
+a second chain beside it would hide the break); the session's other works are read and
+written as usual. Some failures cannot be tied to one work and still fail the whole
+session closed: a corrupt `horizon.json`, a horizon that no record continues (a whole
+cut chain deleted), an unreadable record file that names no work and that no record
+names as parent, linked storage, and any problem in `snapshots/` (one chain per
+session). A session whose record chains are all broken also fails closed on reads, with
+the code of its first broken work by work_id, as before; it can still record a new work.
+
 Decisions and evidence live in a decision log, not in the cards. Each work_id has
 one append-only JSON Lines file at the repository level, beside `sessions/`:
 `<home>/v2/repos/<repo_key[:16]>/logs/<sha256(work_id as UTF-8)>.jsonl`. Every
 session of the repository (a checkout and its worktrees) appends to the same file,
-and pruning session directories never touches it. Line 1 is a header (`kind: "log"`,
+and pruning session directories never touches it (only `prune --apply` of a long done
+work removes it, see Pruning). Line 1 is a header (`kind: "log"`,
 `schema_version`, `workspace_id`, `work_id`); every later line is one entry:
 
 - decision: `{id, kind: "decision", at, session, record, text, refs?, supersedes?}`
@@ -103,7 +120,9 @@ session startup/workspace configuration; do not fabricate binding files.
 `--work "<work_id>"` to read that work's card instead (both null when the session
 has not recorded it). When the session has cards of other works, `other_works` lists
 them, most recently written first, as `work_id`, `phase`, `revision` and
-`recorded_at`; a session with a single work has no `other_works` field.
+`recorded_at`; a session with a single work has no `other_works` field. When some of
+the session's work chains fail validation (see Where records live), `broken_works`
+lists them as `work_id` and `error`; without any it is absent.
 
 `facts` holds `path` (the facts.json file), `updated_at`, `last_change_at`, `repos`
 (at most 5: `root`, `branch`, `dirty` listed/`dirty_total` uncommitted entries,
@@ -517,33 +536,40 @@ move, re-check and delete steps as below; a session that became fresh or locked 
 between is moved back. Skipped: the `--session` dir and its `.pruning-` leftover, a
 dir whose lock is held (`STORE_BUSY`), a dir with unexpected content
 (`UNEXPECTED_CONTENT`), and a dir whose stored `workspace_id` belongs to another
-repo (`FOREIGN_REPO`). Under `--apply`, an expired session kept because removal or
-archiving was refused is listed only in `skipped`, and one kept by an OS error
+repo (`FOREIGN_REPO`). Under `--apply`, an expired session kept because removal
+was refused is listed only in `skipped`, and one kept by an OS error
 (for example a permission error or a recreated dir) only in `errors`, not under
 `expired`; the dry run lists it under `expired`. Nothing is deleted automatically.
 
-Decisions outlive expiry. Before an expired session (or a reclaimable `.pruning-`
-leftover) is moved aside or deleted, `--apply` preserves its newest record for each
-`payload.work_id` in the repo-level archive `<store home>/v2/repos/<repo dir>/archive/`,
-beside `sessions/`. Each work_id has one file,
-`sha256(work_id as UTF-8)` hex, first 32 characters, plus `.json`, holding that
-record exactly as stored in `records/` (same schema, checksum intact, no wrapper).
-Candidates are the session's checksum-valid records plus the records its valid
-snapshots copied, so a record already trimmed from `records/` still counts; per
-work_id the newest `recorded_at` wins. The newest also wins across sessions: an
-archive file is replaced only by a strictly newer record, never by an older or equal
-one. The dry run writes nothing and lists the work_ids under `archive` on each
-expired entry (on leftovers when non-empty); unreadable, checksum-invalid or
-mismatched records are skipped and named under `archive_skipped` (`file`, `reason`)
-without blocking removal. If archiving fails the session is kept: a guard refusal,
-busy archive lock (`STORE_BUSY`), write failure (`WRITE_FAILED`), an existing
-archive file that is not a valid record of that work_id (`CORRUPT_ARCHIVE`, never
-overwritten) or one of another repo (`FOREIGN_REPO`) is listed in `skipped`; an OS
-error is listed in `errors` with `left_at: null`. Archiving takes the archive lock,
-which refuses a store home inside a repo that does not ignore it: there, an expired
-session or leftover with archivable records is listed in `skipped` as
-`STORE_INSIDE_REPO` (or `GIT_UNREADABLE` when Git cannot answer) and kept, while one
-with nothing archivable is still removed.
+Decisions outlive expiry: they live in the decision logs, which removing a session
+never touches. `prune` no longer writes the repo-level archive
+`<store home>/v2/repos/<repo dir>/archive/`; archive files written by earlier runtimes
+stay as they are and remain readable by `search` and `migrate`. Schema 1 cards not yet
+imported by `migrate --apply` still hold their decisions, so run the migration before
+pruning sessions that hold them.
+
+Done-work logs. `prune` also lists, under `done_logs`, the decision log of each work
+whose newest card across all sessions has phase `done` and whose idle time (the later
+of that card's `recorded_at` and the log's newest entry `at`) exceeds 180 days
+(`older_than_days`). `--apply` removes those logs (`removed`, `removed_work_ids`):
+only `logs/<sha256(work_id)>.jsonl`, never its `.lock`, and only while holding that
+work's log lock after reading every session's cards and the log again, so a work
+reopened or logged to since the listing is kept and listed in `skipped` as `OPEN` or
+`RECENT`. Kept and listed in `skipped` (`work_id`, `reason`): a work with a broken
+chain in any session (its chain code), and any candidate while a session dir cannot be
+read at all (`SESSIONS_UNREADABLE`, its cards are unknown); an unreadable log is listed
+by file name (`log`, `reason`, e.g. `CORRUPT_LOG`). Logs of works with no card left in
+any session (for example after their sessions expired) are listed under `orphans`
+(`work_id`, `entries`, `newest`) and never removed. Removal OS errors go to `errors`.
+Done-work logs are evaluated before any session dir is removed in the same run. A later
+`record` of a removed work starts a new log at `D1`/`E1`. A `record` without new entries
+does not take the log lock, so a card-only reopen that lands between the re-check and the
+delete is not seen (that window is only the delete itself).
+
+Migrate backups. `log_backups` lists `migrate`'s `backups/logs-<UTC time>` dirs, oldest
+first, as `dir`, `created_at` (from the name, else the dir mtime) and `age_days`.
+`prune` never deletes them, with or without `--apply`: delete a backup dir by hand once
+the migration is settled.
 
 Known limits: `horizon.json` carries no checksum, so tampering with it can hide or
 remove records; a reader that overlaps a trim can see a transient
@@ -725,8 +751,8 @@ seconds), copies that work's committed log bytes into
 empty file when the work had no log; fsynced), and only then appends the work's
 entries in one write and cuts any torn tail. A failed backup aborts that work before
 anything is appended, and an empty backup dir is removed. This store-level
-`backups/` is not the installer's `<config dir>/provost/backups`. Nothing prunes it,
-and its copies hold log text unredacted (a later `redact` does not reach them):
+`backups/` is not the installer's `<config dir>/provost/backups`. `prune` lists its
+dirs with their age (`log_backups`) but never deletes them, and its copies hold log text unredacted (a later `redact` does not reach them):
 delete backup dirs by hand once the migration is settled.
 
 Rollback, keeping live entries recorded after the migration: remove every line with
