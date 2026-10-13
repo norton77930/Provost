@@ -30,6 +30,11 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 - `tools/dispatch-report.js`: cost and outcome report of past dispatches.
 - CI for the runtime and installer on Windows, Ubuntu and macOS, and a Markdown
   link check.
+- Policy §11 Compact instructions: compaction summaries also separate verified
+  from unverified work, list what is still running or uncommitted, and carry
+  open questions with their options. A 2026-10-13 baseline of 44 compactions
+  found no context-loss corrections; these were the only gaps against
+  ctx-handoff-mod's handoff checklist.
 
 ### Fixed
 
