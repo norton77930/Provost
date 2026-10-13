@@ -89,6 +89,8 @@ def main(argv=None):
         parser.add_argument("--since")
         parser.add_argument("--limit")
         parser.add_argument("--show")
+        # search: --work keeps one work_id, --kind (decision|evidence) one entry kind.
+        parser.add_argument("--kind")
         parser.add_argument("--all-repos", action="store_true")
         # redact (maintainer only, see docs): the entry of the --work log and an optional reason.
         parser.add_argument("--entry")
@@ -126,7 +128,8 @@ def main(argv=None):
                     result = search.show(root, options.show, all_repos=options.all_repos)
                 else:
                     result = search.find(root, options.query, all_repos=options.all_repos,
-                                         since=options.since, limit=options.limit)
+                                         since=options.since, limit=options.limit,
+                                         work=options.work, kind=options.kind)
             elif options.command == "redact":
                 if not options.work or options.entry is None:
                     raise StoreError("INVALID_ARGUMENTS")
