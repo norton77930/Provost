@@ -113,6 +113,21 @@ class DecisionLogTests(FixtureCase):
         self.assertEqual(set(out["template"]), {"work_id", "phase", "sources", "assignments", "blockers", "next",
                                                 "suggested_skills", "new_decisions", "new_evidence"})
 
+    def test_status_redacts_schema_1_decisions_evidence_and_other_works(self):
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0"
+        legacy = dict(self.payload("legacy next"), work_id="A", decisions=["old " + token],
+                      evidence=[{"claim": "claim " + token, "ref": "r " + token, "state": "pass-observed"}])
+        old = self.record_v1(self.root, "s1", legacy, None, "old")
+        self.record(dict(self.request("B"), phase="phase " + token), request_id="b1")
+        out = self.status("A")
+        self.assertNotIn(token, json.dumps(out))
+        payload = out["checkpoint"]["payload"]
+        self.assertEqual(payload["decisions"], ["old [REDACTED]"])
+        self.assertEqual(payload["evidence"], [{"claim": "claim [REDACTED]", "ref": "r [REDACTED]",
+                                                "state": "pass-observed"}])
+        self.assertEqual(out["expected"], old["revision"])
+        self.assertEqual([(w["work_id"], w["phase"]) for w in out["other_works"]], [("B", "phase [REDACTED]")])
+
     def test_status_template_is_a_valid_record_request(self):
         template = self.status()["template"]
         self.assertEqual(set(template), {"work_id", "phase", "sources", "assignments", "blockers", "next",

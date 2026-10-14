@@ -22,7 +22,7 @@ STATUS_LOG = 10  # newest decision log entries of the shown work in status
 
 def _redacted_checkpoint(card):
     """The card with secret-like strings out of the payload text shown to the model (phase, next, blockers, source
-    item/ref, assignment task). Revision, work_id, agent_id, write_scope and the rest stay verbatim."""
+    item/ref, assignment task; a schema 1 card's decisions and evidence claim/ref). Revision, work_id, agent_id, write_scope and the rest stay verbatim."""
     if not card:
         return card
     payload = dict(card["payload"])
@@ -31,6 +31,11 @@ def _redacted_checkpoint(card):
     payload["sources"] = [{**source, **{key: search.redact(source[key]) for key in ("item", "ref") if key in source}}
                           for source in payload["sources"]]
     payload["assignments"] = [{**item, "task": search.redact(item["task"])} for item in payload["assignments"]]
+    if "decisions" in payload:  # schema 1 cards still carry their decisions and evidence inline
+        payload["decisions"] = search.redact(payload["decisions"])
+    if "evidence" in payload:
+        payload["evidence"] = [{**item, **{key: search.redact(item[key]) for key in ("claim", "ref") if key in item}}
+                               for item in payload["evidence"]]
     return {**card, "payload": payload}
 
 
@@ -188,7 +193,7 @@ def main(argv=None):
                               "template": {"work_id": "", "phase": "", "sources": [],
                                            "assignments": [], "blockers": [], "next": "", "suggested_skills": [],
                                            "new_decisions": [], "new_evidence": []}}
-                    others = [{"work_id": head["payload"]["work_id"], "phase": head["payload"]["phase"],
+                    others = [{"work_id": head["payload"]["work_id"], "phase": search.redact(head["payload"]["phase"]),
                                "revision": head["revision"], "recorded_at": head["recorded_at"]}
                               for head in heads if head["payload"]["work_id"] != work]
                     if others:  # only for a session with several works: single-work output is unchanged
