@@ -367,6 +367,60 @@ class InstallTests(InstallCase):
         self.assertEqual(again.name, f"SKILL.md.local-{stamp}-1.bak")
         self.assertEqual(again.read_bytes(), b"second local\n")
 
+    def test_failed_write_drops_the_kept_skill_copy_and_restores_the_local_one(self):
+        before = self.snapshot()
+        real_replace = os.replace
+
+        def flaky(src, dst):  # CLAUDE.md is written last: the skill was already overwritten by then
+            if Path(dst).name == "CLAUDE.md":
+                raise OSError("disk full")
+            return real_replace(src, dst)
+
+        with mock.patch.object(install.os, "replace", flaky):
+            code, _, err = self.run_cli("install")
+        self.assertEqual(code, 2)
+        self.assertIn("all changes rolled back", err)
+        self.assertNotIn("rollback incomplete", err)
+        self.assertEqual(self.side_backups(), [])
+        self.assertEqual((self.config / "skills/handoff/SKILL.md").read_bytes(), b"local handoff\n")
+        after = {k: v for k, v in self.snapshot().items() if not k.startswith("provost/backups/")}
+        self.assertEqual(after, before)
+
+    def test_failed_backup_phase_drops_the_kept_skill_copy(self):
+        real_replace = os.replace
+
+        def flaky(src, dst):  # the kept copy exists by the time the manifest is written
+            if Path(dst).name == "manifest.json":
+                self.assertEqual(len(self.side_backups()), 1)
+                raise OSError("manifest refused")
+            return real_replace(src, dst)
+
+        before = self.snapshot()
+        with mock.patch.object(install.os, "replace", flaky):
+            code, _, err = self.run_cli("install")
+        self.assertEqual(code, 2)
+        self.assertIn("no managed file was changed", err)
+        self.assertEqual(self.side_backups(), [])
+        self.assertEqual((self.config / "skills/handoff/SKILL.md").read_bytes(), b"local handoff\n")
+        after = {k: v for k, v in self.snapshot().items() if not k.startswith("provost/backups/")}
+        self.assertEqual(after, before)
+
+    def test_exhausted_kept_copy_names_fails_like_any_backup_failure(self):
+        before = self.snapshot()
+        # Every candidate name reports as taken, so keep_local raises InstallError (not OSError).
+        with mock.patch.object(install, "open", side_effect=FileExistsError, create=True):
+            code, _, err = self.run_cli("install")
+        self.assertEqual(code, 2)
+        self.assertIn("could not create a unique local copy", err)
+        self.assertIn("backup failed", err)
+        self.assertIn("no managed file was changed", err)
+        [partial] = self.backups()
+        self.assertIn(str(partial), err)
+        self.assertIn("can be deleted", err)
+        self.assertEqual(self.side_backups(), [])
+        after = {k: v for k, v in self.snapshot().items() if not k.startswith("provost/backups/")}
+        self.assertEqual(after, before)
+
     def test_dry_run_names_the_local_skill_copy_it_would_keep(self):
         before = self.snapshot()
         code, out, _ = self.run_cli("install", "--dry-run")
