@@ -5,6 +5,7 @@ python install.py [install|check] [--dry-run] [--config-dir DIR] [--source DIR] 
 
 check (default) is read-only: exit 0 no drift, 1 drift, 2 error (--dry-run is rejected with check).
 install writes only changed targets, after backing them up: exit 0 success, 2 error.
+The first time it replaces a local skills/handoff/SKILL.md it also keeps that copy beside it.
 An error or interrupt during install rolls back and names the backup dir.
 Stdlib only; never reads or prints settings.json values beyond the hook commands it inspects.
 """
@@ -26,6 +27,9 @@ POLICY_SOURCE = "native/CLAUDE.native.md"
 POLICY_TARGET = "CLAUDE.md"
 BEGIN = b"<!-- claudex-native:begin -->"
 END = b"<!-- claudex-native:end -->"
+# A local copy of this file that differs is kept beside it (<name>.local-<UTC time>.bak) before the
+# installer first overwrites it; once such a copy exists, later installs only use the backup dir.
+KEEP_LOCAL = "skills/handoff/SKILL.md"
 HOOK_EVENTS = {"SessionStart": f"{RUNTIME}/hooks/native-event",
                "PostToolUse": f"{RUNTIME}/hooks/native-facts"}
 
@@ -56,7 +60,7 @@ def source_targets(source):
     pairs += [(f"docs/compatibility/{p.name}", f"{RUNTIME}/docs/compatibility/{p.name}")
               for p in _glob(source, "docs/compatibility", "*.md")]
     pairs += [(f"agents/{p.name}", f"agents/{p.name}") for p in _glob(source, "agents", "*.md")]
-    # skills/handoff/ is deliberately never installed: the user keeps a different local version.
+    pairs.append((KEEP_LOCAL, KEEP_LOCAL))
     pairs.append(("skills/verification-before-completion/SKILL.md",
                   "skills/verification-before-completion/SKILL.md"))
     pairs.append(("tools/dispatch-report.js", "experiments/dispatch-report.js"))
@@ -232,8 +236,50 @@ def atomic_write(path, data, mode=None):
                 pass  # best effort: never mask the write result or its error
 
 
+def _stamp():
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def kept_copies(config, rel):
+    path = config / rel
+    return sorted(path.parent.glob(path.name + ".local-*.bak"))
+
+
+def to_keep(config, changes):
+    """Rels of KEEP_LOCAL when this install would first overwrite a differing local copy."""
+    return [t.rel for t in changes
+            if t.rel == KEEP_LOCAL and t.status == "modified" and not kept_copies(config, t.rel)]
+
+
+def keep_local(config, rel, force=False):
+    """Copy config/rel to <name>.local-<UTC time>[-n].bak beside it and return that path.
+
+    None when a kept copy already exists (unless force). An existing name is never overwritten.
+    """
+    path = config / rel
+    if not force and kept_copies(config, rel):
+        return None
+    data, stamp = path.read_bytes(), _stamp()
+    for n in range(100):
+        dest = path.with_name(f"{path.name}.local-{stamp}" + (f"-{n}" if n else "") + ".bak")
+        try:
+            stream = open(dest, "xb")
+        except FileExistsError:
+            continue
+        try:
+            with stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except BaseException:
+            dest.unlink(missing_ok=True)  # a torn copy must not count as the kept one
+            raise
+        return dest
+    raise InstallError(f"could not create a unique local copy beside {rel}")
+
+
 def backup_dir(config):
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = _stamp()
     root = config / "provost/backups"
     root.mkdir(parents=True, exist_ok=True)
     for n in range(100):
@@ -259,15 +305,19 @@ def install(config, changes):
     backup = None
     changed = [t.rel for t in changes if (config / t.rel).exists()]
     created = [t.rel for t in changes if t.rel not in changed]
+    kept = []
     try:
         backup = backup_dir(config)
         for rel in changed:
             dest = backup / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(config / rel, dest)
-        manifest = {"schema_version": 1, "changed": changed, "created": created}
+        for rel in to_keep(config, changes):
+            kept.append(keep_local(config, rel).relative_to(config).as_posix())
+        manifest = {"schema_version": 1, "changed": changed, "created": created, "kept_local": kept}
         atomic_write(backup / "manifest.json", (json.dumps(manifest, indent=2) + "\n").encode("utf-8"))
     except OSError as exc:
+        drop_kept(config, kept)  # the local file is unchanged, so its kept copy is only a duplicate
         # Nothing managed has been written yet. The partial backup dir is kept (an error path should
         # not delete anything) and named, so the user can see it holds only unfinished copies.
         left = (f"; partial backup dir {backup} has no manifest and can be deleted" if backup
@@ -286,7 +336,7 @@ def install(config, changes):
             written.append(target.rel)
             atomic_write(path, target.desired, mode)
     except BaseException as exc:  # includes KeyboardInterrupt: never leave a half-written config
-        failed = rollback(config, backup, written, set(changed), new_dirs)
+        failed = rollback(config, backup, written, set(changed), new_dirs) + drop_kept(config, kept)
         reason = str(exc) if isinstance(exc, OSError) else type(exc).__name__
         if failed:
             outcome = f"rollback incomplete: {', '.join(failed)}; backup kept at {backup}"
@@ -297,7 +347,18 @@ def install(config, changes):
             raise InstallError(message) from exc
         print(f"install.py: {message}", file=sys.stderr)
         raise
-    return backup, changed, created
+    return backup, changed, created, kept
+
+
+def drop_kept(config, kept):
+    """Remove the local copies this run kept (the file they copy is back in place); failures listed."""
+    failed = []
+    for rel in kept:
+        try:
+            (config / rel).unlink(missing_ok=True)
+        except OSError:
+            failed.append(rel)
+    return failed
 
 
 def rollback(config, backup, written, changed, new_dirs):
@@ -358,14 +419,18 @@ def main(argv=None):
             return 1 if changes else 0
         plan = [{"path": t.rel, "action": "create" if t.status == "missing" else "update"} for t in changes]
         if args.dry_run or not changes:
-            payload = {"command": "install", "dry_run": args.dry_run, "plan": plan, "backup": None}
+            keep = to_keep(config, changes)
+            payload = {"command": "install", "dry_run": args.dry_run, "plan": plan, "backup": None,
+                       "keep_local": keep}
             lines = [f"{'would ' if args.dry_run else ''}{p['action']:<6} {p['path']}" for p in plan]
+            lines += [f"would keep local {rel} beside it as {Path(rel).name}.local-<UTC time>.bak" for rel in keep]
             emit(args, payload, lines or ["nothing to install: no drift"])
             return 0
-        backup, changed, created = install(config, changes)
+        backup, changed, created, kept = install(config, changes)
         payload = {"command": "install", "dry_run": False, "plan": plan, "backup": str(backup),
-                   "changed": changed, "created": created}
+                   "changed": changed, "created": created, "kept_local": kept}
         emit(args, payload, [f"{p['action']:<6} {p['path']}" for p in plan]
+             + [f"kept local copy: {rel}" for rel in kept]
              + [f"installed: {len(changed)} updated, {len(created)} created", f"backup: {backup}"])
         return 0
     except (InstallError, OSError) as exc:

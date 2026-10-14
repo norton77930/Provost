@@ -64,7 +64,8 @@ by `at`, and entries with the same `at` keep their log order (ids ascending per
 kind). Ids are assigned and lines appended under a per-work lock
 (`logs/<sha256(work_id)>.lock`) that a `record` waits for up to 10 seconds
 (`STORE_BUSY` after), so concurrent writers from any session or worktree never
-reuse an id. Entries are never rewritten (except by `redact`, see below). A line exists only once its terminating
+reuse an id. Entries are never rewritten, except by the maintainer-only `redact`
+command (see [Redact](#redact)). A line exists only once its terminating
 newline is written: all lines of one `record` go out in one write followed by
 fsync. Bytes after the last newline are a torn append (a crash mid-write): readers
 ignore them and the next append cuts them off. A newline-terminated line that is
@@ -304,6 +305,24 @@ last warnings, and counts what it dropped as `N more, see status`; the card is a
 kept (clipped only when it alone does not fit). Secret-like strings in `warnings` and
 `echo` are replaced by `[REDACTED]`, as in search output.
 
+### Writing entries
+
+The checks catch structure and likely omissions, not meaning. Write entries so that
+a session that never saw the conversation understands them:
+
+- Write only what is new since this session's last record; never restate the log.
+- A decision is one self-contained sentence: the decision, `because` the reason, with
+  specifics (files, values, PR or issue numbers). No pronouns or "as above".
+- Name commits by hash (7 or more characters) and dispatches by role and task, in
+  `refs` or the text, so `UNREFERENCED_COMMITS` and `UNMENTIONED_DISPATCHES` stay quiet
+  for the right reason.
+- Correct or retract a decision with a new decision whose `supersedes` names the
+  latest entry of its chain; record a changed verification state with new evidence
+  whose `updates` names the earlier entry. Old entries are never edited.
+
+The example under [Read status before writing](#read-status-before-writing) follows
+these rules.
+
 ### Joining work
 
 A work's log is shared by every session of the repository, so reusing a work_id by
@@ -492,8 +511,9 @@ carry identity, operations and the new-work notice, plus a menu of joinable work
 up to 5 works of the repository whose newest card is not `done` (from `work_states`,
 across all sessions), newest card first, one line each with the work_id (cut to 80
 characters), phase, last update (UTC) and the first 8 characters of the session that
-wrote that card, then a hint to continue with `/handoff resume <snapshot-id>` or to
-record the work_id with `--join` on the first write. The menu is redacted and loads no
+wrote that card, then a hint to continue one by running `list` to get the id of a
+snapshot that holds it and then `/handoff resume <snapshot-id>`, or to record the
+work_id with `--join` on the first write. The menu is redacted and loads no
 card content, decisions or evidence; it is omitted without error when the store cannot
 be read. Compact and resume add,
 in priority order: the save status with the required action (after a facts-only
@@ -867,6 +887,29 @@ after the migration. Either way, reinstall the previous runtime if needed. Recor
 snapshot and archive files are never modified, so schema 1 cards still hold their
 decisions and evidence. A runtime with the decision log but without `migrate` reads
 migrated entries as they are.
+
+## Install and rollout
+
+`python install.py install` copies the runtime and the repository's `/handoff` skill
+(`skills/handoff/SKILL.md`) into the Claude config dir; `python install.py check`
+reports the skill like every other target (`missing`, `modified` or `ok`). The first
+time `install` replaces a local skill that differs, it also keeps that copy beside it
+as `skills/handoff/SKILL.md.local-<UTC time>.bak` (a name that already exists gets a
+`-1`, `-2`, … suffix; nothing is overwritten). Once such a copy exists, later installs
+back the skill up only in `<config dir>/provost/backups/install-<UTC time>/`, like
+every other changed file. A failed install removes the copy it kept together with its
+other changes. `--dry-run` names the copy it would keep.
+
+Rolling out the decision log, in this order:
+
+1. Merge, then `python install.py install`.
+2. `migrate` (dry run); the user reviews its output.
+3. `migrate --apply`.
+4. Only then `prune` and, after the user has reviewed its listing, `prune --apply`
+   (before the migration, prune keeps sessions with `UNMIGRATED_DECISIONS`).
+
+Rollback limits are under [Migrate](#migrate) (removing migrated entries or restoring
+the log backups) and [Redact](#redact) (what redaction does not reach).
 
 ## Reminder hook
 

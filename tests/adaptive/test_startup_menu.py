@@ -50,6 +50,11 @@ class StartupMenuTests(FixtureCase):
         self.assertIn("--join", text)
         self.assertIn("New work context", text)
 
+    def test_hint_says_to_list_snapshots_before_resuming(self):
+        self.write("work-a", "abcdef01-aaaa-4bbb-8ccc-000000000000", 5)
+        hint = next(line for line in self.start().splitlines() if "/handoff resume" in line)
+        self.assertRegex(hint, r"\blist\b.*snapshot id.*/handoff resume <snapshot-id>")
+
     def test_the_newest_card_of_a_work_names_the_session_that_wrote_it(self):
         self.write("shared", "aaaaaaaa-aaaa-4bbb-8ccc-000000000000", 50)
         self.write("shared", "bbbbbbbb-aaaa-4bbb-8ccc-000000000000", 5)
