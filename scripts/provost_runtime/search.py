@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import handoff_home
+from .redact import REMOVED
 from .store import (CHAINS, ID, REPO_DIR_CHARS, StoreError, Workspace, _archive_path, _parse_log,
                     _read, _when, digest, encoded, guard, newest_entries, snapshot_cards, validate_payload)
 
@@ -161,6 +162,25 @@ def _repo_entries(home, repo_dir, skipped):
     return entries
 
 
+def evidence_claims(entries):
+    """The current state of each claim of a log's evidence, the one rule search, injection and echo share:
+    [(current entry, [the claim's other chain heads, oldest first]), ...], ordered by current entry, oldest first.
+
+    A chain follows `updates` links; its head is an evidence entry no evidence entry updates (an entry in an
+    update cycle heads nothing). Chains whose heads have exactly the same claim text are one claim (a migrated
+    chain and a live one are never linked), and its current entry is the head with the newest `at`, then log
+    order. A redacted head (`redacted_at`, or the claim `[removed]`) never joins by text: its chain stands alone."""
+    evidence = [entry for entry in entries if entry["kind"] == "evidence"]
+    updated = {entry["updates"] for entry in evidence if "updates" in entry}
+    heads = newest_entries([entry for entry in evidence if entry["id"] not in updated], len(evidence))
+    claims = {}
+    for head in heads:  # oldest first, so each claim's last head is its current entry
+        alone = "redacted_at" in head or head["claim"] == REMOVED
+        claims.setdefault(("entry", head["id"]) if alone else ("claim", head["claim"]), []).append(head)
+    rank = {head["id"]: i for i, head in enumerate(heads)}
+    return sorted(((group[-1], group[:-1]) for group in claims.values()), key=lambda item: rank[item[0]["id"]])
+
+
 class DecisionLog:
     """A work's verified log entries and the links between them (read-only views).
 
@@ -174,10 +194,9 @@ class DecisionLog:
         self.by_id = {entry["id"]: entry for entry in entries}
         self.order = newest_entries(entries, len(entries))  # oldest first: by time, then log order
         self.position = {entry["id"]: i for i, entry in enumerate(self.order)}
-        self.superseded_by, self.updated_by, self.links, self.claims = {}, {}, {}, {}
+        self.superseded_by, self.updated_by, self.links = {}, {}, {}
+        self.current = {head["id"]: latest for latest, older in evidence_claims(entries) for head in (latest, *older)}
         for entry in entries:  # log order: with several pointers at one target the last one wins
-            if entry["kind"] == "evidence":
-                self.claims.setdefault(entry["claim"], []).append(entry["id"])
             target = entry.get("supersedes") if entry["kind"] == "decision" else entry.get("updates")
             if target is None:
                 continue
@@ -185,15 +204,13 @@ class DecisionLog:
             (self.superseded_by if entry["kind"] == "decision" else self.updated_by)[target] = entry["id"]
 
     def latest(self, ident):
-        """The current entry of evidence `ident`: the newest in time order of the end of its update chain
-        and every evidence entry of the work with the same claim text (a migrated chain and a live one
-        for one claim are never linked, so the claim text joins them)."""
+        """The current entry of evidence `ident`: the end of its update chain, then that head's claim's
+        current entry by evidence_claims (an entry in an update cycle is its own current entry)."""
         seen = {ident}
         while ident in self.updated_by and self.updated_by[ident] not in seen:
             ident = self.updated_by[ident]
             seen.add(ident)
-        same = self.claims.get(self.by_id[ident].get("claim"), ())
-        return self.by_id[max([ident, *same], key=self.position.__getitem__)]
+        return self.current.get(ident, self.by_id[ident])
 
     def chain(self, ident):
         """(entries connected to `ident` through supersede/update links in either direction, in time

@@ -1,7 +1,7 @@
 """SessionStart compact/resume injection of state cards, open evidence and decisions (#22)."""
 import json
 from _support import FixtureCase
-from provost_runtime import store
+from provost_runtime import redact, store
 from provost_runtime.hooks import handle_event
 
 
@@ -127,6 +127,27 @@ class RecoveryInjection(FixtureCase):
             self.assertIn(head, text)
         for cycled in ("CYCLE-A", "CYCLE-B"):  # each is updated by the other: neither is a head
             self.assertNotIn(cycled, text)
+
+    def test_a_migrated_chain_and_a_live_chain_of_one_claim_count_by_the_newest_head(self):
+        self.write("work-beta", evidence=[{"claim": "CLAIM-M", "state": "pass-observed", "ref": "r"},
+                                          {"claim": "CLAIM-N", "state": "fail", "ref": "r"}])
+        old = {"migrated": True, "at": "2020-01-01T00:00:00+00:00"}
+        self.append_raw("work-beta", dict(old, id="E3", claim="CLAIM-M", state="unverified"),
+                        dict(old, id="E4", claim="CLAIM-M", state="fail", updates="E3"),
+                        dict(old, id="E5", claim="CLAIM-N", state="pass-observed"))
+        text = self.start()
+        self.assertNotIn("CLAIM-M", text)  # the live pass is newer than the migrated fail
+        self.assertIn("E2 [fail] CLAIM-N", text)  # the live fail is newer than the migrated pass
+        self.assertIn("Passed claims: 1.", text)
+
+    def test_redacted_chains_never_join_by_their_removed_claim(self):
+        self.write("work-beta", evidence=[{"claim": "CLAIM-X", "state": "fail", "ref": "r"},
+                                          {"claim": "CLAIM-Y", "state": "pass-observed", "ref": "r"}])
+        for entry in ("E1", "E2"):
+            redact.redact(self.root, "work-beta", entry)
+        text = self.start()
+        self.assertIn("E1 [fail] [removed]", text)
+        self.assertIn("Passed claims: 1.", text)
 
     def test_many_other_works_degrade_to_a_count(self):
         for i in range(60):

@@ -307,9 +307,7 @@ def echo(data, log, warnings):
     card_text = " ".join(lines[0].split()) + "".join("\n" + " ".join(line.split()) for line in lines[1:])
     sections = []
     if log is not None:
-        evidence = [e for e in log if e["kind"] == "evidence"]
-        updated = {e["updates"] for e in evidence if "updates" in e}
-        still_open = [e for e in evidence if e["id"] not in updated and e["state"] != PASSED]
+        still_open = [e for e, _ in search.evidence_claims(log) if e["state"] != PASSED]
         superseded = {e["supersedes"] for e in log if e["kind"] == "decision" and "supersedes" in e}
         current = [e for e in log if e["kind"] == "decision" and e["id"] not in superseded]
         sections.append(["Open evidence", [_clip("- %s [%s] %s (%s)" % (e["id"], e["state"], e["claim"], e["ref"]),

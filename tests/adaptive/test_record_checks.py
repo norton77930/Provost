@@ -5,6 +5,7 @@ import subprocess
 import time
 from datetime import datetime
 from _support import BASH, FixtureCase, REPO
+from provost_runtime import redact, store
 from provost_runtime.hooks import bind
 
 RUNTIME = REPO / "hooks" / "runtime"
@@ -242,6 +243,28 @@ class RecordChecksTests(FixtureCase):
         self.assertNotIn("D2 ", echo)  # not among the 3 newest
         self.assertIn("SHORT_DECISION", echo)
         self.assertLessEqual(len(echo), 1500)
+
+    def test_echo_counts_a_claim_with_a_migrated_and_a_live_chain_by_the_newest_head(self):
+        first = self.record(self.request(evidence=[{"claim": "parser ok", "state": "pass-observed", "ref": "t"},
+                                                   {"claim": "lexer ok", "state": "fail", "ref": "t"}]))
+        path = store._log_paths(store.as_workspace(self.root), "A")[0]
+        old = {"kind": "evidence", "at": "2020-01-01T00:00:00+00:00", "session": "x", "ref": "r", "migrated": True}
+        with path.open("ab") as stream:
+            for entry in ({"id": "E3", "claim": "parser ok", "state": "fail"},
+                          {"id": "E4", "claim": "lexer ok", "state": "pass-observed"}):
+                stream.write(json.dumps(dict(old, **entry)).encode() + b"\n")
+        echo = self.record(self.request(decisions=[{"text": LONG}]), first["revision"], "r2")["echo"]
+        self.assertNotIn("parser ok", echo)  # the live pass is newer than the migrated fail
+        self.assertIn("E2 [fail] lexer ok", echo)  # the live fail is newer than the migrated pass
+
+    def test_echo_never_joins_redacted_chains_by_their_removed_claim(self):
+        first = self.record(self.request(evidence=[{"claim": "one", "state": "fail", "ref": "t"},
+                                                   {"claim": "two", "state": "pass-observed", "ref": "t"}]))
+        for entry in ("E1", "E2"):
+            redact.redact(self.root, "A", entry)
+        echo = self.record(self.request(decisions=[{"text": LONG}]), first["revision"], "r2")["echo"]
+        self.assertIn("E1 [fail] [removed]", echo)
+        self.assertNotIn("E2 [", echo)
 
     def test_echo_is_capped_trimming_decisions_then_evidence_then_warnings(self):
         long_text = "y" * 900

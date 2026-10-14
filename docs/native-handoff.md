@@ -76,6 +76,15 @@ refuses to append. A `record` appends its entries before it writes its card; if 
 is interrupted in between, replaying the same request appends only what is missing.
 Entries logged by an interrupted request that is never replayed stay in the log.
 
+**Current state of a claim.** Search, the recovery injection and the record echo
+share one rule. An evidence chain follows `updates`
+links; its head is an evidence entry that no evidence entry updates (entries in an
+update cycle head nothing). Chains whose heads have exactly the same claim text are
+one claim, since a migrated chain and a live chain of a claim are never linked. The
+claim's current entry is the head with the newest `at` (equal times: log order); the
+other heads are superseded. A redacted head (`redacted_at` set, claim `[removed]`)
+never joins by text: its chain is a claim of its own.
+
 Cards have `schema_version` 2 and no `decisions`/`evidence` fields; they carry
 `log_entries`, the ids the record appended. Cards of schema 1 (written before the
 decision log) stay readable as they are, with their decisions and evidence, and a
@@ -306,8 +315,9 @@ last record" is after the newest `recorded_at` of the session's cards of any wor
 Successful output keeps every earlier field and adds `echo`, a text of at most 1500
 characters: the work (its first 80 characters) and the ids just assigned (more than 8
 are shortened to the first 6, the last 2 and a count), the state card (phase, next,
-blockers, assignments), open evidence (the latest entry of each `updates` chain that
-is not `pass-observed`, oldest first), the 3 newest current decisions (newest first,
+blockers, assignments), open evidence (each claim's current entry, see "Current state
+of a claim" under [Where records live](#where-records-live), that is not
+`pass-observed`, oldest first), the 3 newest current decisions (newest first,
 by `at`) and the warnings. Each listed item is clipped to 200 characters. Over the
 cap it drops the oldest shown decisions first, then the oldest open evidence, then the
 last warnings, and counts what it dropped as `N more, see status`; the card is always
@@ -410,9 +420,9 @@ characters), `source` (`record`, `snapshot` or `archive`) and `ref`. A result fr
 the entry that replaced it, or `null`. Evidence also shows its chain's latest state:
 `state` is the state of the work's current entry for that claim and `latest` that
 entry's id, so an old "fail" whose chain ended in "pass-observed" reads
-`pass-observed`. The current entry is the newest in time order (`at`, then log order)
-among the end of the entry's `updates` chain and all evidence entries of the work with
-exactly the same claim text, so a migrated chain and a live chain of one claim that were
+`pass-observed`. It is the current entry of the claim whose chain head the entry's
+`updates` links lead to (see "Current state of a claim" under [Where records
+live](#where-records-live)), so a migrated chain and a live chain of one claim that were
 never linked still agree on the current state. (`--show`'s `chain` keeps only linked
 entries.)
 
@@ -534,10 +544,11 @@ compacted with zero captured events, which means capture may be failing; omitted
 without `facts.json`), the checkpoint (the session's most recently written card in
 full, or its digest when over 4,500 characters), one line per other open card of the
 session (`work_id`, phase and next step cut to 160 characters; a card with phase
-`done` is closed and not listed), the open evidence of the current work (the newest
-entry of each claim chain linked by `updates` whose state is not `pass-observed`,
-oldest first, plus `Passed claims: N`; on an adopted card, see `adopted_at` above, a
-claim whose newest entry is `pass-observed` with an `at` before the adoption time is
+`done` is closed and not listed), the open evidence of the current work (each claim's
+current entry, see "Current state of a claim" under [Where records
+live](#where-records-live), whose state is not `pass-observed`, oldest first, plus
+`Passed claims: N`; on an adopted card, see `adopted_at` above, a claim whose current
+entry is `pass-observed` with an `at` before the adoption time is
 listed after the open ones as `[passed before adoption, not re-verified]` and not
 counted as passed), the current work's decisions (the newest 15
 that no entry supersedes, ordered by `at` then log order and listed oldest first,
@@ -842,7 +853,8 @@ ones. Migrated chains never link to live entries. Expected consequences: a live 
 recorded before the migration can coexist with a migrated entry of the same text (after
 the migration, `record` skips an exact restatement as `DUPLICATE_SKIPPED`), and
 when a claim has both a migrated chain and a live chain, its current state is the
-entry with the newest `at`.
+chain head with the newest `at` (see "Current state of a claim" under [Where records
+live](#where-records-live)).
 
 Idempotent: all of one work's new entries go out in one write, so a candidate whose
 card revision already appears as `record` among the work's `migrated: true`

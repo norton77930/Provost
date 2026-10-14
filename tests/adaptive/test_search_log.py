@@ -7,7 +7,7 @@ import os
 import subprocess
 from unittest import mock
 from _support import BASH, FixtureCase, REPO
-from provost_runtime import cli
+from provost_runtime import cli, redact
 from provost_runtime.store import as_workspace, record
 
 GITHUB_TOKEN = "ghp_" + "A1b2C3d4E5f6G7h8I9j0"
@@ -290,6 +290,34 @@ class SearchLogTests(FixtureCase):
         shown = self.found("--show", "w:E1")
         self.assertEqual((shown["state"], shown["latest"]), ("fail", "E2"))
         self.assertEqual([e["id"] for e in shown["chain"]], ["E1"])
+
+    def append_migrated(self, work, *entries):
+        """Hand-written migrated evidence lines, as `migrate` appends them after live entries."""
+        with self.log_path(work).open("ab") as stream:
+            for entry in entries:
+                stream.write(json.dumps(dict({"kind": "evidence", "at": "2020-01-01T00:00:00+00:00", "session": "x",
+                                              "ref": "r", "migrated": True}, **entry)).encode() + b"\n")
+
+    def test_a_claim_with_a_migrated_and_a_live_chain_is_in_the_state_of_the_newest_head(self):
+        self.write("w", evidence=[{"claim": "psi live pass", "state": "pass-observed", "ref": "r"},
+                                  {"claim": "psi live fail", "state": "fail", "ref": "r"}])
+        self.append_migrated("w", {"id": "E3", "claim": "psi live pass", "state": "unverified"},
+                             {"id": "E4", "claim": "psi live pass", "state": "fail", "updates": "E3"},
+                             {"id": "E5", "claim": "psi live fail", "state": "pass-observed"})
+        by_id = {r["id"]: r for r in self.found("--query", "psi")["results"]}
+        for ident in ("E1", "E3", "E4"):
+            self.assertEqual((by_id[ident]["state"], by_id[ident]["latest"]), ("pass-observed", "E1"))
+        for ident in ("E2", "E5"):
+            self.assertEqual((by_id[ident]["state"], by_id[ident]["latest"]), ("fail", "E2"))
+
+    def test_redacted_chains_never_join_by_their_removed_claim(self):
+        self.write("w", evidence=[{"claim": "omega one", "state": "fail", "ref": "r"},
+                                  {"claim": "omega two", "state": "pass-observed", "ref": "r"}])
+        for entry in ("E1", "E2"):
+            redact.redact(self.root, "w", entry)
+        by_id = {r["id"]: r for r in self.found("--query", "removed", "--kind", "evidence")["results"]}
+        self.assertEqual((by_id["E1"]["state"], by_id["E1"]["latest"]), ("fail", "E1"))
+        self.assertEqual((by_id["E2"]["state"], by_id["E2"]["latest"]), ("pass-observed", "E2"))
 
     def test_show_of_a_foreign_repo_log_is_refused(self):
         self.write("alien", decisions=[{"text": "chi foreign"}], ws=self.other)
