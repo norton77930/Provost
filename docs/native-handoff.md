@@ -172,7 +172,9 @@ list) and `supersedes` (the id of the decision it replaces). new_evidence entrie
 `claim` (non-empty), `ref`, `state` (pass-observed|fail|unverified|stale), optional
 `updates` (the id of the evidence entry whose claim it updates). The old `decisions`
 and `evidence` fields are refused with `LEGACY_FIELDS` and a `detail` naming the new
-fields; malformed entries are `INVALID_DECISION`/`INVALID_EVIDENCE`. No credentials,
+fields; malformed entries are `INVALID_DECISION`/`INVALID_EVIDENCE`. A card with a wrong
+field set or a malformed card field is `INVALID_PAYLOAD` with a `detail` naming the
+missing or unexpected fields (or the field that is malformed). No credentials,
 raw transcripts or large logs. Reference existing tasks/tickets rather than copying
 them. Maximum 32 KiB for the whole request.
 

@@ -106,6 +106,27 @@ class DecisionLogTests(FixtureCase):
         self.assertIsNone(self.status()["checkpoint"])
         self.assertEqual(list(self.store_home.glob("v2/repos/*/logs/*.jsonl")), [])
 
+    def test_invalid_payload_names_the_offending_fields(self):
+        def rejected(data):
+            code, out = self.runtime("record", "--expected", "null", "--request-id", "r1", data=data)
+            self.assertEqual((code, out["error"]), (1, "INVALID_PAYLOAD"))
+            return out["detail"]
+
+        data = self.request()
+        data.pop("suggested_skills")
+        self.assertEqual(rejected(data), "missing: suggested_skills")
+        self.assertEqual(rejected(dict(self.request(), foo=1, bar=2)), "unexpected: bar, foo")
+        data = dict(self.request(), foo=1)
+        data.pop("next")
+        data.pop("blockers")
+        self.assertEqual(rejected(data), "missing: blockers, next; unexpected: foo")
+        for field, value in (("work_id", ""), ("phase", 3), ("next", ""), ("sources", "x"), ("assignments", {}),
+                             ("blockers", "x"), ("suggested_skills", None), ("blockers", [1]),
+                             ("suggested_skills", ["ok", 2])):
+            with self.subTest(field=field, value=value):
+                self.assertIn(field, rejected(dict(self.request(), **{field: value})))
+        self.assertIsNone(self.status()["checkpoint"])
+
     def test_structurally_invalid_entries_are_rejected_before_anything_is_written(self):
         cases = {"INVALID_DECISION": [{"text": 5}, {"refs": []}, {"text": "t", "refs": "abc"},
                                       {"text": "t", "refs": [1]}, {"text": "t", "supersedes": 3},
