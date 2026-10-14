@@ -5,9 +5,10 @@ import io
 import json
 import os
 import subprocess
+import unittest
 from unittest import mock
 from _support import BASH, FixtureCase, REPO
-from provost_runtime import cli, redact
+from provost_runtime import cli, redact, search
 from provost_runtime.store import as_workspace, record
 
 GITHUB_TOKEN = "ghp_" + "A1b2C3d4E5f6G7h8I9j0"
@@ -324,3 +325,34 @@ class SearchLogTests(FixtureCase):
         self.log_path("alien").parent.mkdir(parents=True, exist_ok=True)
         self.log_path("alien", self.other).replace(self.log_path("alien"))
         self.assertEqual(self.search("--show", "alien:D1"), (1, {"error": "FOREIGN_REPO"}))
+
+
+def evidence(ident, claim, state, day, **extra):
+    return dict({"id": ident, "kind": "evidence", "at": "2026-01-%02dT00:00:00+00:00" % day, "session": "s",
+                 "claim": claim, "state": state, "ref": "r"}, **extra)
+
+
+class EvidenceClaimsTests(unittest.TestCase):
+    """search.evidence_claims, the current-state rule search, injection and echo share."""
+
+    def claims(self, *entries):
+        return [(latest["id"], [head["id"] for head in older]) for latest, older in search.evidence_claims(entries)]
+
+    def test_a_redacted_head_stands_alone_even_when_its_inner_entries_share_a_live_claim(self):
+        entries = [evidence("E1", "X", "fail", 1),
+                   evidence("E2", "[removed]", "pass-observed", 2, updates="E1", redacted_at="2026-02-01T00:00:00Z"),
+                   evidence("E3", "X", "fail", 3)]
+        self.assertEqual(self.claims(*entries), [("E2", []), ("E3", [])])
+        self.assertEqual(search.DecisionLog("r", "w", entries).latest("E1")["id"], "E2")
+
+    def test_two_heads_forked_from_one_entry_with_one_claim_are_one_claim(self):
+        entries = [evidence("E1", "X", "fail", 1), evidence("E2", "X", "pass-observed", 2, updates="E1"),
+                   evidence("E3", "X", "fail", 3, updates="E1")]
+        self.assertEqual(self.claims(*entries), [("E3", ["E2"])])
+
+    def test_an_inner_entry_sharing_another_heads_text_does_not_join_it(self):
+        entries = [evidence("E1", "X", "fail", 1), evidence("E2", "Y", "pass-observed", 2, updates="E1"),
+                   evidence("E3", "X", "fail", 3)]
+        self.assertEqual(self.claims(*entries), [("E2", []), ("E3", [])])
+        log = search.DecisionLog("r", "w", entries)
+        self.assertEqual((log.latest("E1")["id"], log.latest("E3")["id"]), ("E2", "E3"))

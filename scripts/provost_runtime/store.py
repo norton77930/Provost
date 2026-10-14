@@ -803,6 +803,7 @@ LOG_ENTRY_ID = re.compile(r"^([DE])([1-9][0-9]*)$")
 LOG_KINDS = {"decision": "D", "evidence": "E"}
 # migrated: true, set by migrate; redacted_at (ISO time) and the optional redaction_reason, set by redact
 LOG_RUNTIME_FIELDS = ("id", "kind", "at", "session", "record", "migrated", "redacted_at", "redaction_reason")
+REMOVED = "[removed]"  # what redact puts in place of an entry's content
 LOG_LOCK_WAIT = 10.0  # seconds a record waits for another session's append to the same work
 
 

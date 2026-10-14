@@ -11,9 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import store
-from .store import StoreError
-
-REMOVED = "[removed]"
+from .store import REMOVED, StoreError
 CONTENT = {"decision": ("text",), "evidence": ("claim", "ref")}
 MAX_REASON = 1000
 
