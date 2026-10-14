@@ -9,7 +9,8 @@ import shutil
 import stat
 import subprocess
 import tempfile
-from contextlib import contextmanager
+import time
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,7 +22,13 @@ ID = re.compile(r"^[a-f0-9]{64}$")
 
 
 class StoreError(ValueError):
-    pass
+    """str() is the error code; detail, when given, is guidance for the caller; extra, when given,
+    holds further output fields (for example the choices of WORK_CHOICE_REQUIRED)."""
+
+    def __init__(self, code, detail=None, extra=None):
+        super().__init__(code)
+        self.detail = detail
+        self.extra = extra
 
 
 @dataclass(frozen=True)
@@ -166,18 +173,30 @@ def storage_ready(root):
         raise StoreError(error)
 
 
-def validate_payload(payload):
-    required = {"work_id", "phase", "sources", "assignments", "decisions", "blockers",
-                "evidence", "next", "suggested_skills"}
-    if not isinstance(payload, dict) or set(payload) != required:
+RECORD_SCHEMA = 2  # 1: the card also carried decisions and evidence; 2: those live in the decision log
+CARD_FIELDS = frozenset({"work_id", "phase", "sources", "assignments", "blockers", "next", "suggested_skills"})
+V1_FIELDS = CARD_FIELDS | {"decisions", "evidence"}
+LOG_FIELDS = ("new_decisions", "new_evidence")
+EVIDENCE_STATES = ("pass-observed", "fail", "unverified", "stale")
+LEGACY_GUIDANCE = ("record payloads no longer carry decisions or evidence: put only what is new since this "
+                   "work's last record in new_decisions ([{text, refs?, supersedes?}]) and new_evidence "
+                   "([{claim, state, ref, updates?}]). Decisions and evidence of earlier schema 1 cards "
+                   "remain in those cards until migrate imports them; re-log any that still matter as new entries")
+
+
+def validate_payload(payload, version=RECORD_SCHEMA):
+    """A stored state card payload of record schema `version` (1 or 2)."""
+    if version not in (1, 2) or not isinstance(payload, dict) or set(payload) != (V1_FIELDS if version == 1
+                                                                                 else CARD_FIELDS):
         raise StoreError("INVALID_PAYLOAD")
     for key in ("work_id", "phase", "next"):
         if not isinstance(payload[key], str) or not payload[key]:
             raise StoreError("INVALID_PAYLOAD")
-    for key in ("sources", "assignments", "decisions", "blockers", "evidence", "suggested_skills"):
+    lists = ("sources", "assignments", "blockers", "suggested_skills") + (("decisions", "evidence") if version == 1 else ())
+    for key in lists:
         if not isinstance(payload[key], list):
             raise StoreError("INVALID_PAYLOAD")
-    for key in ("decisions", "blockers", "suggested_skills"):
+    for key in ("blockers", "suggested_skills") + (("decisions",) if version == 1 else ()):
         if any(not isinstance(item, str) for item in payload[key]):
             raise StoreError("INVALID_PAYLOAD")
     for source in payload["sources"]:
@@ -193,11 +212,15 @@ def validate_payload(payload):
                 or not isinstance(assignment["write_scope"], list)
                 or any(not isinstance(p, str) for p in assignment["write_scope"])):
             raise StoreError("INVALID_ASSIGNMENT")
-    for item in payload["evidence"]:
+    for item in payload.get("evidence", ()):
         if (not isinstance(item, dict) or set(item) != {"claim", "ref", "state"}
                 or any(not isinstance(v, str) for v in item.values())
-                or item["state"] not in ("pass-observed", "fail", "unverified", "stale")):
+                or item["state"] not in EVIDENCE_STATES):
             raise StoreError("INVALID_EVIDENCE")
+    _check_size(payload)
+
+
+def _check_size(payload):
     try:
         if len(encoded(payload)) > MAX_PAYLOAD:
             raise StoreError("PAYLOAD_TOO_LARGE")
@@ -205,6 +228,45 @@ def validate_payload(payload):
         if isinstance(exc, StoreError):
             raise
         raise StoreError("INVALID_PAYLOAD") from exc
+
+
+def _valid_decision(item):
+    """Model-supplied decision fields (types only; target checks come later)."""
+    return (isinstance(item, dict) and "text" in item and set(item) <= {"text", "refs", "supersedes"}
+            and isinstance(item["text"], str) and item["text"] != ""
+            and ("refs" not in item or (isinstance(item["refs"], list)
+                                        and all(isinstance(ref, str) for ref in item["refs"])))
+            and ("supersedes" not in item or (isinstance(item["supersedes"], str) and item["supersedes"] != "")))
+
+
+def _valid_evidence(item):
+    """Model-supplied evidence fields (types only; target checks come later)."""
+    return (isinstance(item, dict) and {"claim", "state", "ref"} <= set(item) <= {"claim", "state", "ref", "updates"}
+            and isinstance(item["claim"], str) and item["claim"] != "" and isinstance(item["ref"], str)
+            and item["state"] in EVIDENCE_STATES
+            and ("updates" not in item or (isinstance(item["updates"], str) and item["updates"] != "")))
+
+
+def split_request(payload):
+    """(state card payload, new log entries) of a record request; StoreError on any contract violation.
+
+    A request is a schema 2 card plus optional new_decisions and new_evidence lists.
+    The old decisions/evidence fields are refused with guidance (LEGACY_FIELDS). Entries
+    are (kind, fields) pairs, decisions first, each list in the given order.
+    """
+    if isinstance(payload, dict) and {"decisions", "evidence"} & set(payload):
+        raise StoreError("LEGACY_FIELDS", LEGACY_GUIDANCE)
+    if not isinstance(payload, dict):
+        raise StoreError("INVALID_PAYLOAD")
+    card = {k: v for k, v in payload.items() if k not in LOG_FIELDS}
+    validate_payload(card)
+    decisions, evidence = payload.get("new_decisions", []), payload.get("new_evidence", [])
+    if not isinstance(decisions, list) or not all(_valid_decision(item) for item in decisions):
+        raise StoreError("INVALID_DECISION")
+    if not isinstance(evidence, list) or not all(_valid_evidence(item) for item in evidence):
+        raise StoreError("INVALID_EVIDENCE")
+    _check_size(payload)
+    return card, ([("decision", item) for item in decisions] + [("evidence", item) for item in evidence])
 
 
 def atomic_write(base, path, data):
@@ -304,7 +366,8 @@ def _read(root, path, session, kind):
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise StoreError("CORRUPT_RECORD") from exc
-    if (not isinstance(data, dict) or data.get("schema_version") != 1
+    if (not isinstance(data, dict) or data.get("schema_version") not in (1, 2)
+            or isinstance(data.get("schema_version"), bool)
             or data.get("workspace_id") != ws.repo_key
             or data.get("session_id") != session or data.get("kind") != kind):
         raise StoreError("RECORD_IDENTITY_MISMATCH")
@@ -315,8 +378,66 @@ def _read(root, path, session, kind):
     body = {k: v for k, v in data.items() if k != "checksum"}
     if checksum != hashlib.sha256(encoded(body)).hexdigest():
         raise StoreError("CORRUPT_RECORD")
-    validate_payload(data.get("payload"))
+    validate_payload(data.get("payload"), data["schema_version"])
+    if "adopted_at" in data:
+        _when(data["adopted_at"])
+    if kind == "snapshot":
+        _check_other_cards(ws, data, session)
     return data
+
+
+def _check_other_cards(ws, data, session):
+    """A snapshot_version 2 snapshot's other_cards: sealed cards of this repo and session, one per work_id.
+
+    A newer snapshot_version is read as its top-level card only (see snapshot_cards); a version
+    below 2, or other_cards without a version, is corrupt."""
+    if "snapshot_version" not in data and "other_cards" not in data:
+        return  # a single-card snapshot written before multi-card snapshots
+    if _newer_snapshot(data):
+        return
+    others = data.get("other_cards")
+    if (type(data.get("snapshot_version")) is not int or data["snapshot_version"] != SNAPSHOT_VERSION
+            or not isinstance(others, list)):
+        raise StoreError("CORRUPT_RECORD")
+    works, revisions = {data["payload"]["work_id"]}, {data.get("revision")}
+    for card in others:
+        if not isinstance(card, dict) or card.get("kind") != "record":
+            raise StoreError("CORRUPT_RECORD")
+        if card.get("workspace_id") != ws.repo_key or card.get("session_id") != session:
+            raise StoreError("RECORD_IDENTITY_MISMATCH")
+        body = {k: v for k, v in card.items() if k != "checksum"}
+        if (card.get("checksum") != hashlib.sha256(encoded(body)).hexdigest()
+                or card.get("schema_version") not in (1, 2) or isinstance(card.get("schema_version"), bool)
+                or not isinstance(card.get("revision"), str) or not ID.fullmatch(card["revision"])):
+            raise StoreError("CORRUPT_RECORD")
+        validate_payload(card.get("payload"), card["schema_version"])
+        _when(card.get("recorded_at"))
+        if "adopted_at" in card:
+            _when(card["adopted_at"])
+        if card["payload"]["work_id"] in works or card["revision"] in revisions:
+            raise StoreError("CORRUPT_RECORD")
+        works.add(card["payload"]["work_id"])
+        revisions.add(card["revision"])
+
+
+# Keys a snapshot adds to the card it copies (see snapshot()); dropping them and
+# resealing with kind "record" restores that card exactly.
+SNAPSHOT_KEYS = ("checksum", "snapshot_id", "captured_at", "parent_snapshot", "snapshot_version", "other_cards")
+SNAPSHOT_VERSION = 2  # absent: one card (written before multi-card snapshots); 2: plus other_cards
+
+
+def _newer_snapshot(data):
+    """True for a snapshot_version newer than this runtime writes (read as its top-level card only)."""
+    version = data.get("snapshot_version")
+    return type(version) is int and version > SNAPSHOT_VERSION
+
+
+def snapshot_cards(data):
+    """The cards a validated snapshot holds, sealed as stored in records/: its current card (the
+    top-level copy) first, then its other_cards (none in a snapshot written before them, and
+    none read from a newer snapshot_version)."""
+    top = _seal({k: v for k, v in data.items() if k not in SNAPSHOT_KEYS} | {"kind": "record"})
+    return [top] + ([] if _newer_snapshot(data) else copy.deepcopy(data.get("other_cards", [])))
 
 
 def _seal(data):
@@ -329,7 +450,11 @@ CHAINS = {"record": "records", "snapshot": "snapshots"}
 
 
 def _horizon(directory):
-    """Newest trimmed id of each chain from horizon.json; both None without the file."""
+    """Horizon entry of each collection from horizon.json; both None without the file.
+
+    An entry is None, the newest trimmed id of the collection's one chain, or (records
+    of a session with several trimmed work chains) a list of such ids, one per chain.
+    """
     path = directory / "horizon.json"
     guard(handoff_home(), path)
     try:
@@ -338,19 +463,63 @@ def _horizon(directory):
         return dict.fromkeys(CHAINS.values())
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise StoreError("CORRUPT_RECORD") from exc
-    if (not isinstance(data, dict) or set(data) != set(CHAINS.values())
-            or any(v is not None and not (isinstance(v, str) and ID.fullmatch(v)) for v in data.values())):
+    if not isinstance(data, dict) or set(data) != set(CHAINS.values()):
         raise StoreError("CORRUPT_RECORD")
+    for value in data.values():
+        ids = value if isinstance(value, list) else [] if value is None else [value]
+        if (any(not (isinstance(v, str) and ID.fullmatch(v)) for v in ids)
+                or (isinstance(value, list) and (not value or len(set(value)) != len(value)))):
+            raise StoreError("CORRUPT_RECORD")
     return data
 
 
-def _chain(root, session, kind):
-    """(chain newest first, trimmed ids) for one session chain.
+def _horizon_ids(value):
+    """The horizon ids of one horizon.json entry."""
+    return [] if value is None else list(value) if isinstance(value, list) else [value]
 
-    Trimmed ids are the horizon and any of its ancestors still on disk (left by a
-    trim interrupted between the horizon write and the deletes); they take no part
-    in head selection. Only the oldest live object may miss its parent, and only
-    when that parent is the horizon.
+
+def _horizon_entry(ids):
+    """The horizon.json entry for ids: None, one id (the single-chain form), or a sorted list."""
+    return None if not ids else ids[0] if len(ids) == 1 else sorted(ids)
+
+
+def _recency(directory):
+    """Sort key of a record chain head: newest recorded_at first; the current.json hint breaks ties."""
+    index = directory / "current.json"
+    guard(handoff_home(), index)
+    hint = (_load(index) or {}).get("revision")
+
+    def key(head):
+        try:
+            when = _when(head.get("recorded_at"))
+        except StoreError:
+            when = datetime.min.replace(tzinfo=timezone.utc)
+        return when, head["revision"] == hint, head["revision"]
+    return key
+
+
+def _collection(root, session, kind):
+    """(chains, trimmed, broken) of one session collection; validation is per work chain.
+
+    chains: the valid chains, lists of objects newest first, ordered by recency of their
+    head. A snapshot collection has at most one chain; a record collection has one per
+    work_id, named by its head's payload.work_id (a chain written before per-work cards
+    may hold older records of other works). trimmed: {horizon: [horizon and its
+    ancestors still on disk]} (left by a trim interrupted between the horizon write and
+    the deletes); they take no part in head selection. Only the oldest live object of a
+    chain may miss its parent, and only when that parent is a horizon. Two live records
+    of different works naming the same horizon as parent (only a hand edit makes them)
+    read as two chains.
+
+    broken ({work_id: code}, records only): works whose chain fails validation, left out
+    of chains. Live records linked by parent_record form one group; a group with a
+    missing parent (INCOMPLETE_CHAIN), an unreadable member or parent (its read error,
+    e.g. CORRUPT_RECORD), a fork or cycle (AMBIGUOUS_CHAIN) breaks the work_ids of its
+    heads (of all its members when it has no head), and two groups headed by one work_id
+    break that work (AMBIGUOUS_CHAIN). An unreadable file also breaks the work_id its
+    content still names and the group of the parent it names. Session-wide, raised:
+    a corrupt horizon.json, a horizon no object continues, an unreadable file nothing
+    attributes to a work, linked storage, and any problem of a snapshot collection.
     """
     root = as_workspace(root)
     home = handoff_home()
@@ -359,83 +528,173 @@ def _chain(root, session, kind):
     collection = directory / CHAINS[kind]
     guard(home, collection)
     guard(home, index)
-    horizon = _horizon(directory)[CHAINS[kind]]
+    horizons = _horizon_ids(_horizon(directory)[CHAINS[kind]])
     id_key = "revision" if kind == "record" else "snapshot_id"
     parent_key = "parent_record" if kind == "record" else "parent_snapshot"
+    per_chain = kind == "record"
     # Index files are hints, never authority: a completed object can outlive
     # an interrupted index replacement. Reconcile the complete chain on reads.
     # Only complete canonical objects participate; leftover temporary files do not.
-    objects = {}
+    objects, bad = {}, {}
     if collection.exists():
         for path in collection.glob("*.json"):
             if not ID.fullmatch(path.stem):
                 continue
-            objects[path.stem] = _read(root, path, session, kind)
-    trimmed = []
-    if horizon is not None:
-        trimmed.append(horizon)
-        node = objects.get(horizon)
-        while node is not None:
-            del objects[node[id_key]]
-            node = objects.get(node.get(parent_key))
-            if node is not None:
-                trimmed.append(node[id_key])
-        # A trim always keeps newer objects, the oldest of which names the horizon.
-        if not any(obj.get(parent_key) == horizon for obj in objects.values()):
+            try:
+                objects[path.stem] = _read(root, path, session, kind)
+            except StoreError as exc:
+                if not per_chain or str(exc) in ("LINKED_STORAGE", "OUTSIDE_WORKSPACE"):
+                    raise
+                bad[path.stem] = (str(exc), _load(path) or {})
+    trimmed = {}
+    for horizon in horizons:
+        trimmed[horizon] = [horizon]
+        ident = horizon
+        while ident in objects:
+            ident = objects.pop(ident).get(parent_key)
+            if ident in objects or ident in bad:
+                trimmed[horizon].append(ident)
+        bad.pop(horizon, None)  # an unreadable trim leftover is deleted by the chain's next trim
+        if ident in bad:
+            del bad[ident]
+
+    def parent_of(raw):
+        value = raw.get(parent_key)
+        return value if isinstance(value, str) else None
+    # A trim always keeps newer objects, the oldest of which names the horizon.
+    for horizon in horizons:
+        if not any(parent_of(obj) == horizon for obj in (*objects.values(), *(raw for _, raw in bad.values()))):
             raise StoreError("CORRUPT_RECORD")
-    if not objects:
-        return [], trimmed
-    parents = {obj.get(parent_key) for obj in objects.values() if obj.get(parent_key)}
-    if parents - objects.keys() - {horizon}:
-        raise StoreError("INCOMPLETE_CHAIN")
-    heads = set(objects) - parents
-    if len(heads) != 1:
-        raise StoreError("AMBIGUOUS_CHAIN")
-    chain, visited = [], set()
-    node = objects[heads.pop()]
-    while node:
-        ident = node[id_key]
-        if ident in visited:
+    group = {ident: ident for ident in objects}
+
+    def find(ident):
+        while group[ident] != ident:
+            group[ident] = group[group[ident]]
+            ident = group[ident]
+        return ident
+    for ident, obj in objects.items():
+        if parent_of(obj) in objects:
+            group[find(ident)] = find(parent_of(obj))
+    faults = {}  # group root -> error code
+    for ident, obj in objects.items():
+        parent = parent_of(obj)
+        if parent is not None and parent not in objects and parent not in horizons:
+            faults.setdefault(find(ident), bad[parent][0] if parent in bad else "INCOMPLETE_CHAIN")
+    broken = {}
+    for ident, (code, raw) in sorted(bad.items()):
+        payload = raw.get("payload")
+        work = payload.get("work_id") if isinstance(payload, dict) else None
+        if parent_of(raw) in objects:
+            faults.setdefault(find(parent_of(raw)), code)
+        if isinstance(work, str) and work:
+            broken.setdefault(work, code)
+        elif parent_of(raw) not in objects and not any(parent_of(obj) == ident for obj in objects.values()):
+            raise StoreError(code)
+    members = {}
+    for ident in objects:
+        members.setdefault(find(ident), []).append(ident)
+    candidates = []
+    for top, idents in sorted(members.items()):
+        parents = {parent_of(objects[ident]) for ident in idents}
+        heads = sorted(ident for ident in idents if ident not in parents)
+        names = {objects[ident]["payload"]["work_id"] for ident in heads or idents} if per_chain else {None}
+        code = faults.get(top) or ("AMBIGUOUS_CHAIN" if len(heads) != 1 else None)
+        chain, seen, node = [], set(), objects[heads[0]] if heads else None
+        while code is None and node is not None:
+            if node[id_key] in seen:  # a cycle below the head
+                code = "AMBIGUOUS_CHAIN"
+            seen.add(node[id_key])
+            chain.append(node)
+            node = objects.get(parent_of(node))
+        if code is None and len(chain) != len(idents):
+            code = "AMBIGUOUS_CHAIN"
+        if code is not None:
+            if not per_chain:
+                raise StoreError(code)
+            for name in sorted(names):
+                broken.setdefault(name, code)
+        else:
+            candidates.append(chain)
+    if not per_chain:
+        if len(candidates) > 1:
             raise StoreError("AMBIGUOUS_CHAIN")
-        visited.add(ident)
-        chain.append(node)
-        node = objects.get(node.get(parent_key))
-    if len(visited) != len(objects):
-        raise StoreError("AMBIGUOUS_CHAIN")
-    return chain, trimmed
+        return candidates, trimmed, broken
+    names = [chain[0]["payload"]["work_id"] for chain in candidates]
+    for name in names:
+        if names.count(name) > 1:
+            broken.setdefault(name, "AMBIGUOUS_CHAIN")
+    chains = [chain for chain in candidates if chain[0]["payload"]["work_id"] not in broken]
+    if len(chains) > 1:
+        recency = _recency(directory)
+        chains.sort(key=lambda chain: recency(chain[0]), reverse=True)
+    return chains, trimmed, broken
+
+
+def _chains(root, session, kind):
+    """(chains, trimmed) of one session collection (see _collection): the valid chains only.
+
+    A session whose record chains are all broken has nothing to serve and fails closed
+    with the code of its first broken work (by work_id), as reads did before per-chain
+    validation; with any valid chain left, broken ones are skipped (broken_works names them).
+    """
+    chains, trimmed, broken = _collection(root, session, kind)
+    if broken and not chains:
+        raise StoreError(broken[min(broken)])
+    return chains, trimmed
+
+
+def record_chains(root, session):
+    """(chains, broken) of the session's record chains: _chains' valid chains (failing closed when
+    all are broken) and the {work_id: code} of the broken ones, from one read."""
+    chains, _, broken = _collection(root, session, "record")
+    if broken and not chains:
+        raise StoreError(broken[min(broken)])
+    return chains, broken
+
+
+def broken_works(root, session):
+    """[{work_id, error}] of the session's record chains that fail validation, by work_id."""
+    return [{"work_id": work, "error": code} for work, code in sorted(_collection(root, session, "record")[2].items())]
 
 
 def _head(root, session, kind):
-    chain, _ = _chain(root, session, kind)
-    return chain[0] if chain else None
+    chains, _ = _chains(root, session, kind)
+    return chains[0][0] if chains else None
 
 
 def _expired(root, session, kind, ident):
-    """Refuse an id that a trim already removed: rewriting it would resurrect it
-    below the horizon (or close a cycle with the oldest live object)."""
-    if _horizon(session_dir(root, session))[CHAINS[kind]] is not None and ident in _chain(root, session, kind)[1]:
+    """Refuse an id that a trim already removed from any chain: rewriting it would
+    resurrect it below a horizon (or close a cycle with the oldest live object)."""
+    if any(ident in ids for ids in _chains(root, session, kind)[1].values()):
         raise StoreError("REQUEST_ID_EXPIRED")
 
 
-def _trim(root, session, kind, keep):
-    """Under the session lock: drop live objects beyond `keep` and trimmed leftovers.
+def _trim(root, session, kind, keep, work_id=None):
+    """Under the session lock: drop live objects beyond `keep` and trimmed leftovers
+    of one chain (records: the chain of work_id; snapshots: the only chain).
 
-    The new horizon is written atomically before any delete, and deletes run
-    oldest first, so an interruption leaves the newest removed object (the
-    horizon) last; reads skip whatever remains and the next trim removes it.
+    The chain's new horizon replaces its old one in horizon.json, written atomically
+    before any delete, and deletes run oldest first, so an interruption leaves the
+    newest removed object (the horizon) last; reads skip whatever remains and the
+    chain's next trim removes it. Other chains and their horizons are untouched.
     Best effort: the new object is already durable, so a failed trim is left for
     the next write rather than failing this one.
     """
     directory = session_dir(root, session)
     collection = directory / CHAINS[kind]
+    id_key = "revision" if kind == "record" else "snapshot_id"
+    parent_key = "parent_record" if kind == "record" else "parent_snapshot"
     try:
-        chain, trimmed = _chain(root, session, kind)
-        surplus = [obj["revision" if kind == "record" else "snapshot_id"] for obj in chain[keep:]]
+        chains, trimmed = _chains(root, session, kind)
+        chain = next((c for c in chains if kind != "record" or c[0]["payload"]["work_id"] == work_id), [])
+        old = chain[-1].get(parent_key) if chain and chain[-1].get(parent_key) in trimmed else None
+        surplus = [obj[id_key] for obj in chain[keep:]]
         if surplus:
             horizon = _horizon(directory)
-            horizon[CHAINS[kind]] = surplus[0]
+            ids = [ident for ident in _horizon_ids(horizon[CHAINS[kind]]) if ident != old]
+            horizon[CHAINS[kind]] = _horizon_entry(ids + [surplus[0]])
             atomic_write(handoff_home(), directory / "horizon.json", horizon)
-        for ident in list(reversed(trimmed)) + list(reversed(surplus)):
+        for ident in list(reversed(trimmed.get(old, []))) + list(reversed(surplus)):
             path = collection / (ident + ".json")
             guard(handoff_home(), path)
             path.unlink(missing_ok=True)
@@ -443,16 +702,278 @@ def _trim(root, session, kind, keep):
         pass
 
 
-def current(root, session):
-    return _head(root, session, "record")
+def cards(root, session):
+    """The head card of each of the session's work chains, most recently written first."""
+    return [chain[0] for chain in _chains(root, session, "record")[0]]
+
+
+def current(root, session, work_id=None):
+    """The session's most recently written card, or with work_id the head card of that work (None if absent)."""
+    heads = cards(root, session)
+    if work_id is None:
+        return heads[0] if heads else None
+    return next((head for head in heads if head["payload"]["work_id"] == work_id), None)
 
 
 def latest(root, session):
     return _head(root, session, "snapshot")
 
 
-def record(root, session, payload, expected, request_id, *, cursor=None, adopted_from=None):
-    validate_payload(payload)
+DONE_PHASE = "done"  # a card with this phase closes its work; a later card of another phase reopens it
+
+
+def is_done(phase):
+    """True when a card's phase closes its work: "done", ignoring case and surrounding whitespace."""
+    return isinstance(phase, str) and phase.strip().lower() == DONE_PHASE
+
+
+def work_states(root):
+    """Read-only: the newest state card of each work across the repo's sessions.
+
+    {"works": {work_id: state}, "skipped": [{"session_dir", "error"}], "broken": [{"session",
+    "work_id", "error"}]}. A state is the newest head card of the work by `recorded_at`
+    (`session`, `revision`, `phase`, `recorded_at`, `open`: not is_done(phase)) plus `sessions`,
+    the head card of each session holding the work in the same shape without `open`, newest
+    first. A work chain that fails validation is left out and listed under `broken` (also when
+    all of a session's chains are broken); a session dir whose cards cannot be read at all (a
+    session-wide failure) is skipped and listed with its error code; a dir without records
+    holds no cards and is not listed.
+    """
+    ws = as_workspace(root)
+    home = handoff_home()
+    base = _base(ws) / "sessions"
+    guard(home, base)
+    works, skipped, broken = {}, [], []
+    for folder in (sorted(base.iterdir()) if base.is_dir() else ()):
+        if not ID.fullmatch(folder.name):
+            continue
+        try:
+            guard(home, folder / "records")
+            session = None
+            for path in sorted((folder / "records").glob("*.json")) if (folder / "records").is_dir() else ():
+                if ID.fullmatch(path.stem):
+                    raw = _load(path)
+                    if raw is None:
+                        raise StoreError("CORRUPT_RECORD")
+                    session = raw.get("session_id")
+                    if not isinstance(session, str) or digest(session) != folder.name:
+                        raise StoreError("RECORD_IDENTITY_MISMATCH")
+                    break
+            if session is None:
+                continue
+            chains, _, faults = _collection(ws, session, "record")
+            heads = [chain[0] for chain in chains]
+            broken.extend({"session": session, "work_id": work, "error": code} for work, code in sorted(faults.items()))
+        except (StoreError, OSError) as exc:
+            skipped.append({"session_dir": folder.name,
+                            "error": str(exc) if isinstance(exc, StoreError) else "CORRUPT_RECORD"})
+            continue
+        for head in heads:
+            works.setdefault(head["payload"]["work_id"], []).append(
+                {"session": session, "revision": head["revision"], "phase": head["payload"]["phase"],
+                 "recorded_at": head["recorded_at"]})
+
+    def key(item):
+        try:
+            return _when(item["recorded_at"]), item["revision"]
+        except StoreError:
+            return datetime.min.replace(tzinfo=timezone.utc), item["revision"]
+    states = {}
+    for work_id, items in works.items():
+        items.sort(key=key, reverse=True)
+        states[work_id] = {**items[0], "open": not is_done(items[0]["phase"]), "sessions": items}
+    return {"works": states, "skipped": skipped, "broken": broken}
+
+
+# Decision log: one append-only JSON Lines file per work_id at the repo level of the
+# store, <repo dir>/logs/<sha256(work_id)>.jsonl, shared by every session of the repo
+# (a checkout and its worktrees). Line 1 is a header naming the repo and the work;
+# every later line is one entry. A line exists only once its newline is written: bytes
+# after the last newline are a torn append (a crash mid-write), ignored by readers and
+# cut by the next append under the per-work lock. A newline-terminated line that is not
+# a valid entry fails closed (CORRUPT_LOG): it is never skipped or rewritten.
+LOG_SCHEMA = 1
+LOG_ENTRY_ID = re.compile(r"^([DE])([1-9][0-9]*)$")
+LOG_KINDS = {"decision": "D", "evidence": "E"}
+# migrated: true, set by migrate; redacted_at (ISO time) and the optional redaction_reason, set by redact
+LOG_RUNTIME_FIELDS = ("id", "kind", "at", "session", "record", "migrated", "redacted_at", "redaction_reason")
+LOG_LOCK_WAIT = 10.0  # seconds a record waits for another session's append to the same work
+
+
+def _log_paths(ws, work_id):
+    """(log, lock) paths of a work's decision log."""
+    logs = _base(ws) / "logs"
+    name = digest(work_id)
+    return logs / (name + ".jsonl"), logs / (name + ".lock")
+
+
+def _log_entry_fields(entry):
+    """(kind, model-supplied fields) of a stored entry."""
+    return entry["kind"], {k: v for k, v in entry.items() if k not in LOG_RUNTIME_FIELDS}
+
+
+def _parse_log(ws, work_id, raw):
+    """(entries, committed byte length) of a log file's bytes; StoreError on a bad header or entry."""
+    end = raw.rfind(b"\n") + 1  # bytes past the last newline are a torn append
+    lines = raw[:end].split(b"\n")[:-1]
+    if not lines:
+        return [], end
+    try:
+        header = json.loads(lines[0].decode("utf-8"))
+        entries = [json.loads(line.decode("utf-8")) for line in lines[1:]]
+    except (UnicodeError, ValueError) as exc:
+        raise StoreError("CORRUPT_LOG") from exc
+    if (not isinstance(header, dict) or header.get("kind") != "log"
+            or type(header.get("schema_version")) is not int or header["schema_version"] != LOG_SCHEMA):
+        raise StoreError("CORRUPT_LOG")
+    if header.get("workspace_id") != ws.repo_key:
+        raise StoreError("FOREIGN_REPO")
+    if header.get("work_id") != work_id:
+        raise StoreError("CORRUPT_LOG")
+    last = {"D": 0, "E": 0}
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("kind") not in LOG_KINDS:
+            raise StoreError("CORRUPT_LOG")
+        match = LOG_ENTRY_ID.fullmatch(entry.get("id")) if isinstance(entry.get("id"), str) else None
+        kind, fields = _log_entry_fields(entry)
+        if (match is None or match[1] != LOG_KINDS[kind] or int(match[2]) <= last[match[1]]
+                or not isinstance(entry.get("session"), str) or not entry["session"]
+                or not isinstance(entry.get("record", ""), str)
+                or entry.get("migrated", True) is not True
+                or not isinstance(entry.get("redaction_reason", ""), str)
+                or ("redaction_reason" in entry and "redacted_at" not in entry)
+                or not (_valid_decision if kind == "decision" else _valid_evidence)(fields)):
+            raise StoreError("CORRUPT_LOG")
+        try:
+            _when(entry.get("at"))
+            if "redacted_at" in entry:
+                _when(entry["redacted_at"])
+        except StoreError as exc:
+            raise StoreError("CORRUPT_LOG") from exc
+        last[match[1]] = int(match[2])
+    return entries, end
+
+
+def newest_entries(entries, count):
+    """The `count` newest of a log's entries, oldest first. Ids are references, not time order:
+    entries order by `at`, and entries with the same `at` keep their log order (ids ascending per kind)."""
+    order = sorted(range(len(entries)), key=lambda i: (_when(entries[i]["at"]), i))
+    return [entries[i] for i in order[-count:]] if count > 0 else []
+
+
+def read_log(root, work_id):
+    """All committed entries of a work's decision log, oldest first ([] without a log). Read-only, no lock."""
+    ws = as_workspace(root)
+    path, _ = _log_paths(ws, work_id)
+    guard(handoff_home(), path)
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise StoreError("CORRUPT_LOG") from exc
+    return _parse_log(ws, work_id, raw)[0]
+
+
+@contextmanager
+def _log_lock(ws, work_id):
+    """Hold the per-work log lock, waiting up to LOG_LOCK_WAIT for another writer (STORE_BUSY after)."""
+    storage_ready(ws)
+    _, lock = _log_paths(ws, work_id)
+    guard(handoff_home(), lock)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + LOG_LOCK_WAIT
+    try:
+        while True:
+            held = ExitStack()
+            try:
+                stream = held.enter_context(_locked(lock))
+                # A lock on a moved-away or deleted file excludes no writer that opens the path now.
+                if os.name != "nt" and not _names(stream, lock):
+                    held.close()
+                    raise StoreError("STORE_BUSY")
+                break
+            except StoreError as exc:
+                if str(exc) != "STORE_BUSY" or time.monotonic() >= deadline:
+                    raise
+            time.sleep(0.02)
+        with held:
+            yield
+    except OSError as exc:
+        raise StoreError("WRITE_FAILED") from exc
+
+
+def _append_log(ws, session, work_id, revision, entries, check=None):
+    """Append entries for the card `revision` under the work's lock; returns the ids of all its entries.
+
+    Entries already logged for this revision (an earlier attempt that appended but never
+    wrote its card) must be the start of `entries`; only the rest is appended, so a replay
+    never appends twice. Anything else is REQUEST_ID_REUSED. Ids continue the work's
+    highest D/E number. All new lines go out in one write, then fsync. `check(work_id, logged, revision,
+    entries)` (checks.Gate) may refuse the entries or drop some, against the committed log.
+    """
+    home = handoff_home()
+    path, _ = _log_paths(ws, work_id)
+    with _log_lock(ws, work_id):
+        guard(home, path)
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            raw = b""
+        except OSError as exc:
+            raise StoreError("WRITE_FAILED") from exc
+        logged, end = _parse_log(ws, work_id, raw)
+        if check is not None:
+            entries = check(work_id, logged, revision, entries)
+        mine = [entry for entry in logged if entry.get("record") == revision]
+        if len(mine) > len(entries) or [_log_entry_fields(e) for e in mine] != entries[:len(mine)]:
+            raise StoreError("REQUEST_ID_REUSED")
+        last = {"D": 0, "E": 0}
+        for entry in logged:
+            match = LOG_ENTRY_ID.fullmatch(entry["id"])
+            last[match[1]] = int(match[2])
+        lines, ids, now = [], [entry["id"] for entry in mine], datetime.now(timezone.utc).isoformat()
+        if end == 0:
+            lines.append(encoded({"kind": "log", "schema_version": LOG_SCHEMA,
+                                  "workspace_id": ws.repo_key, "work_id": work_id}))
+        for kind, fields in entries[len(mine):]:
+            letter = LOG_KINDS[kind]
+            last[letter] += 1
+            ids.append(letter + str(last[letter]))
+            lines.append(encoded({"id": ids[-1], "kind": kind, "at": now, "session": session, "record": revision,
+                                  **copy.deepcopy(fields)}))
+        if len(ids) == len(mine) and end == len(raw):
+            return ids
+        try:
+            with path.open("r+b" if raw else "wb") as stream:
+                stream.truncate(end)  # drop a torn append; committed lines are never touched
+                stream.seek(end)
+                stream.write(b"".join(line + b"\n" for line in lines))
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError as exc:
+            raise StoreError("WRITE_FAILED") from exc
+        return ids
+
+
+def record(root, session, payload, expected, request_id, *, cursor=None, check=None):
+    """Write a schema 2 state card from a record request and append its new log entries.
+
+    The entries are appended (under the per-work log lock) before the card is written, so
+    a card always follows its entries; replaying the request completes an interrupted one.
+    """
+    card, entries = split_request(payload)
+    return _commit(root, session, card, RECORD_SCHEMA, expected, request_id, cursor=cursor, entries=entries,
+                   check=check)
+
+
+def _commit(root, session, payload, version, expected, request_id, *, cursor=None, adopted_from=None, entries=(),
+            check=None):
+    """Under the session lock, write a card of schema `version` on its work chain (idempotent per request id)."""
+    validate_payload(payload, version)
+    entries = list(entries)
+    if version == 1 and entries:
+        raise StoreError("INVALID_PAYLOAD")
     if not isinstance(request_id, str) or not request_id or len(request_id) > 512:
         raise StoreError("INVALID_REQUEST_ID")
     root = as_workspace(root)
@@ -461,23 +982,51 @@ def record(root, session, payload, expected, request_id, *, cursor=None, adopted
     revision = digest(session + "\0record\0" + request_id)
     path = directory / "records" / (revision + ".json")
     with _lock(root, directory):
-        _expired(root, session, "record", revision)
+        # Per work chain: a broken chain of another work neither blocks this write nor is touched by it.
+        chains, trimmed, broken = _collection(root, session, "record")
+        if any(revision in ids for ids in trimmed.values()):
+            raise StoreError("REQUEST_ID_EXPIRED")
         if path.exists():
             prior = _read(root, path, session, "record")
-            if prior["payload"] != payload or prior.get("adopted_from") != adopted_from:
+            log = read_log(root, payload["work_id"]) if version != 1 else []
+            if check is not None and entries:
+                # A card that logged nothing (every entry a skipped duplicate) is checked against the log
+                # as it was when the card was written, not against entries other sessions appended since.
+                seen = log if prior.get("log_entries") else [
+                    entry for entry in log if _when(entry["at"]) <= _when(prior["recorded_at"])]
+                # This session's card of the request exists: the replay has joined the work.
+                entries = check(payload["work_id"], seen, revision, entries, replay=True)
+            logged = [_log_entry_fields(entry) for entry in log if entry.get("record") == revision]
+            if (prior["payload"] != payload or prior.get("adopted_from") != adopted_from
+                    or prior["schema_version"] != version or logged != entries):
                 raise StoreError("REQUEST_ID_REUSED")
             return prior
-        previous = current(root, session)
+        if payload["work_id"] in broken:
+            raise StoreError(broken[payload["work_id"]])  # never start a second chain beside a broken one
+        previous = next((chain[0] for chain in chains if chain[0]["payload"]["work_id"] == payload["work_id"]), None)
         if expected != (previous["revision"] if previous else None):
             raise StoreError("REVISION_CONFLICT")
-        data = _seal({"schema_version": 1, "kind": "record", "workspace_id": root.repo_key,
+        if entries:
+            ids = _append_log(root, session, payload["work_id"], revision, entries, check)
+        else:
+            ids = []
+            if check is not None:
+                # Nothing to append: the committed log is read without the lock (a torn append is ignored),
+                # so a card-only record creates no log or lock file.
+                check(payload["work_id"], read_log(root, payload["work_id"]), revision, [])
+        now = datetime.now(timezone.utc).isoformat()
+        # The adoption marker: an adoption card records its time, every later card of its chain inherits it.
+        adopted_at = now if adopted_from is not None else (previous or {}).get("adopted_at")
+        data = _seal({"schema_version": version, "kind": "record", "workspace_id": root.repo_key,
                       "worktree_path": str(root.root),
                       "session_id": session, "revision": revision, "parent_record": expected,
-                      "recorded_at": datetime.now(timezone.utc).isoformat(),
-                      "transcript_cursor": cursor, "adopted_from": adopted_from, "payload": copy.deepcopy(payload)})
+                      "recorded_at": now,
+                      "transcript_cursor": cursor, "adopted_from": adopted_from, "payload": copy.deepcopy(payload),
+                      **({"adopted_at": adopted_at} if adopted_at is not None else {}),
+                      **({"log_entries": ids} if version >= 2 else {})})
         atomic_write(home, path, data)
         atomic_write(home, directory / "current.json", {"revision": revision})
-        _trim(root, session, "record", KEEP_RECORDS)
+        _trim(root, session, "record", KEEP_RECORDS, payload["work_id"])
         return data
 
 
@@ -493,13 +1042,16 @@ def snapshot(root, session, event_key):
         _expired(root, session, "snapshot", ident)
         if path.exists():
             return _read(root, path, session, "snapshot")
-        source = current(root, session)
-        if source is None:
+        heads = cards(root, session)
+        if not heads:
             raise StoreError("NO_CHECKPOINT")
+        # Every open card (phase not done), most recently written first; with none open, the current card.
+        held = [head for head in heads if not is_done(head["payload"]["phase"])] or heads[:1]
         previous = latest(root, session)
-        data = {k: v for k, v in source.items() if k != "checksum"}
+        data = {k: v for k, v in held[0].items() if k != "checksum"}
         data.update(kind="snapshot", snapshot_id=ident, captured_at=datetime.now(timezone.utc).isoformat(),
-                    parent_snapshot=previous["snapshot_id"] if previous else None)
+                    parent_snapshot=previous["snapshot_id"] if previous else None,
+                    snapshot_version=SNAPSHOT_VERSION, other_cards=copy.deepcopy(held[1:]))
         data = _seal(data)
         atomic_write(home, path, data)
         atomic_write(home, directory / "latest.json", {"snapshot_id": ident})
@@ -536,13 +1088,32 @@ def list_snapshots(root, snapshot_id=None):
                 result.append({"snapshot_id": path.stem, "error": code})
                 continue
             result.append({k: data[k] for k in ("snapshot_id", "session_id", "captured_at", "parent_snapshot")}
-                          | {"work_id": data["payload"]["work_id"], "phase": data["payload"]["phase"]})
+                          | {"work_id": data["payload"]["work_id"], "phase": data["payload"]["phase"],
+                             "works": [{k: card["payload"][k] for k in ("work_id", "phase")}
+                                       | {k: card[k] for k in ("recorded_at", "revision")}
+                                       for card in snapshot_cards(data)]}
+                          | ({"note": "snapshot_version %d is newer than this runtime: only its current card "
+                                      "is read" % data["snapshot_version"]} if _newer_snapshot(data) else {}))
     return result
 
 
-def resume(root, session, snapshot_id):
+def _choices(held):
+    return [{"work_id": card["payload"]["work_id"], "phase": card["payload"]["phase"],
+             "next": card["payload"]["next"], "recorded_at": card["recorded_at"]} for card in held]
+
+
+def resume(root, session, snapshot_id, works=None):
+    """Adopt works of a snapshot into `session` (see adopt); nothing is written to the decision logs.
+
+    works names the work_ids to adopt. Without it a snapshot holding one card adopts that card,
+    and one holding several raises WORK_CHOICE_REQUIRED with the choices, adopting nothing. One
+    adopted card is returned as it is; several as {"adopted_from", "cards"} in the snapshot's order.
+    """
     if not isinstance(snapshot_id, str) or not ID.fullmatch(snapshot_id):
         raise StoreError("INVALID_SNAPSHOT_ID")
+    works = list(dict.fromkeys(works or ()))
+    if any(not isinstance(work, str) or not work for work in works):
+        raise StoreError("INVALID_ARGUMENTS")
     root = as_workspace(root)
     matches =[item for item in list_snapshots(root, snapshot_id) if item["snapshot_id"] == snapshot_id]
     if len(matches) != 1:
@@ -553,17 +1124,54 @@ def resume(root, session, snapshot_id):
     if original == session:
         raise StoreError("SAME_SESSION_ADOPTION")
     source = _read(root, session_dir(root, original) / "snapshots" / (snapshot_id + ".json"), original, "snapshot")
-    return adopt(root, session, source, snapshot_id)
+    held = snapshot_cards(source)
+    extra = {"snapshot_id": snapshot_id, "choices": _choices(held)}
+    if not works and len(held) > 1:
+        raise StoreError("WORK_CHOICE_REQUIRED", "the snapshot holds several works: run resume again with "
+                         "--work <work_id> (repeatable) for each work to adopt", extra)
+    names = {card["payload"]["work_id"] for card in held}
+    if any(work not in names for work in works):
+        raise StoreError("WORK_NOT_IN_SNAPSHOT", None, extra)
+    chosen = [card for card in held if not works or card["payload"]["work_id"] in works]
+    # A one-card snapshot keeps the request id of single-card adoption, so its replay stays idempotent.
+    # Otherwise one per work (its digest: a work_id may exceed the request id limit).
+    request = {card["revision"]: "adopt:" + snapshot_id if len(held) == 1
+               else "adopt:%s:%s" % (snapshot_id, digest(card["payload"]["work_id"])) for card in chosen}
+    records = session_dir(root, session) / "records"
+    for card in chosen:  # an existing chain of any named work refuses the whole set before anything is adopted
+        path = records / (digest(session + "\0record\0" + request[card["revision"]]) + ".json")
+        guard(handoff_home(), path)
+        if not path.exists() and current(root, session, card["payload"]["work_id"]) is not None:
+            raise StoreError("REVISION_CONFLICT", None, {"work_id": card["payload"]["work_id"]})
+    # Oldest first, so the snapshot's most recently written chosen card becomes the session's current card.
+    # A record or lock racing in between can stop the loop after some adoptions: replaying the same set
+    # returns those (idempotent per request id) and adopts the rest.
+    adopted = []
+    for card in reversed(chosen):
+        try:
+            adopted.append(adopt(root, session, card, snapshot_id, request[card["revision"]]))
+        except StoreError as exc:
+            if str(exc) == "REVISION_CONFLICT":
+                raise StoreError("REVISION_CONFLICT", None, {"work_id": card["payload"]["work_id"]}) from exc
+            raise
+    adopted.reverse()
+    return adopted[0] if len(adopted) == 1 else {"adopted_from": snapshot_id, "cards": adopted}
 
 
-def adopt(root, session, source, snapshot_id):
-    """Start `session`'s chain from a validated snapshot, with its observed state marked unverified."""
+def adopt(root, session, source, snapshot_id, request_id=None):
+    """Start `session`'s chain of a card's work from a card a validated snapshot holds, with its
+    observed state marked unverified and the adoption time recorded as adopted_at.
+
+    The card keeps its schema version (a schema 1 card keeps its decisions and evidence);
+    nothing is written to the decision log.
+    """
     payload = copy.deepcopy(source["payload"])
     for assignment in payload["assignments"]:
         assignment["observed_state"] = "needs-verification"
-    for evidence in payload["evidence"]:
+    for evidence in payload.get("evidence", ()):
         evidence["state"] = "unverified"
-    return record(root, session, payload, None, "adopt:" + snapshot_id, adopted_from=snapshot_id)
+    return _commit(root, session, payload, source["schema_version"], None, request_id or "adopt:" + snapshot_id,
+                   adopted_from=snapshot_id)
 
 
 def _only_binding(root, directory):
@@ -623,7 +1231,7 @@ def _leftover_state(root, directory, cutoff):
     return "reclaimable" if found and found[1].st_mtime < cutoff else "kept"
 
 
-def _reclaim(root, directory, cutoff, expiry_cutoff=None, repo_key=None):
+def _reclaim(root, directory, cutoff, expiry_cutoff=None, repo_key=None, held=None):
     """Delete a leftover staging dir, re-verifying at deletion time. True when removed.
 
     A binding that is no longer old (another run moved a just-rebound session
@@ -636,7 +1244,7 @@ def _reclaim(root, directory, cutoff, expiry_cutoff=None, repo_key=None):
             return False
         found[0].unlink()
     elif expiry_cutoff is not None and any(directory.iterdir()):
-        if not _expired_leftover(root, directory, expiry_cutoff, repo_key):
+        if not _expired_leftover(root, directory, expiry_cutoff, repo_key, held):
             return False
         shutil.rmtree(directory)
         return True
@@ -669,6 +1277,8 @@ class Scan:
     snapshots: int
     extra: bool      # anything a session dir does not normally hold
     owners: frozenset = frozenset()  # stored workspace_ids of records, snapshots and binding
+    unmigrated: frozenset = frozenset()  # work_ids of schema 1 cards (records or held by snapshots)
+                                         # carrying decisions or evidence; see _schema1_works
 
     def foreign(self, repo_key):
         """True when any stored workspace_id names another repo (a REPO_DIR_CHARS prefix collision)."""
@@ -682,6 +1292,20 @@ def _load(path):
     except (OSError, UnicodeError, ValueError):
         return None
     return data if isinstance(data, dict) else None
+
+
+def _schema1_works(data, kind):
+    """work_ids of the schema 1 cards a parsed record or snapshot file holds (a snapshot: every card,
+    see snapshot_cards) with non-empty decisions or evidence; unvalidated, so an odd file only adds
+    work_ids (more is kept, never less). Empty for anything unparseable."""
+    try:
+        held = snapshot_cards(data) if kind == "snapshots" else [data]
+        return {card["payload"]["work_id"] for card in held
+                if isinstance(card, dict) and card.get("schema_version") == 1 and isinstance(card.get("payload"), dict)
+                and isinstance(card["payload"].get("work_id"), str)
+                and (card["payload"].get("decisions") or card["payload"].get("evidence"))}
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return set()
 
 
 def _owner(data):
@@ -705,7 +1329,7 @@ def _scan(home, directory):
     """Read-only inventory of a session dir; never follows links (StoreError LINKED_STORAGE)."""
     guard(home, directory)
     newest, counts, extra, touched, unrecorded = None, {"records": 0, "snapshots": 0}, False, None, False
-    owners = set()
+    owners, unmigrated = set(), set()
     for child in directory.iterdir():
         guard(home, child)
         if child.name in counts and child.is_dir():
@@ -720,6 +1344,7 @@ def _scan(home, directory):
                 counts[child.name] += 1
                 data = _load(item)
                 owners.add(_owner(data))
+                unmigrated |= _schema1_works(data, child.name) if data is not None else set()
                 when = _stamp(item, key, data)
                 newest = when if newest is None else max(newest, when)
         elif not (child.is_file() and (child.name in SESSION_FILES or child.name.startswith(".pending-"))):
@@ -733,7 +1358,8 @@ def _scan(home, directory):
     if touched is not None and (newest is not None or unrecorded):
         # A session that compacted or folded facts but never recorded ages on its files alone.
         newest = touched if newest is None else max(newest, touched)
-    return Scan(newest, counts["records"], counts["snapshots"], extra, frozenset(owners - {None}))
+    return Scan(newest, counts["records"], counts["snapshots"], extra, frozenset(owners - {None}),
+                frozenset(unmigrated))
 
 
 def _lock_held(home, directory):
@@ -766,7 +1392,7 @@ def _is_expired(scan, cutoff, repo_key):
     return scan.newest is not None and scan.newest < cutoff and not scan.extra and not scan.foreign(repo_key)
 
 
-def _remove_expired(home, entry, staging, cutoff, repo_key):
+def _remove_expired(home, entry, staging, cutoff, repo_key, held=None):
     """Under the session lock, re-verify an expired session, move it aside, re-verify it, delete it.
 
     The lock is taken without waiting (StoreError STORE_BUSY while a record or snapshot
@@ -781,19 +1407,27 @@ def _remove_expired(home, entry, staging, cutoff, repo_key):
     recreated by a third writer before the move back, leaves the session (with that
     fresh record) parked at the staging name: the failed move back is reported with
     left_at, and a leftover is never deleted while it holds fresh activity.
+    held(scan) (see _unmigrated_guard) raises UNMIGRATED_DECISIONS for a session whose schema 1
+    decisions are not imported yet; it runs at both re-checks (the dir is moved back after the move).
     Returns True when removed.
     """
     lock = entry / ".lock"
     guard(home, lock)
     with _locked(lock) as stream:
-        if not _is_expired(_scan(home, entry), cutoff, repo_key):
+        scan = _scan(home, entry)
+        if not _is_expired(scan, cutoff, repo_key):
             return False
+        if held is not None:
+            held(scan)
         if os.name == "nt":
             _unlock(stream)
             stream.close()
         entry.rename(staging)
         try:
-            keep = not _is_expired(_scan(home, staging), cutoff, repo_key)
+            scan = _scan(home, staging)
+            keep = not _is_expired(scan, cutoff, repo_key)
+            if held is not None and not keep:
+                held(scan)
         except (StoreError, OSError):
             staging.rename(entry)
             raise
@@ -843,14 +1477,15 @@ def _drop_cache(result, name, paths):
             result["errors"].append({"session_dir": name, "error": type(exc).__name__, "left_at": path.name})
 
 
-def _expired_leftover(home, directory, cutoff, repo_key):
-    """True for a staging dir holding an expired, unlocked session of this repo (an interrupted delete)."""
-    return _is_expired(_scan(home, directory), cutoff, repo_key) and not _lock_held(home, directory)
-
-
-# Keys a snapshot adds to the record it copies (see snapshot()); dropping them and
-# resealing with kind "record" restores that record exactly.
-SNAPSHOT_KEYS = ("checksum", "snapshot_id", "captured_at", "parent_snapshot")
+def _expired_leftover(home, directory, cutoff, repo_key, held=None):
+    """True for a staging dir holding an expired, unlocked session of this repo (an interrupted delete);
+    held(scan) raises UNMIGRATED_DECISIONS for one whose schema 1 decisions are not imported yet."""
+    scan = _scan(home, directory)
+    if not _is_expired(scan, cutoff, repo_key) or _lock_held(home, directory):
+        return False
+    if held is not None:
+        held(scan)
+    return True
 
 
 def _when(value):
@@ -862,107 +1497,9 @@ def _when(value):
     return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
 
 
-def _archive_plan(home, ws, directory, name):
-    """(newest record per work_id, skipped files) of the session stored in directory under digest name.
-
-    Candidates are its valid records and the records its valid snapshots copied (a
-    snapshot can outlive its record's trim); a records/ file wins over a snapshot copy
-    of the same revision. Newest is the later recorded_at; on a tie the record further
-    down the parent_record chain, and only when the chain cannot decide the larger
-    revision. Unreadable, checksum-invalid or foreign files are skipped and returned
-    as {"file", "reason"}; linked entries raise LINKED_STORAGE.
-    """
-    candidates, skipped, parents = [], [], {}
-    for kind in CHAINS:
-        collection = directory / CHAINS[kind]
-        guard(home, collection)
-        if not collection.is_dir():
-            continue
-        for path in sorted(collection.glob("*.json")):
-            guard(home, path)
-            if not ID.fullmatch(path.stem):
-                continue
-            try:
-                raw = _load(path)
-                if raw is None:
-                    raise StoreError("CORRUPT_RECORD")
-                session = raw.get("session_id")
-                if not isinstance(session, str) or digest(session) != name:
-                    raise StoreError("RECORD_IDENTITY_MISMATCH")
-                data = _read(ws, path, session, kind)
-                if kind == "snapshot":
-                    data = _seal({k: v for k, v in data.items() if k not in SNAPSHOT_KEYS} | {"kind": "record"})
-                if not isinstance(data.get("revision"), str) or not ID.fullmatch(data["revision"]):
-                    raise StoreError("RECORD_IDENTITY_MISMATCH")
-                when = _when(data.get("recorded_at"))
-            except StoreError as exc:
-                skipped.append({"file": CHAINS[kind] + "/" + path.name, "reason": str(exc)})
-                continue
-            if data["revision"] in parents:
-                continue
-            parents[data["revision"]] = data.get("parent_record")
-            candidates.append((when, data))
-
-    def descends(revision, ancestor):
-        visited = set()
-        while revision is not None and revision not in visited:
-            visited.add(revision)
-            revision = parents.get(revision)
-            if revision == ancestor:
-                return True
-        return False
-
-    newest = {}
-    for when, data in candidates:
-        work = data["payload"]["work_id"]
-        if work not in newest:
-            newest[work] = (when, data)
-            continue
-        best_when, best = newest[work]
-        if when != best_when:
-            newer = when > best_when
-        elif descends(data["revision"], best["revision"]):
-            newer = True
-        elif descends(best["revision"], data["revision"]):
-            newer = False
-        else:
-            newer = data["revision"] > best["revision"]
-        if newer:
-            newest[work] = (when, data)
-    return {work: data for work, (_, data) in newest.items()}, skipped
-
-
 def _archive_path(archive, work_id):
+    """The file of work_id in the repo-level archive/ that prune wrote before the decision log (read-only now)."""
     return archive / (hashlib.sha256(work_id.encode("utf-8")).hexdigest()[:32] + ".json")
-
-
-def _archive(home, ws, archive, plan):
-    """Under the archive lock, write each planned record unless the archive holds one at least as new.
-
-    An existing archive file that is not a valid record of this work_id raises
-    CORRUPT_ARCHIVE (one of another repo FOREIGN_REPO): it is never overwritten.
-    """
-    if not plan:
-        return
-    with _lock(ws, archive):
-        for work, data in sorted(plan.items()):
-            path = _archive_path(archive, work)
-            guard(home, path)
-            if path.exists():
-                existing = _load(path) or {}
-                body = {k: v for k, v in existing.items() if k != "checksum"}
-                try:
-                    stored = _when(existing.get("recorded_at"))
-                except StoreError as exc:
-                    raise StoreError("CORRUPT_ARCHIVE") from exc
-                if (existing.get("checksum") != hashlib.sha256(encoded(body)).hexdigest()
-                        or not isinstance(existing.get("payload"), dict) or existing["payload"].get("work_id") != work):
-                    raise StoreError("CORRUPT_ARCHIVE")
-                if existing.get("workspace_id") != ws.repo_key:
-                    raise StoreError("FOREIGN_REPO")
-                if stored >= _when(data["recorded_at"]):
-                    continue
-            atomic_write(home, path, data)
 
 
 def _stored_sessions(home):
@@ -1037,6 +1574,198 @@ def _orphan_cache(home, cache, cutoff, keep_session, claimed, apply):
     return out
 
 
+LOG_IDLE_DAYS = 180  # idle days after which a done or orphan work's decision log is a prune candidate
+
+
+def _log_work(path):
+    """The work_id a log file's header names, checked against the file name (else StoreError CORRUPT_LOG)."""
+    try:
+        with path.open("rb") as stream:
+            header = json.loads(stream.readline().decode("utf-8"))
+    except (UnicodeError, ValueError) as exc:
+        raise StoreError("CORRUPT_LOG") from exc
+    work = header.get("work_id") if isinstance(header, dict) else None
+    if not isinstance(work, str) or digest(work) != path.stem:
+        raise StoreError("CORRUPT_LOG")
+    return work
+
+
+def _log_context(ws):
+    """What decides whether logs may go, read once: work_states, whether a session dir could not be
+    read (work_states skipped it, or its scan failed), whether `.pruning-` leftovers exist (their cards
+    are unknown to work_states), and the work_ids of schema 1 content cards in any session dir or in
+    the repo-level `archive/` (the sources migrate reads; files are not validated, so an odd one only
+    keeps more logs)."""
+    home = handoff_home()
+    sessions = _base(ws) / "sessions"
+    guard(home, sessions)
+    states = work_states(ws)
+    context = {"states": states, "unreadable": bool(states["skipped"]), "leftovers": False, "schema1": set()}
+    for entry in sorted(sessions.iterdir()) if sessions.is_dir() else ():
+        if STAGING.fullmatch(entry.name):
+            context["leftovers"] = True
+        elif ID.fullmatch(entry.name) and (entry.is_dir() or entry.is_symlink()):
+            try:
+                context["schema1"] |= _scan(home, entry).unmigrated
+            except (StoreError, OSError):
+                context["unreadable"] = True
+    archive = _base(ws) / "archive"
+    guard(home, archive)
+    for path in sorted(archive.glob("*.json")) if archive.is_dir() else ():
+        guard(home, path)
+        data = _load(path)
+        context["schema1"] |= _schema1_works(data, "records") if data is not None else set()
+    return context
+
+
+def _log_state(ws, work_id, path, cutoff, context):
+    """(reason, idle_since, kind) of a work's log; reason None when it may be removed.
+
+    kind: "orphan" (no card of the work in any readable session) or "done" (its newest card is
+    done). Idle since the latest of that card's recorded_at, the log's newest entry `at` and the
+    file mtime (an append or a migrate import rewrites the file, and migrated entries keep their
+    original `at`: the mtime gives a freshly written log its full grace). Reasons, in order: OPEN (newest card open; never removed),
+    RECENT (idle since cutoff or later), SESSIONS_UNREADABLE, LEFTOVER_PENDING, the code of a broken
+    chain of the work in any session, SCHEMA1_SOURCES (a schema 1 card of the work with decisions or
+    evidence still exists in a session or an archive file: removing the log would let migrate import
+    it again). StoreError when the log cannot be read; FileNotFoundError when it is gone.
+    """
+    states = context["states"]
+    state = states["works"].get(work_id)
+    if state is not None and state["open"]:
+        return "OPEN", None, "done"
+    kind = "done" if state is not None else "orphan"
+    mtime = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+    entries = read_log(ws, work_id)
+    times = ([_when(state["recorded_at"])] if state is not None else []) + [_when(e["at"]) for e in entries]
+    idle = max(times + [mtime])
+    fault = next((item["error"] for item in states["broken"] if item["work_id"] == work_id), None)
+    if idle.timestamp() >= cutoff:
+        reason = "RECENT"
+    elif context["unreadable"]:
+        reason = "SESSIONS_UNREADABLE"
+    elif context["leftovers"]:
+        reason = "LEFTOVER_PENDING"
+    elif fault is not None:
+        reason = fault
+    elif work_id in context["schema1"]:
+        reason = "SCHEMA1_SOURCES"
+    else:
+        reason = None
+    return reason, idle, kind
+
+
+def _idle_logs(ws, clock, apply):
+    """List, and with apply remove, the decision logs of works idle for LOG_IDLE_DAYS whose newest
+    card is done or that have no card left (orphans); open works are never listed.
+
+    Each candidate is listed with `kind`, `idle_since`, `removable` and, when not removable, the
+    `reason` (see _log_state). Only `logs/<digest>.jsonl` of a removable candidate is removed, never
+    its `.lock`, and only under the work's log lock after every session and the log are read again
+    there (a reopen, a new entry, a new leftover or a new broken chain since the listing keeps it;
+    the reason is listed in `skipped`). A log that is gone by then (another prune) is not reported.
+    An unreadable log is listed in `skipped` by file name; OS errors on removal in `errors`. Never raises.
+    """
+    out = {"older_than_days": LOG_IDLE_DAYS, "candidates": [], "removed": 0, "removed_work_ids": [],
+           "skipped": [], "errors": []}
+    home = handoff_home()
+    logs = _base(ws) / "logs"
+    cutoff = clock - LOG_IDLE_DAYS * 86400
+    try:
+        guard(home, logs)
+        paths = sorted(path for path in logs.glob("*.jsonl") if ID.fullmatch(path.stem)) if logs.is_dir() else []
+        context = _log_context(ws) if paths else None
+    except (StoreError, OSError) as exc:
+        out["skipped"].append({"log": "logs", "reason": str(exc) if isinstance(exc, StoreError) else type(exc).__name__})
+        return out
+    for path in paths:
+        try:
+            guard(home, path)
+            work = _log_work(path)
+            reason, idle, kind = _log_state(ws, work, path, cutoff, context)
+        except FileNotFoundError:
+            continue  # removed since the listing
+        except (StoreError, OSError) as exc:
+            out["skipped"].append({"log": path.name,
+                                   "reason": str(exc) if isinstance(exc, StoreError) else type(exc).__name__})
+            continue
+        if reason in ("OPEN", "RECENT"):
+            continue
+        out["candidates"].append({"work_id": work, "kind": kind, "idle_since": idle.isoformat(),
+                                  "removable": reason is None, **({"reason": reason} if reason else {})})
+        if not apply or reason is not None:
+            continue
+        try:
+            with _log_lock(ws, work):
+                try:
+                    # every session and the log again, under the lock
+                    reason, _, _ = _log_state(ws, work, path, cutoff, _log_context(ws))
+                    if reason is not None:
+                        out["skipped"].append({"work_id": work, "reason": reason})
+                        continue
+                    guard(home, path)
+                    path.unlink()
+                except FileNotFoundError:
+                    continue  # already gone (another prune removed it between the listing and the lock)
+            out["removed"] += 1
+            out["removed_work_ids"].append(work)
+        except StoreError as exc:
+            out["skipped"].append({"work_id": work, "reason": str(exc)})
+        except OSError as exc:
+            out["errors"].append({"work_id": work, "error": type(exc).__name__})
+    return out
+
+
+def _unmigrated_guard(ws):
+    """held(scan): StoreError UNMIGRATED_DECISIONS when a scanned session dir holds schema 1 decisions or
+    evidence of a work that a `migrate` dry run would still import or reports an error for (every such
+    work when the dry run itself fails). The read-only dry run runs once, on first need."""
+    pending = []
+
+    def held(scan):
+        if not scan.unmigrated:
+            return
+        if not pending:
+            from . import migrate  # migrate imports this module
+            try:
+                result = migrate.migrate(ws)
+                pending.append({item["work_id"] for item in result["works"]
+                                if item.get("error") or item.get("decisions") or item.get("evidence")})
+            except (StoreError, OSError):
+                pending.append(None)
+        if pending[0] is None or scan.unmigrated & pending[0]:
+            raise StoreError("UNMIGRATED_DECISIONS")
+    return held
+
+
+def _log_backups(ws, clock):
+    """migrate's `backups/logs-<UTC time>` dirs, oldest first: `dir`, `created_at` (from the name, else
+    the dir mtime) and `age_days`. Listing only; linked entries are listed with `error`. Never raises."""
+    home = handoff_home()
+    backups = _base(ws) / "backups"
+    out = []
+    try:
+        guard(home, backups)
+        paths = sorted(backups.glob("logs-*")) if backups.is_dir() else []
+    except (StoreError, OSError):
+        return out
+    for path in paths:
+        try:
+            guard(home, path)
+            if not path.is_dir():
+                continue
+            try:
+                created = datetime.strptime(path.name[len("logs-"):], "%Y%m%dT%H%M%S%fZ").replace(tzinfo=timezone.utc)
+            except ValueError:
+                created = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+        except (StoreError, OSError) as exc:
+            out.append({"dir": path.name, "error": str(exc) if isinstance(exc, StoreError) else type(exc).__name__})
+            continue
+        out.append({"dir": path.name, "created_at": created.isoformat(),
+                    "age_days": int((clock - created.timestamp()) // 86400)})
+    return out
+
+
 def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_session=None, apply=False, now=None,
           facts_cache=None):
     """List (or with apply, remove) abandoned session dirs; dry-run unless apply.
@@ -1054,10 +1783,13 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
     before session dirs, so a leftover is cleared before its own session is moved
     aside again. The kept session's own leftover is listed as kept, never reclaimed.
     Only the current store is pruned; legacy stores are never touched.
-    Each expired session (and reclaimable leftover) lists under `archive` the work_ids
-    of its newest valid record per work_id (`archive_skipped` names unusable files);
-    under apply they are written to the repo-level `archive/` (newest recorded_at
-    wins) before the dir is moved aside, and a failed archive keeps the dir.
+    Nothing is archived: decisions live in the decision logs, which session pruning never
+    touches (existing `archive/` files stay as they are, read by search and migrate).
+    `idle_logs` (see _idle_logs) lists, and under apply removes, the decision logs of works
+    done or without cards and idle for LOG_IDLE_DAYS; it runs before any session dir is removed.
+    An expired session or leftover holding schema 1 decisions or evidence that `migrate` has not
+    imported yet is kept and listed in `skipped` as UNMIGRATED_DECISIONS (see _unmigrated_guard).
+    `log_backups` lists migrate's `backups/logs-*` dirs with their age; nothing removes them.
     With facts_cache (the native-facts cache dir), each listed entry whose session id is
     known names that session's existing cache files (`facts_cache`: spool, claimed spool
     leftovers, reminder flags, enablement marker); under apply they are deleted once the session itself is.
@@ -1072,17 +1804,18 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
     expiry_days = expired_older_than_days or EXPIRY_DAYS
     ws = as_workspace(root)
     sessions = _base(ws) / "sessions"
-    archive = sessions.parent / "archive"
     home = handoff_home()
     guard(home, sessions)
+    clock = now if now is not None else datetime.now(timezone.utc).timestamp()
     result = {"older_than_days": binding_days, "expired_older_than_days": expiry_days,
               "applied": bool(apply), "candidates": [], "removed": 0, "expired": [], "expired_removed": 0,
-              "leftovers": [], "reclaimed": 0, "skipped": [], "errors": []}
+              "leftovers": [], "reclaimed": 0, "skipped": [], "errors": [],
+              "idle_logs": _idle_logs(ws, clock, apply), "log_backups": _log_backups(ws, clock)}
     if not sessions.is_dir():
         return result
     keep = digest(keep_session) if keep_session else None
-    clock = now if now is not None else datetime.now(timezone.utc).timestamp()
     cutoff, expiry_cutoff = clock - binding_days * 86400, clock - expiry_days * 86400
+    held = _unmigrated_guard(ws)
     for entry in sorted(sessions.iterdir()):
         if STAGING.fullmatch(entry.name):
             if keep and entry.name == ".pruning-" + keep:
@@ -1091,18 +1824,14 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
                 continue
             try:
                 state = _leftover_state(home, entry, cutoff)
-                if state == "kept" and _expired_leftover(home, entry, expiry_cutoff, ws.repo_key):
+                if state == "kept" and _expired_leftover(home, entry, expiry_cutoff, ws.repo_key, held):
                     state = "reclaimable"
                 item = {"staging_dir": entry.name, "state": state}
                 name = entry.name[len(".pruning-"):]
                 cached = _cache_of(home, entry, name, facts_cache) if state == "reclaimable" else []
-                plan, unusable = _archive_plan(home, ws, entry, name) if state == "reclaimable" else ({}, [])
-                result["leftovers"].append(item | ({"archive": sorted(plan)} if plan else {})
-                                           | ({"archive_skipped": unusable} if unusable else {})
-                                           | ({"facts_cache": [str(p) for p in cached]} if cached else {}))
-                if apply and state == "reclaimable":
-                    _archive(home, ws, archive, plan)  # raises, keeping the leftover, unless archived
-                if apply and state == "reclaimable" and _reclaim(home, entry, cutoff, expiry_cutoff, ws.repo_key):
+                result["leftovers"].append(item | ({"facts_cache": [str(p) for p in cached]} if cached else {}))
+                if apply and state == "reclaimable" and _reclaim(home, entry, cutoff, expiry_cutoff, ws.repo_key,
+                                                                 held):
                     result["reclaimed"] += 1
                     _drop_cache(result, entry.name, cached)
             except StoreError as exc:
@@ -1131,17 +1860,15 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
                 if _lock_held(home, entry):
                     result["skipped"].append({"entry": entry.name, "reason": "STORE_BUSY"})
                     continue
+                held(scan)  # UNMIGRATED_DECISIONS: listed under skipped, kept
                 cached = _cache_of(home, entry, entry.name, facts_cache)
-                plan, unusable = _archive_plan(home, ws, entry, entry.name)
                 result["expired"].append({
                     "session_dir": entry.name, "records": scan.records, "snapshots": scan.snapshots,
                     "newest": datetime.fromtimestamp(scan.newest, timezone.utc).isoformat(),
-                    "archive": sorted(plan), **({"archive_skipped": unusable} if unusable else {}),
                     **({"facts_cache": [str(p) for p in cached]} if cached else {})})
                 if apply:
                     try:
-                        _archive(home, ws, archive, plan)  # raises, keeping the session, unless archived
-                        removed = _remove_expired(home, entry, staging, expiry_cutoff, ws.repo_key)
+                        removed = _remove_expired(home, entry, staging, expiry_cutoff, ws.repo_key, held)
                     except StoreError:
                         result["expired"].pop()  # a kept session is listed once: under skipped
                         raise

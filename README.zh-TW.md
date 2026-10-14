@@ -16,7 +16,7 @@ Provost 是一套每天實際在用的 Claude Code 設定的正本。主 session
 | [`agents/`](agents/) | 8 個 subagent 角色 | `agents/` |
 | [`hooks/`](hooks/)、[`scripts/provost_runtime/`](scripts/provost_runtime/) | handoff runtime 與 hook | `provost/runtime/native-pilot-v1/` |
 | [`skills/verification-before-completion/`](skills/verification-before-completion/) | 宣告完成前的驗證紀律 | `skills/` |
-| [`skills/handoff/`](skills/handoff/) | `/handoff` skill 參考版（不安裝，保留你自己的） | — |
+| [`skills/handoff/`](skills/handoff/) | `/handoff` skill（存檔、接續、搜尋） | `skills/handoff/` |
 | [`tools/dispatch-report.js`](tools/dispatch-report.js) | 從 transcript 統計過往派工的成本與結果 | `experiments/` |
 | [`install.py`](install.py) | 安裝程式與唯讀漂移檢查 | — |
 
@@ -55,7 +55,7 @@ reviewer 只有在明確遇到 Fable 額度用完的錯誤時，才改用 `opus`
 
 ## Handoff runtime
 
-runtime 在 `~/.claude/provost/handoffs` 為每個 session 保存一條 sealed 的 handoff 紀錄鏈（來源、決策、派工、證據、下一步），主 checkout 和它的 worktree 共用。hook 會在壓縮或 resume 後注入最新 checkpoint、收集事實（改過的路徑、派工、commit——絕不存指令文字或檔案內容），並在派工或改檔還沒有紀錄時提醒主 session。指令：`doctor`、`status`、`record`、`snapshot`、`list`、`resume`、`changes`、`search`、`prune`。詳見 [`docs/native-handoff.md`](docs/native-handoff.md)。
+runtime 在 `~/.claude/provost/handoffs` 為每個 session 保存一條 sealed 的 handoff 紀錄鏈（來源、決策、派工、證據、下一步），主 checkout 和它的 worktree 共用。hook 會在壓縮或 resume 後注入最新 checkpoint、收集事實（改過的路徑、派工、commit——絕不存指令文字或檔案內容），並在派工或改檔還沒有紀錄時提醒主 session。決策與證據寫入每個工作一份、整個 repo 所有 session 共用的 append-only 紀錄。指令：`doctor`、`status`、`record`、`snapshot`、`list`、`resume`、`changes`、`search`、`prune`、`migrate`，以及只限維護者執行的 `redact`。詳見 [`docs/native-handoff.md`](docs/native-handoff.md)。
 
 ## 安裝
 
@@ -76,7 +76,7 @@ runtime 在 `~/.claude/provost/handoffs` 為每個 session 保存一條 sealed �
    python install.py install            # 每個要改的檔案都先備份
    ```
 
-   備份在 `~/.claude/provost/backups/install-<UTC 時間>/`，附 `manifest.json`；安裝失敗會自動回滾。支援 `CLAUDE_CONFIG_DIR` 和 `--config-dir`。
+   備份在 `~/.claude/provost/backups/install-<UTC 時間>/`，附 `manifest.json`；安裝失敗會自動回滾。第一次覆蓋內容不同的本機 `skills/handoff/SKILL.md` 時，會先在旁邊另存一份 `SKILL.md.local-<UTC 時間>.bak`。支援 `CLAUDE_CONFIG_DIR` 和 `--config-dir`。升級到 decision log 後，先跑 `migrate` 並檢視結果，再跑 `migrate --apply`，最後才 `prune --apply`（見指南的 [Install and rollout](docs/native-handoff.md#install-and-rollout)）。
 
 3. 在 `~/.claude/settings.json` 註冊 hook（安裝程式不會改這個檔；`check` 會回報有沒有註冊）。設定內容見 [README.md 的 Install 第 3 步](README.md#install)，`<runtime>` 換成 `~/.claude/provost/runtime/native-pilot-v1` 的絕對路徑。
 

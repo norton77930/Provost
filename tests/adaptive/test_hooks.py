@@ -94,10 +94,10 @@ class HookTests(FixtureCase):
     def test_unreadable_never_recorded_check_keeps_the_failed_save_wording(self):
         from provost_runtime import hooks
         handle_event(self.event("PreCompact"), self.config_path)  # NO_CHECKPOINT
-        # _recovery reads the store first (None); the never-recorded check then cannot read it.
-        with mock.patch.object(hooks, "current", side_effect=[None, StoreError("CORRUPT_RECORD")]) as read:
+        # Recovery reads the store first (no chains); the never-recorded check then cannot read it.
+        with mock.patch.object(hooks, "current", side_effect=StoreError("CORRUPT_RECORD")) as read:
             output = handle_event(self.event("SessionStart", "compact"), self.config_path)
-        self.assertEqual(read.call_count, 2)
+        self.assertEqual(read.call_count, 1)
         self.assertEqual(output["systemMessage"],
                          "Provost: previous handoff save failed; verify any older checkpoint before continuing.")
         self.assertNotIn("has not recorded yet", json.dumps(output))
@@ -289,9 +289,9 @@ class SessionStartBudgetTests(FixtureCase):
         self.assertIn("new1234 feat: parser", text)
 
     def test_activity_lists_are_capped_and_stay_within_budget(self):
-        payload = self.payload("n" * 3000)
+        payload = self.payload_v1("n" * 3000)
         payload["decisions"] = ["d" * 900] * 30
-        record(self.root, "s1", payload, None, "r")
+        self.record_v1(self.root, "s1", payload, None, "r")
         recorded = self.recorded_epoch()
         self.activity(recorded, agents=[("implementer", "slice %03d %s" % (i, "x" * 110), 10 + i) for i in range(300)],
                       commits=[("h%05d" % i, "subject %d %s" % (i, "s" * 70), 10 + i) for i in range(20)],
@@ -302,10 +302,10 @@ class SessionStartBudgetTests(FixtureCase):
         self.assertLessEqual(len(text), 8000)
 
     def test_activity_shrinks_to_its_headline_before_the_checkpoint_loses_its_digest(self):
-        payload = self.payload("keep next")
+        payload = self.payload_v1("keep next")
         payload.update(work_id="keep-work", blockers=["keep blocker"],
                        decisions=["decision %d %s" % (i, "d" * 1400) for i in range(4)])  # digest ~4.3 KB
-        record(self.root, "s1", payload, None, "r")
+        self.record_v1(self.root, "s1", payload, None, "r")
         recorded = self.recorded_epoch()
         path = self.activity(recorded, agents=[("implementer", "slice %d %s" % (i, "x" * 110), 10 + i) for i in range(5)],
                              commits=[("h%05d" % i, "subject %s" % ("s" * 90), 10 + i) for i in range(3)],
@@ -351,9 +351,9 @@ class SessionStartBudgetTests(FixtureCase):
         self.assertNotIn("not older than", text)
 
     def test_record_shrinks_to_digest_then_to_its_path(self):
-        payload = self.payload("keep next")
+        payload = self.payload_v1("keep next")
         payload["decisions"] = ["decision %d %s" % (i, "d" * 330) for i in range(12)]  # full JSON still <= 4500
-        written = record(self.root, "s1", payload, None, "r")
+        written = self.record_v1(self.root, "s1", payload, None, "r")
         self.seed_facts(files=300, repos=5, agents=40, name_chars=300)
         text = self.start()
         self.assertIn("Observed payload digest", text)
@@ -361,7 +361,7 @@ class SessionStartBudgetTests(FixtureCase):
         self.assertNotIn("decision 8 ", text)
         self.assertIn("Session facts", text)
         payload["decisions"] = ["decision %d %s" % (i, "d" * 1400) for i in range(12)]
-        record(self.root, "s1", payload, written["revision"], "r2")
+        self.record_v1(self.root, "s1", payload, written["revision"], "r2")
         self.seed_facts(files=300, repos=5, agents=40, name_chars=400)
         text = self.start()
         self.assertNotIn("Observed payload", text)
@@ -399,9 +399,9 @@ class SessionStartBudgetTests(FixtureCase):
         for files, repos, agents, chars, decisions in ((0, 0, 0, 10, 0), (400, 5, 300, 400, 30),
                                                        (400, 0, 0, 900, 0), (0, 5, 300, 900, 30)):
             with self.subTest(files=files, repos=repos, chars=chars):
-                payload = self.payload("n" * 3000)
+                payload = self.payload_v1("n" * 3000)
                 payload["decisions"] = ["d" * 900] * decisions
-                expected = record(self.root, "s1", payload, expected, "r-%d-%d" % (files, chars))["revision"]
+                expected = self.record_v1(self.root, "s1", payload, expected, "r-%d-%d" % (files, chars))["revision"]
                 self.seed_facts(files, repos, agents, chars)
                 self.start("compact")
                 self.start("resume")

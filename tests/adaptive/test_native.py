@@ -95,6 +95,16 @@ class NativeTests(FixtureCase):
         self.assertEqual(r.returncode,0,r.stdout)
         self.assertEqual(json.loads(r.stdout)["adopted_from"],listed[0]["snapshot_id"])
 
+    def test_operations_text_describes_the_decision_log_contract(self):
+        text=self.context(handle_event(self.event(),self.config_path))
+        flat=" ".join(text.split())
+        for word in ("new_decisions","new_evidence","--join","warnings","echo","supersedes","updates",
+                     "search --show","prune","idle_logs","UNMIGRATED_DECISIONS","migrate","--apply"):
+            self.assertIn(word,flat)
+        self.assertRegex(flat,r"[Nn]ever run redact")
+        self.assertRegex(flat,r"because")
+        self.assertLess(len(text),4000)
+
     def test_guidance_points_record_at_input_file_not_stdin(self):
         text=self.context(handle_event(self.event(),self.config_path))
         self.assertIn("--input <payload-file>",text)
@@ -113,6 +123,8 @@ class NativeTests(FixtureCase):
         block=guide.split("```json",1)[1].split("```",1)[0]
         example=json.loads(block)
         self.assertEqual({s["kind"] for s in example["sources"]},{"file","url"})
-        self.assertEqual((len(example["assignments"]),len(example["evidence"])),(1,1))
+        self.assertEqual((len(example["assignments"]),len(example["new_decisions"]),len(example["new_evidence"])),(1,1,1))
         from provost_runtime.store import record
-        self.assertEqual(record(self.root,"s1",example,None,"doc-example")["payload"],example)
+        written=record(self.root,"s1",example,None,"doc-example")
+        card={k:v for k,v in example.items() if k not in ("new_decisions","new_evidence")}
+        self.assertEqual((written["payload"],written["log_entries"]),(card,["D1","E1"]))

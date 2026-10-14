@@ -40,11 +40,12 @@ class SearchTests(FixtureCase):
         path.write_text(json.dumps(_seal(data)), encoding="utf-8")
 
     def rec(self, session, at=None, ws=None, **fields):
-        """Record a payload on top of the session's current record; at back-dates it."""
+        """Record a schema 1 payload (decisions and evidence in the card) on top of the session's
+        current record; at back-dates it."""
         ws = ws or self.ws
         previous = current(ws, session)
-        data = record(ws, session, self.payload_of(**fields), previous["revision"] if previous else None,
-                      "req-%d" % (previous is not None) + session)
+        data = self.record_v1(ws, session, self.payload_of(**fields), previous["revision"] if previous else None,
+                              "req-%d" % (previous is not None) + session)
         if at:
             self.retime(session_dir(ws, session) / "records" / (data["revision"] + ".json"), at)
         return data
@@ -82,6 +83,14 @@ class SearchTests(FixtureCase):
 
     def texts(self, data):
         return [r["text"] for r in data["results"]]
+
+    def test_schema_2_cards_are_searched_for_blockers_and_next_and_their_decisions_via_the_log(self):
+        record(self.ws, "s2", {"work_id": "w2", "phase": "build", "sources": [], "assignments": [],
+                               "blockers": ["lambda blocker"], "next": "lambda next", "suggested_skills": [],
+                               "new_decisions": [{"text": "lambda logged decision"}]}, None, "r1")
+        self.assertEqual(sorted((r["field"], r["text"]) for r in self.found("--query", "lambda")["results"]),
+                         [("blocker", "lambda blocker"), ("decision", "lambda logged decision"),
+                          ("next", "lambda next")])
 
     def test_matches_decisions_blockers_next_and_evidence_claims(self):
         self.rec("s1", decisions=["use sqlite for the queue"], blockers=["sqlite lock contention"],

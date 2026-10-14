@@ -213,7 +213,8 @@ class InstallTests(InstallCase):
         self.assertEqual((backup / "CLAUDE.md").read_bytes(), claude_md())
         self.assertFalse((backup / "agents/code-reviewer.md").exists())
         manifest = json.loads((backup / "manifest.json").read_text(encoding="utf-8"))
-        self.assertEqual(sorted(manifest["changed"]), ["CLAUDE.md", "agents/implementer.md"])
+        self.assertEqual(sorted(manifest["changed"]),
+                         ["CLAUDE.md", "agents/implementer.md", "skills/handoff/SKILL.md"])
         self.assertIn("agents/code-reviewer.md", manifest["created"])
         self.assertIn(f"{RUNTIME}/hooks/native-event", manifest["created"])
 
@@ -318,13 +319,65 @@ class InstallTests(InstallCase):
         after = {k: v for k, v in self.snapshot().items() if not k.startswith("provost/backups/")}
         self.assertEqual(after, before)
 
-    def test_handoff_skill_never_installed(self):
+    def side_backups(self):
+        return sorted((self.config / "skills/handoff").glob("SKILL.md.local-*.bak"))
+
+    def test_handoff_skill_is_checked_missing_drift_and_ok(self):
+        _, report = self.check_json()
+        self.assertEqual(self.statuses(report)["skills/handoff/SKILL.md"], "modified")
+        (self.config / "skills/handoff/SKILL.md").unlink()
+        _, report = self.check_json()
+        self.assertEqual(self.statuses(report)["skills/handoff/SKILL.md"], "missing")
         self.assertEqual(self.run_cli("install")[0], 0)
-        self.assertEqual((self.config / "skills/handoff/SKILL.md").read_bytes(), b"local handoff\n")
+        _, report = self.check_json()
+        self.assertEqual(self.statuses(report)["skills/handoff/SKILL.md"], "ok")
+        self.assertEqual(self.side_backups(), [])  # nothing local to keep
+
+    def test_handoff_skill_install_keeps_the_local_copy_beside_it_once(self):
+        code, out, _ = self.run_cli("install", "--json")
+        self.assertEqual(code, 0)
+        skill = self.config / "skills/handoff/SKILL.md"
+        self.assertEqual(skill.read_bytes(), b"repo handoff\n")
+        [kept] = self.side_backups()
+        self.assertRegex(kept.name, r"^SKILL\.md\.local-\d{8}T\d{6}Z(-\d+)?\.bak$")
+        self.assertEqual(kept.read_bytes(), b"local handoff\n")
+        self.assertEqual(json.loads(out)["kept_local"], [kept.relative_to(self.config).as_posix()])
+        manifest = json.loads((self.backups()[0] / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["kept_local"], [kept.relative_to(self.config).as_posix()])
+        self.assertEqual((self.backups()[0] / "skills/handoff/SKILL.md").read_bytes(), b"local handoff\n")
+        # Later overwrites replace the installer's own copy: the first local copy stays, no new one.
+        write(self.source / "skills/handoff/SKILL.md", "repo handoff v2\n")
+        write(skill, "edited again\n")
+        self.assertEqual(self.run_cli("install")[0], 0)
+        self.assertEqual(skill.read_bytes(), b"repo handoff v2\n")
+        self.assertEqual(self.side_backups(), [kept])
+        self.assertEqual(kept.read_bytes(), b"local handoff\n")
+        _, report = self.check_json()
+        self.assertNotIn(kept.relative_to(self.config).as_posix(), report["extra"])
+
+    def test_handoff_skill_side_backup_never_overwrites_an_existing_name(self):
+        stamp = "20261014T000000Z"
+        taken = self.config / f"skills/handoff/SKILL.md.local-{stamp}.bak"
+        with mock.patch.object(install, "_stamp", return_value=stamp):
+            path = install.keep_local(self.config, "skills/handoff/SKILL.md")
+            self.assertEqual(path.name, f"SKILL.md.local-{stamp}.bak")
+            write(self.config / "skills/handoff/SKILL.md", "second local\n")
+            again = install.keep_local(self.config, "skills/handoff/SKILL.md", force=True)
+        self.assertEqual(taken.read_bytes(), b"local handoff\n")
+        self.assertEqual(again.name, f"SKILL.md.local-{stamp}-1.bak")
+        self.assertEqual(again.read_bytes(), b"second local\n")
+
+    def test_dry_run_names_the_local_skill_copy_it_would_keep(self):
+        before = self.snapshot()
+        code, out, _ = self.run_cli("install", "--dry-run")
+        self.assertEqual(code, 0)
+        self.assertIn("would keep local skills/handoff/SKILL.md", out)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_verification_skill_installed(self):
+        self.assertEqual(self.run_cli("install")[0], 0)
         self.assertEqual((self.config / "skills/verification-before-completion/SKILL.md").read_bytes(),
                          b"verify\n")
-        _, report = self.check_json()
-        self.assertFalse(any("skills/handoff" in path for path in self.statuses(report)))
 
     def test_agents_dir_other_files_untouched(self):
         self.assertEqual(self.run_cli("install")[0], 0)

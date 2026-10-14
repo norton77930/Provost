@@ -238,7 +238,7 @@ class CliTests(FixtureCase):
         self.assertRegex(data["last_binding_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?\+00:00$")
 
     def test_status_reports_facts_and_prefills_recent_sources(self):
-        from provost_runtime.store import validate_payload
+        from provost_runtime.store import split_request
         bind(self.root, "s1", {})
         args = ("status", "--workspace", str(self.root), "--session", "s1")
         status = json.loads(self.run_cli(*args).stdout)
@@ -254,11 +254,11 @@ class CliTests(FixtureCase):
                          ({"code-reviewer": 1, "implementer": 1}, 4, 12))
         self.assertEqual((facts["events_captured"], facts["spool_errors"]), (15, 0))
         template = status["template"]
-        self.assertEqual(set(template), {"work_id", "phase", "sources", "assignments", "decisions", "blockers",
-                                         "evidence", "next", "suggested_skills"})
+        self.assertEqual(set(template), {"work_id", "phase", "sources", "assignments", "blockers", "next",
+                                         "suggested_skills", "new_decisions", "new_evidence"})
         self.assertEqual([s["ref"][:13] for s in template["sources"]], ["C:/repo/f%04d" % i for i in range(11, 1, -1)])
         self.assertTrue(all(s["kind"] == "file" and set(s) == {"kind", "ref"} for s in template["sources"]))
-        validate_payload(dict(template, work_id="w", phase="p", next="n"))
+        split_request(dict(template, work_id="w", phase="p", next="n"))
         self.assertIsNone(status["expected"])
 
     def test_changes_is_registered_and_read_only(self):

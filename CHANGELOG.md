@@ -17,7 +17,7 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 - Native handoff runtime (`scripts/provost_runtime/`, `hooks/native-event`,
   `hooks/native-facts`): sealed per-session record chains shared by a checkout
   and its worktrees, compaction recovery, facts capture and reminders, decision
-  search, retention, and prune that archives the newest record per work item.
+  search, retention and prune.
 - `install.py`: installs the runtime, roles, policy section, skill and tool into
   the Claude config directory with backups, a manifest and rollback; `check` is
   a read-only drift report that also says whether the hooks are registered.
@@ -35,6 +35,45 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   open questions with their options. A 2026-10-13 baseline of 44 compactions
   found no context-loss corrections; these were the only gaps against
   ctx-handoff-mod's handoff checklist.
+
+### Changed
+
+- Handoff records are state cards per (session, work_id) (#18): `record` checks
+  `--expected` against, appends to and trims (newest 5) only the chain of the
+  payload's work_id, so recording one work no longer overwrites another's. The
+  session's current card is its most recently written one; `status --work
+  <work_id>` reads another work's card and `status` lists the session's
+  `other_works`. Single-work sessions behave as before, and existing single-chain
+  sessions are read without migration (the chain belongs to its head's work_id).
+- Decisions and evidence move to an append-only decision log per work_id (#19),
+  shared by a checkout and its worktrees at `<repo dir>/logs/`. `record` takes
+  `new_decisions` / `new_evidence` (only what is new), appends them under a
+  per-work lock with runtime-assigned ids (`D1…`, `E1…`) and returns them as
+  `log_entries`; a replayed request appends nothing twice, and a torn last line
+  is ignored on read and cut by the next append. **Record schema 2:** cards no
+  longer carry `decisions` / `evidence`, and requests using those fields are
+  refused (`LEGACY_FIELDS`, with a `detail` naming the new fields). Schema 1
+  cards stay readable. `status` adds `log` (the newest 10 entries of the shown
+  work) and its template has the new fields.
+- The decision log is complete (#20–#29, spec #17). **Schema 2** splits a record
+  into a state card per (session, work_id) and the per-work decision log.
+  `record` rejects broken entries, returns soft `warnings` and an `echo` of the
+  work, and links corrections with `supersedes` / `updates`; `record --join`
+  joins another session's work; phase `done` closes a work. Snapshots hold every
+  open card, and `resume --work <work_id>` (repeatable) picks works, with
+  `WORK_CHOICE_REQUIRED` when several are open. Compact and resume inject the
+  card, open evidence and newest decisions; startup, clear and fork list
+  joinable works. `search` covers the logs (`--work`, `--kind`, `--show` with the
+  chain). New commands: `migrate [--apply]` imports schema 1 decisions and
+  evidence, and the maintainer-only `redact` (deny it to the model with a
+  permission rule). `prune` lists `idle_logs` and keeps sessions with
+  `UNMIGRATED_DECISIONS`. **`prune` no longer writes the archive**; existing
+  archive files stay searchable. `install.py` now installs the `/handoff` skill,
+  keeping a differing local copy beside it before the first overwrite. Rollout
+  order: merge → `install.py install` → `migrate` dry run reviewed by the user
+  → `migrate --apply` → only then `prune --apply`. Rollback limits are in the
+  guide under [Migrate](docs/native-handoff.md#migrate) and
+  [Redact](docs/native-handoff.md#redact).
 
 ### Fixed
 

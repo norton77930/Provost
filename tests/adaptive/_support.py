@@ -108,9 +108,19 @@ class FixtureCase(unittest.TestCase):
                               encoding="utf-8", env=settings, timeout=60, cwd=cwd)
 
     def payload(self, next_step="collect result"):
+        """A state card payload (record schema 2); a record request may add new_decisions/new_evidence."""
         return {"work_id": "fixture", "phase": "implementation", "sources": [],
-                "assignments": [], "decisions": [], "blockers": [], "evidence": [],
-                "next": next_step, "suggested_skills": []}
+                "assignments": [], "blockers": [], "next": next_step, "suggested_skills": []}
+
+    def payload_v1(self, next_step="collect result", decisions=(), evidence=()):
+        """A record schema 1 payload, which still carried decisions and evidence."""
+        return dict(self.payload(next_step), decisions=list(decisions), evidence=list(evidence))
+
+    @staticmethod
+    def record_v1(root, session, payload, expected, request_id):
+        """Write a schema 1 card, as runtimes before the decision log did (record() rejects that shape)."""
+        from provost_runtime.store import _commit
+        return _commit(root, session, payload, 1, expected, request_id)
 
     def seed_facts(self, files=3, repos=1, agents=2, name_chars=20, session="s1"):
         """A sealed facts.json for session: files f0000.. (newest last), repos with 2 of 7 dirty and 1 commit."""

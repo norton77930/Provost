@@ -10,10 +10,6 @@ from _support import FixtureCase, REPO
 from provost_runtime.hooks import bind
 from provost_runtime.store import StoreError, digest, prune, record, session_dir, snapshot as store_snapshot
 
-# A directory created where a regular file stands: Windows reports the file as existing,
-# POSIX reports the path as not a directory.
-BLOCKED_DIR_ERROR = "FileExistsError" if os.name == "nt" else "NotADirectoryError"
-
 DAY = 86400
 
 
@@ -51,16 +47,20 @@ def age_activity(directory, days):
 
 def backdate(directory, days):
     """Move every activity stamp of a session dir days into the past: stored and file
-    mtimes of records/snapshots, and the session-level files' mtimes. Stored stamps
-    keep their order and the files stay checksum-valid."""
+    mtimes of records/snapshots (and of the other cards a snapshot holds), and the
+    session-level files' mtimes. Stored stamps keep their order and the files stay checksum-valid."""
     from provost_runtime.store import _seal
+
+    def shift(data, keys):
+        data = {k: v for k, v in data.items() if k != "checksum"}
+        for key in keys:
+            data[key] = (datetime.fromisoformat(data[key]) - timedelta(days=days)).isoformat()
+        if "other_cards" in data:
+            data["other_cards"] = [shift(card, ("recorded_at",)) for card in data["other_cards"]]
+        return _seal(data)
     for kind, keys in (("records", ("recorded_at",)), ("snapshots", ("recorded_at", "captured_at"))):
         for path in (directory / kind).glob("*.json"):
-            data = json.loads(path.read_text(encoding="utf-8"))
-            data.pop("checksum", None)
-            for key in keys:
-                data[key] = (datetime.fromisoformat(data[key]) - timedelta(days=days)).isoformat()
-            path.write_text(json.dumps(_seal(data)), encoding="utf-8")
+            path.write_text(json.dumps(shift(json.loads(path.read_text(encoding="utf-8")), keys)), encoding="utf-8")
             age(path, days)
     age_activity(directory, days)
 
@@ -472,7 +472,7 @@ class ExpiredPruneTests(FixtureCase):
         from provost_runtime import store
         old = self.session("race", 90)
         head = store.current(self.root, "race")["revision"]
-        real_current, real_remove, real_scan = store.current, store._remove_expired, store._scan
+        real_collection, real_remove, real_scan = store._collection, store._remove_expired, store._scan
         read, go, outcome = threading.Event(), threading.Event(), {}
 
         def write():
@@ -483,8 +483,8 @@ class ExpiredPruneTests(FixtureCase):
 
         writer = threading.Thread(target=write)
 
-        def current_then_pause(root, session):
-            found = real_current(root, session)
+        def read_then_pause(root, session, kind):
+            found = real_collection(root, session, kind)
             if threading.current_thread() is writer:
                 read.set()
                 go.wait(10)
@@ -507,7 +507,7 @@ class ExpiredPruneTests(FixtureCase):
                 finish_writer()
             return real_scan(home, directory)
 
-        with mock.patch.object(store, "current", current_then_pause), \
+        with mock.patch.object(store, "_collection", read_then_pause), \
                 mock.patch.object(store, "_remove_expired", remove_while_writing), \
                 mock.patch.object(store, "_scan", writer_finishes_after_the_move):
             result = prune(self.root, apply=True)
@@ -630,8 +630,7 @@ class ExpiredPruneTests(FixtureCase):
                          (0, [{"session_dir": old.name, "error": "PermissionError", "left_at": leftover.name}]))
         self.assertTrue(leftover.is_dir())
         dry = prune(self.root)
-        self.assertEqual(dry["leftovers"], [{"staging_dir": leftover.name, "state": "reclaimable",
-                                             "archive": ["fixture"]}])
+        self.assertEqual(dry["leftovers"], [{"staging_dir": leftover.name, "state": "reclaimable"}])
         second = prune(self.root, apply=True)
         self.assertEqual((second["reclaimed"], second["errors"]), (1, []))
         self.assertFalse(leftover.exists())
@@ -661,199 +660,6 @@ class ExpiredPruneTests(FixtureCase):
         result = prune(self.root, apply=True)
         self.assertEqual(result["expired_removed"], 1)
         self.assertEqual(listing(), before)
-
-
-class ArchivePruneTests(FixtureCase):
-    """An expired session's newest record per work_id survives in the repo-level archive."""
-
-    def session(self, name, age_days, *works, snapshot=False):
-        """A session recording one record per (work_id, next) in order, stamped age_days ago."""
-        bind(self.root, name, {})
-        previous = None
-        for index, (work, step) in enumerate(works):
-            previous = record(self.root, name, dict(self.payload(step), work_id=work), previous,
-                              "r%d" % index)["revision"]
-        if snapshot:
-            store_snapshot(self.root, name, "e1")
-        directory = session_dir(self.root, name)
-        backdate(directory, age_days)
-        return directory
-
-    def archived(self, work_id):
-        import hashlib
-        name = hashlib.sha256(work_id.encode("utf-8")).hexdigest()[:32] + ".json"
-        return session_dir(self.root, "any").parent.parent / "archive" / name
-
-    def stored(self, directory, step):
-        """The stored record whose payload.next is step, as parsed JSON."""
-        for path in (directory / "records").glob("*.json"):
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if data["payload"]["next"] == step:
-                return data
-        raise AssertionError(step)
-
-    def test_apply_archives_the_newest_record_of_each_work_id_before_removal(self):
-        from unittest import mock
-        from provost_runtime import store
-        old = self.session("old", 40, ("alpha", "a1"), ("beta", "b1"), ("alpha", "a2"))
-        expected = {"alpha": self.stored(old, "a2"), "beta": self.stored(old, "b1")}
-        real_remove = store._remove_expired
-        seen = []
-
-        def remove_after_archive(*args):
-            seen.append(all(self.archived(work).is_file() for work in expected))
-            return real_remove(*args)
-
-        with mock.patch.object(store, "_remove_expired", remove_after_archive):
-            result = prune(self.root, apply=True)
-        self.assertEqual((result["expired_removed"], result["errors"], result["skipped"]), (1, [], []))
-        self.assertEqual(result["expired"][0]["archive"], ["alpha", "beta"])
-        self.assertEqual(seen, [True])
-        self.assertFalse(old.exists())
-        for work, data in expected.items():
-            self.assertEqual(json.loads(self.archived(work).read_text(encoding="utf-8")), data)
-
-    def test_dry_run_lists_the_work_ids_and_writes_nothing(self):
-        old = self.session("old", 40, ("alpha", "a1"), ("beta", "b1"))
-        before = sorted(p.relative_to(self.store_home) for p in self.store_home.rglob("*"))
-        dry = prune(self.root)
-        self.assertEqual([(e["session_dir"], e["archive"]) for e in dry["expired"]], [(old.name, ["alpha", "beta"])])
-        self.assertEqual(sorted(p.relative_to(self.store_home) for p in self.store_home.rglob("*")), before)
-        self.assertFalse(self.archived("alpha").parent.exists())
-
-    def test_newer_records_replace_older_archives_and_older_ones_never_do(self):
-        self.session("older", 60, ("alpha", "older"))
-        prune(self.root, expired_older_than_days=50, apply=True)
-        self.assertEqual(json.loads(self.archived("alpha").read_text(encoding="utf-8"))["payload"]["next"], "older")
-        newer = self.session("newer", 40, ("alpha", "newer"))
-        expected = self.stored(newer, "newer")
-        prune(self.root, apply=True)
-        self.assertEqual(json.loads(self.archived("alpha").read_text(encoding="utf-8")), expected)
-        ancient = self.session("ancient", 90, ("alpha", "ancient"))
-        result = prune(self.root, apply=True)
-        self.assertEqual((result["expired_removed"], result["expired"][0]["archive"]), (1, ["alpha"]))
-        self.assertFalse(ancient.exists())
-        self.assertEqual(json.loads(self.archived("alpha").read_text(encoding="utf-8")), expected)
-
-    def test_a_failed_archive_keeps_the_session(self):
-        from unittest import mock
-        old = self.session("old", 40, ("alpha", "a1"))
-        archive = self.archived("alpha").parent
-        archive.parent.mkdir(parents=True, exist_ok=True)
-        archive.write_text("not a dir", encoding="utf-8")
-        result = prune(self.root, apply=True)
-        self.assertEqual((result["expired_removed"], result["errors"]),
-                         (0, [{"session_dir": old.name, "error": BLOCKED_DIR_ERROR, "left_at": None}]))
-        self.assertTrue((old / "records").is_dir())
-        archive.unlink()
-        with mock.patch("provost_runtime.store.atomic_write", side_effect=StoreError("WRITE_FAILED")):
-            result = prune(self.root, apply=True)
-        self.assertEqual((result["expired_removed"], result["skipped"]),
-                         (0, [{"entry": old.name, "reason": "WRITE_FAILED"}]))
-        self.assertTrue((old / "records").is_dir())
-        self.archived("alpha").write_text("{}", encoding="utf-8")
-        result = prune(self.root, apply=True)
-        self.assertEqual((result["expired_removed"], result["skipped"]),
-                         (0, [{"entry": old.name, "reason": "CORRUPT_ARCHIVE"}]))
-        self.assertEqual(self.archived("alpha").read_text(encoding="utf-8"), "{}")
-
-    def test_invalid_records_are_skipped_and_listed_without_blocking_removal(self):
-        old = self.session("old", 40, ("alpha", "a1"), ("beta", "b1"))
-        path = next(p for p in (old / "records").glob("*.json")
-                    if json.loads(p.read_text(encoding="utf-8"))["payload"]["work_id"] == "beta")
-        data = json.loads(path.read_text(encoding="utf-8"))
-        data["payload"]["next"] = "tampered"
-        path.write_text(json.dumps(data), encoding="utf-8")
-        age(path, 40)
-        dry = prune(self.root)
-        item = dry["expired"][0]
-        self.assertEqual((item["archive"], item["archive_skipped"]),
-                         (["alpha"], [{"file": "records/" + path.name, "reason": "CORRUPT_RECORD"}]))
-        result = prune(self.root, apply=True)
-        self.assertEqual((result["expired_removed"], result["errors"]), (1, []))
-        self.assertTrue(self.archived("alpha").is_file())
-        self.assertFalse(self.archived("beta").exists())
-
-    def test_a_session_with_only_invalid_records_is_removed_with_nothing_archived(self):
-        old = self.session("old", 40, ("alpha", "a1"))
-        path = next((old / "records").glob("*.json"))
-        path.write_text("not json", encoding="utf-8")
-        age(path, 40)
-        result = prune(self.root, apply=True)
-        item = result["expired"][0]
-        self.assertEqual((item["archive"], item["archive_skipped"]),
-                         ([], [{"file": "records/" + path.name, "reason": "CORRUPT_RECORD"}]))
-        self.assertEqual((result["expired_removed"], result["errors"], result["skipped"]), (1, [], []))
-        self.assertFalse(old.exists())
-        self.assertFalse(self.archived("alpha").parent.exists())
-
-    def test_a_failed_archive_keeps_the_leftover(self):
-        from unittest import mock
-        old = self.session("parked", 40, ("alpha", "a1"))
-        leftover = old.parent / (".pruning-" + old.name)
-        old.rename(leftover)
-        archive = self.archived("alpha").parent
-        archive.parent.mkdir(parents=True, exist_ok=True)
-        archive.write_text("not a dir", encoding="utf-8")
-        result = prune(self.root, apply=True)
-        self.assertEqual((result["reclaimed"], result["errors"]),
-                         (0, [{"session_dir": leftover.name, "error": BLOCKED_DIR_ERROR, "left_at": leftover.name}]))
-        self.assertTrue((leftover / "records").is_dir())
-        archive.unlink()
-        with mock.patch("provost_runtime.store.atomic_write", side_effect=StoreError("WRITE_FAILED")):
-            result = prune(self.root, apply=True)
-        self.assertEqual((result["reclaimed"], result["skipped"]),
-                         (0, [{"entry": leftover.name, "reason": "WRITE_FAILED"}]))
-        self.assertTrue((leftover / "records").is_dir())
-
-    def test_a_snapshot_keeps_a_trimmed_record_archivable(self):
-        bind(self.root, "trim", {})
-        first = record(self.root, "trim", dict(self.payload("a1"), work_id="alpha"), None, "r0")
-        store_snapshot(self.root, "trim", "e1")
-        previous = first["revision"]
-        for index in range(1, 6):
-            previous = record(self.root, "trim", dict(self.payload("b%d" % index), work_id="beta"), previous,
-                              "r%d" % index)["revision"]
-        old = session_dir(self.root, "trim")
-        self.assertFalse((old / "records" / (first["revision"] + ".json")).exists())
-        backdate(old, 40)
-        result = prune(self.root, apply=True)
-        self.assertEqual((result["expired"][0]["archive"], result["expired_removed"]), (["alpha", "beta"], 1))
-        archived = json.loads(self.archived("alpha").read_text(encoding="utf-8"))
-        shifted = (datetime.fromisoformat(first["recorded_at"]) - timedelta(days=40)).isoformat()
-        from provost_runtime.store import _seal
-        self.assertEqual(archived, _seal({k: v for k, v in first.items() if k != "checksum"} | {"recorded_at": shifted}))
-
-    def test_equal_recorded_at_prefers_the_chain_newer_record_over_the_larger_revision(self):
-        from provost_runtime.store import _seal
-        bind(self.root, "tie", {})
-        # Request ids whose child revision sorts below its parent's, so revision order would pick the parent.
-        first, second = next((a, b) for a, b in (("r%d" % i, "r%d" % (i + 1)) for i in range(100))
-                             if digest("tie\0record\0" + b) < digest("tie\0record\0" + a))
-        parent = record(self.root, "tie", dict(self.payload("parent"), work_id="alpha"), None, first)
-        child = record(self.root, "tie", dict(self.payload("child"), work_id="alpha"), parent["revision"], second)
-        old = session_dir(self.root, "tie")
-        for data in (parent, child):
-            path = old / "records" / (data["revision"] + ".json")
-            body = {k: v for k, v in data.items() if k != "checksum"} | {"recorded_at": parent["recorded_at"]}
-            path.write_text(json.dumps(_seal(body)), encoding="utf-8")
-        backdate(old, 40)
-        result = prune(self.root, apply=True)
-        self.assertEqual((result["expired_removed"], result["expired"][0]["archive"]), (1, ["alpha"]))
-        self.assertEqual(json.loads(self.archived("alpha").read_text(encoding="utf-8"))["payload"]["next"], "child")
-
-    def test_an_expired_leftover_is_archived_before_it_is_reclaimed(self):
-        old = self.session("parked", 40, ("alpha", "a1"))
-        expected = self.stored(old, "a1")
-        leftover = old.parent / (".pruning-" + old.name)
-        old.rename(leftover)
-        dry = prune(self.root)
-        self.assertEqual(dry["leftovers"], [{"staging_dir": leftover.name, "state": "reclaimable", "archive": ["alpha"]}])
-        self.assertFalse(self.archived("alpha").exists())
-        result = prune(self.root, apply=True)
-        self.assertEqual((result["reclaimed"], result["errors"]), (1, []))
-        self.assertFalse(leftover.exists())
-        self.assertEqual(json.loads(self.archived("alpha").read_text(encoding="utf-8")), expected)
 
 
 class FactsPruneTests(FixtureCase):
