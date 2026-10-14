@@ -77,13 +77,13 @@ is interrupted in between, replaying the same request appends only what is missi
 Entries logged by an interrupted request that is never replayed stay in the log.
 
 **Current state of a claim.** Search, the recovery injection and the record echo
-share one rule. An evidence chain follows `updates`
-links; its head is an evidence entry that no evidence entry updates (entries in an
-update cycle head nothing). Chains whose heads have exactly the same claim text are
-one claim, since a migrated chain and a live chain of a claim are never linked. The
-claim's current entry is the head with the newest `at` (equal times: log order); the
-other heads are superseded. A redacted head (`redacted_at` set, claim `[removed]`)
-never joins by text: its chain is a claim of its own.
+share one rule. An evidence chain follows `updates` links; its head is an evidence
+entry that no evidence entry updates (entries in an update cycle head nothing). Chains
+whose heads have exactly the same stored claim text (before secrets are masked in
+output) are one claim, since a migrated chain and a live chain of a claim are never
+linked. The claim's current entry is the head with the newest `at` (equal times: log
+order); the other heads are superseded. A redacted head (`redacted_at` set or claim
+`[removed]`) never joins by text: its chain is a claim of its own.
 
 Cards have `schema_version` 2 and no `decisions`/`evidence` fields; they carry
 `log_entries`, the ids the record appended. Cards of schema 1 (written before the

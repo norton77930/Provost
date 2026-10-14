@@ -266,6 +266,16 @@ class RecordChecksTests(FixtureCase):
         self.assertIn("E1 [fail] [removed]", echo)
         self.assertNotIn("E2 [", echo)
 
+    def test_echo_groups_claims_on_their_stored_text_not_the_redacted_one(self):
+        first = self.record(self.request(evidence=[{"claim": "token ghp_%s works" % ("A" * 16), "state": "fail",
+                                                    "ref": "t"},
+                                                   {"claim": "token ghp_%s works" % ("B" * 16), "state": "fail",
+                                                    "ref": "t"}]))
+        echo = self.record(self.request(decisions=[{"text": LONG}]), first["revision"], "r2")["echo"]
+        self.assertIn("E1 [fail] token [REDACTED] works", echo)
+        self.assertIn("E2 [fail] token [REDACTED] works", echo)
+        self.assertNotIn("ghp_", echo)
+
     def test_echo_is_capped_trimming_decisions_then_evidence_then_warnings(self):
         long_text = "y" * 900
         evidence = [{"claim": "claim %02d %s" % (i, "z" * 120), "state": "fail", "ref": "r"} for i in range(12)]

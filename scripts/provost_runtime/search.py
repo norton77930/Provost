@@ -7,8 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import handoff_home
-from .redact import REMOVED
-from .store import (CHAINS, ID, REPO_DIR_CHARS, StoreError, Workspace, _archive_path, _parse_log,
+from .store import (CHAINS, ID, REMOVED, REPO_DIR_CHARS, StoreError, Workspace, _archive_path, _parse_log,
                     _read, _when, digest, encoded, guard, newest_entries, snapshot_cards, validate_payload)
 
 DEFAULT_LIMIT = 10
@@ -205,7 +204,8 @@ class DecisionLog:
 
     def latest(self, ident):
         """The current entry of evidence `ident`: the end of its update chain, then that head's claim's
-        current entry by evidence_claims (an entry in an update cycle is its own current entry)."""
+        current entry by evidence_claims. In an update cycle the walk stops at the last entry before it
+        would repeat one (from E2 in E2 <-> E3, at E3), which heads no claim and is returned as it is."""
         seen = {ident}
         while ident in self.updated_by and self.updated_by[ident] not in seen:
             ident = self.updated_by[ident]
