@@ -55,6 +55,25 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   refused (`LEGACY_FIELDS`, with a `detail` naming the new fields). Schema 1
   cards stay readable. `status` adds `log` (the newest 10 entries of the shown
   work) and its template has the new fields.
+- The decision log is complete (#20–#29, spec #17). **Schema 2** splits a record
+  into a state card per (session, work_id) and the per-work decision log.
+  `record` rejects broken entries, returns soft `warnings` and an `echo` of the
+  work, and links corrections with `supersedes` / `updates`; `record --join`
+  joins another session's work; phase `done` closes a work. Snapshots hold every
+  open card, and `resume --work <work_id>` (repeatable) picks works, with
+  `WORK_CHOICE_REQUIRED` when several are open. Compact and resume inject the
+  card, open evidence and newest decisions; startup, clear and fork list
+  joinable works. `search` covers the logs (`--work`, `--kind`, `--show` with the
+  chain). New commands: `migrate [--apply]` imports schema 1 decisions and
+  evidence, and the maintainer-only `redact` (deny it to the model with a
+  permission rule). `prune` lists `idle_logs` and keeps sessions with
+  `UNMIGRATED_DECISIONS`. **`prune` no longer writes the archive**; existing
+  archive files stay searchable. `install.py` now installs the `/handoff` skill,
+  keeping a differing local copy beside it before the first overwrite. Rollout
+  order: merge → `install.py install` → `migrate` dry run reviewed by the user
+  → `migrate --apply` → only then `prune --apply`. Rollback limits are in the
+  guide under [Migrate](docs/native-handoff.md#migrate) and
+  [Redact](docs/native-handoff.md#redact).
 
 ### Fixed
 

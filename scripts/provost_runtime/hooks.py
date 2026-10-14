@@ -253,7 +253,8 @@ def _joinable_menu(root):
         if not lines:
             return []
         return (["Joinable works in this repository (nothing is loaded):"] + lines
-                + ["Continue one with /handoff resume <snapshot-id>, or record its work_id with --join on the first write."])
+                + ["Continue one: run list to get the snapshot id that holds it, then /handoff resume <snapshot-id>;"
+                   " or record its work_id with --join on the first write."])
     except Exception:  # fail-soft: the notice stays, the menu is omitted
         return []
 
@@ -623,6 +624,19 @@ def handle_event(event, config_path):
                          + "\nRecord at plan approval, dispatch, result receipt or changed decisions/blockers."
                          + " Use snapshot for explicit /handoff. Never treat an unfilled template as saved work."
                          + "\nOn conflict rerun status (with --work for that work_id) and reconcile; do not force overwrite. A worktree and its main checkout share one handoff store.")
+                contract = ("Record contract (details in the operations guide):"
+                           + "\nWrite only what is new since the last record: new_decisions [{text, refs?, supersedes?}] and"
+                           + " new_evidence [{claim, state, ref, updates?}]; the old decisions/evidence fields are refused."
+                           + " Each decision is one self-contained sentence: the decision, because the reason, with specifics"
+                           + " (files, values, PR numbers, commit hashes of 7+ characters, dispatched roles); no pronouns."
+                           + "\nCorrect a decision with a new one whose supersedes names it (D3); record a changed claim state"
+                           + " with new evidence whose updates names the earlier entry (E2). Old entries are never edited."
+                           + "\nJOIN_REQUIRED: add --join only to continue another session's work. Read the returned warnings"
+                           + " and echo and fill the gaps in the next record. Phase done closes a work."
+                           + "\nsearch --query <terms> finds past decisions; search --show <ref> shows one with its chain."
+                           + " Never run redact: it is maintainer-only (the user runs it with the ! prefix)."
+                           + "\nAfter an install, migrate is a dry run for the user to review before migrate --apply;"
+                           + " prune lists idle_logs and keeps sessions with UNMIGRATED_DECISIONS; prune --apply only after migrate --apply.")
             # Keep identity and restrictions; never slice a decision halfway.
             short = "Native handoff runtime. Personal policy remains authoritative."
             shortest = (short + "\nRuntime: " + runtime + "\nWorkspace: " + str(root.root) + "\nSession: " + session + "\n"
@@ -630,7 +644,10 @@ def handle_event(event, config_path):
                            if enabled else "Handoff: disabled; do not record or snapshot."))
             # Display order: identity, save status, facts, checkpoint, other open works, open evidence,
             # decisions, activity since the checkpoint, edited files.
-            sections = [[policy + info, short + info, shortest], [], [], [], [], [], [], [], []]
+            # The record contract comes last and is the second section dropped for size (the operations
+            # guide keeps it), so it never displaces recovered state.
+            sections = [[policy + info, short + info, shortest], [], [], [], [], [], [], [], [],
+                        [contract, ""] if enabled else []]
             status, warning, partial = [], "", False
             if enabled:
                 # Only a session PreCompact could fold for: the marker this SessionStart creates does not count.
@@ -686,7 +703,7 @@ def handle_event(event, config_path):
             # what the other sections leave; then open evidence and other works shrink to counts. The
             # activity since the checkpoint shrinks to its headline (which keeps the staleness line)
             # before the checkpoint loses its digest.
-            steps = (8,) + (6,) * len(sections[6]) + (5, 4, 3, 7, 3, 2, 0, 0)
+            steps = (8, 9) + (6,) * len(sections[6]) + (5, 4, 3, 7, 3, 2, 0, 0)
             return _context(_fit(sections, steps)) | _notification(warning, True)
         if not enabled:
             return {}

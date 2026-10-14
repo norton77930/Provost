@@ -23,7 +23,7 @@ installed by copying files into the Claude config directory with a drift check.
 | [`agents/`](agents/) | Eight subagent roles | `agents/` |
 | [`hooks/`](hooks/), [`scripts/provost_runtime/`](scripts/provost_runtime/) | Handoff runtime and its hooks | `provost/runtime/native-pilot-v1/` |
 | [`skills/verification-before-completion/`](skills/verification-before-completion/) | Completion-claim discipline | `skills/` |
-| [`skills/handoff/`](skills/handoff/) | Reference `/handoff` skill (not installed; keep your own) | — |
+| [`skills/handoff/`](skills/handoff/) | The `/handoff` skill (save, resume, search) | `skills/handoff/` |
 | [`tools/dispatch-report.js`](tools/dispatch-report.js) | Cost and outcome report of past dispatches, from transcripts | `experiments/` |
 | [`install.py`](install.py) | Installer and read-only drift check | — |
 
@@ -83,8 +83,10 @@ decisions, assignments, evidence, next step) under
 `~/.claude/provost/handoffs`, shared by a checkout and its worktrees. Hooks
 inject the latest checkpoint after compaction or resume, capture facts (edited
 paths, dispatches, commits — never command text or file contents) and remind the
-main session when a dispatch or edit has no record yet. Commands: `doctor`,
-`status`, `record`, `snapshot`, `list`, `resume`, `changes`, `search`, `prune`.
+main session when a dispatch or edit has no record yet. Decisions and evidence go
+to an append-only log per work, shared by every session of the repository.
+Commands: `doctor`, `status`, `record`, `snapshot`, `list`, `resume`, `changes`,
+`search`, `prune`, `migrate`, and the maintainer-only `redact`.
 See [`docs/native-handoff.md`](docs/native-handoff.md).
 
 ## Install
@@ -109,8 +111,12 @@ bash scripts).
    ```
 
    Backups go to `~/.claude/provost/backups/install-<UTC time>/` with a
-   `manifest.json`; a failed install rolls back. `CLAUDE_CONFIG_DIR` and
-   `--config-dir` are honoured.
+   `manifest.json`; a failed install rolls back. The first time it replaces a
+   local `skills/handoff/SKILL.md` that differs, it also keeps that copy beside it
+   as `SKILL.md.local-<UTC time>.bak`. `CLAUDE_CONFIG_DIR` and `--config-dir` are
+   honoured. After upgrading to the decision log, run `migrate` and review it
+   before `migrate --apply` and any `prune --apply` (see the guide's
+   [Install and rollout](docs/native-handoff.md#install-and-rollout)).
 
 3. Register the hooks in `~/.claude/settings.json` (the installer never edits
    it; `check` reports whether they are registered). Replace `<runtime>` with

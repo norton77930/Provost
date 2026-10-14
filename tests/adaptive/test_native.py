@@ -95,6 +95,16 @@ class NativeTests(FixtureCase):
         self.assertEqual(r.returncode,0,r.stdout)
         self.assertEqual(json.loads(r.stdout)["adopted_from"],listed[0]["snapshot_id"])
 
+    def test_operations_text_describes_the_decision_log_contract(self):
+        text=self.context(handle_event(self.event(),self.config_path))
+        flat=" ".join(text.split())
+        for word in ("new_decisions","new_evidence","--join","warnings","echo","supersedes","updates",
+                     "search --show","prune","idle_logs","UNMIGRATED_DECISIONS","migrate","--apply"):
+            self.assertIn(word,flat)
+        self.assertRegex(flat,r"[Nn]ever run redact")
+        self.assertRegex(flat,r"because")
+        self.assertLess(len(text),4000)
+
     def test_guidance_points_record_at_input_file_not_stdin(self):
         text=self.context(handle_event(self.event(),self.config_path))
         self.assertIn("--input <payload-file>",text)
