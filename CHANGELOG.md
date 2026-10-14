@@ -17,7 +17,7 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 - Native handoff runtime (`scripts/provost_runtime/`, `hooks/native-event`,
   `hooks/native-facts`): sealed per-session record chains shared by a checkout
   and its worktrees, compaction recovery, facts capture and reminders, decision
-  search, retention, and prune that archives the newest record per work item.
+  search, retention and prune.
 - `install.py`: installs the runtime, roles, policy section, skill and tool into
   the Claude config directory with backups, a manifest and rollback; `check` is
   a read-only drift report that also says whether the hooks are registered.

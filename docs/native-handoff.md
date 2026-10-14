@@ -546,7 +546,7 @@ are named and not counted), the 5 newest later dispatches (role and description)
 and, per repo, the count and 3 newest later commits. Without a checkpoint it says so
 and counts all captured dispatches and commits as unrecorded; without `facts.json`
 it is omitted. Over budget, whole items are replaced, never cut: the file list
-first (by the facts.json path), then the decisions one at a time from the oldest
+first (by the facts.json path), then the record contract section, then the decisions one at a time from the oldest
 shown (down to a count), so decisions fill the budget the other sections leave,
 newest first; then the open evidence (to its counts), the other open cards (to a
 count), a full checkpoint payload by its digest, the activity section (its headline,
@@ -769,7 +769,10 @@ Replaying a `record` request whose entries were redacted returns `REQUEST_ID_REU
 even when the earlier attempt was interrupted before its card was written: the log
 no longer holds what the request sent. Write a new request ID instead. Redaction only
 rewrites the log: copies elsewhere (session transcripts, schema 1 cards, snapshots,
-archive files, migrate backups and output already shown) keep the content.
+archive files, migrate backups and output already shown) keep the content. Redacting
+a migrated entry makes `migrate` report `REDACTED_ENTRIES` for that work, so `prune`
+keeps every expired session holding a schema 1 card of it as `UNMIGRATED_DECISIONS`
+until those cards are deleted by hand.
 
 The model must not run this command. Deny it in the Claude Code settings with a
 permission rule rather than relying on instructions, and run it yourself with the `!`
@@ -826,8 +829,9 @@ Imported entries take `at` from the card's `recorded_at`, `session` from the car
 session, `record` from the card's revision, and `migrated: true`. Their ids continue
 after the work's highest existing ids; entries already in the log are kept as they
 are, and every view orders by `at`, so older imported entries sort before newer live
-ones. Migrated chains never link to live entries. Expected consequences: a decision
-re-logged as a live entry can coexist with a migrated entry of the same text, and
+ones. Migrated chains never link to live entries. Expected consequences: a live entry
+recorded before the migration can coexist with a migrated entry of the same text (after
+the migration, `record` skips an exact restatement as `DUPLICATE_SKIPPED`), and
 when a claim has both a migrated chain and a live chain, its current state is the
 entry with the newest `at`.
 
@@ -885,7 +889,8 @@ Rollback, keeping live entries recorded after the migration: remove every line w
 migrated id then points at a missing entry; fix or accept that residue. Full revert:
 replace each log with its copy in the oldest backup (a copy that is an empty file
 means the work had no log: delete that log), which also drops every entry recorded
-after the migration. Either way, reinstall the previous runtime if needed. Record,
+after the migration. Either way, reinstall the previous runtime if needed, with
+[its limits](#install-and-rollout). Record,
 snapshot and archive files are never modified, so schema 1 cards still hold their
 decisions and evidence. A runtime with the decision log but without `migrate` reads
 migrated entries as they are.
@@ -910,8 +915,13 @@ Rolling out the decision log, in this order:
 4. Only then `prune` and, after the user has reviewed its listing, `prune --apply`
    (before the migration, prune keeps sessions with `UNMIGRATED_DECISIONS`).
 
-Rollback limits are under [Migrate](#migrate) (removing migrated entries or restoring
-the log backups) and [Redact](#redact) (what redaction does not reach).
+Rolling back the runtime is not clean once the new one has recorded: a runtime
+without schema 2 cannot read the cards recorded since the install, so every session
+that recorded after the install fails closed there (`status` errors, compaction
+recovery shows the checkpoint as unavailable) until the new runtime is reinstalled.
+No file is lost; only sessions that never recorded after the install roll back
+cleanly. Further limits are under [Migrate](#migrate) (removing migrated entries or
+restoring the log backups) and [Redact](#redact) (what redaction does not reach).
 
 ## Reminder hook
 
