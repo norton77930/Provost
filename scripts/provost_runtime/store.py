@@ -186,19 +186,25 @@ LEGACY_GUIDANCE = ("record payloads no longer carry decisions or evidence: put o
 
 def validate_payload(payload, version=RECORD_SCHEMA):
     """A stored state card payload of record schema `version` (1 or 2)."""
-    if version not in (1, 2) or not isinstance(payload, dict) or set(payload) != (V1_FIELDS if version == 1
-                                                                                 else CARD_FIELDS):
+    if version not in (1, 2):
         raise StoreError("INVALID_PAYLOAD")
+    if not isinstance(payload, dict):
+        raise StoreError("INVALID_PAYLOAD", "the payload must be a JSON object")
+    fields = V1_FIELDS if version == 1 else CARD_FIELDS
+    if set(payload) != fields:
+        parts = [label + ": " + ", ".join(sorted(names)) for label, names in
+                 (("missing", fields - set(payload)), ("unexpected", set(payload) - fields)) if names]
+        raise StoreError("INVALID_PAYLOAD", "; ".join(parts))
     for key in ("work_id", "phase", "next"):
         if not isinstance(payload[key], str) or not payload[key]:
-            raise StoreError("INVALID_PAYLOAD")
+            raise StoreError("INVALID_PAYLOAD", "%s must be a non-empty string" % key)
     lists = ("sources", "assignments", "blockers", "suggested_skills") + (("decisions", "evidence") if version == 1 else ())
     for key in lists:
         if not isinstance(payload[key], list):
-            raise StoreError("INVALID_PAYLOAD")
+            raise StoreError("INVALID_PAYLOAD", "%s must be a list" % key)
     for key in ("blockers", "suggested_skills") + (("decisions",) if version == 1 else ()):
         if any(not isinstance(item, str) for item in payload[key]):
-            raise StoreError("INVALID_PAYLOAD")
+            raise StoreError("INVALID_PAYLOAD", "%s must be a list of strings" % key)
     for source in payload["sources"]:
         if (not isinstance(source, dict) or set(source) - {"kind", "ref", "item"}
                 or source.get("kind") not in ("file", "url")
