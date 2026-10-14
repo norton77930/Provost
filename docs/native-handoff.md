@@ -118,6 +118,13 @@ entries and the `newest` 10 by `at`, oldest first; `{"error": <code>}` when the 
 unreadable; `total` 0 when no work is shown). Read-only. SESSION_NOT_BOUND means fix the
 session startup/workspace configuration; do not fabricate binding files.
 
+Secret-like strings are replaced by `[REDACTED]`, as in search output, in the model-facing
+text of `status`: the checkpoint's `phase`, `next`, `blockers`, source `item` and `ref`
+and assignment `task` (for a schema 1 card also its `decisions` and the `claim` and `ref`
+of its `evidence`), the `phase` of `other_works`, and the `text`, `claim`, `ref`, `refs`
+(and `redaction_reason`) of the `log.newest` entries. What a `record` is built from stays verbatim: `expected`, the
+revision, ids, `work_id`, `agent_id`, `write_scope`, `facts` and `template`.
+
 `expected` and `checkpoint` belong to the session's current card. Add
 `--work "<work_id>"` to read that work's card instead (both null when the session
 has not recorded it). When the session has cards of other works, `other_works` lists

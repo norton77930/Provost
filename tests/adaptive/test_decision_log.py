@@ -86,6 +86,48 @@ class DecisionLogTests(FixtureCase):
         self.assertEqual([e["text"] for e in self.status()["log"]["newest"]], ["other work"])
         self.assertEqual(self.status("C")["log"], {"total": 0, "newest": []})
 
+    def test_status_redacts_model_facing_text_and_keeps_write_inputs_verbatim(self):
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0"
+        data = self.request(decisions=[{"text": "rotate " + token, "refs": ["ref " + token]}],
+                            evidence=[{"claim": "claim " + token, "state": "fail", "ref": "t.py " + token}])
+        data.update(phase="phase " + token, blockers=["blocked " + token],
+                    sources=[{"kind": "file", "ref": "src/" + token, "item": "item " + token}],
+                    assignments=[{"task": "task " + token, "agent_id": "agent-1", "observed_state": "running",
+                                  "write_scope": ["scripts/a.py"]}])
+        data["next"] = "next " + token
+        written = self.record(data)
+        out = self.status()
+        self.assertNotIn(token, json.dumps(out))
+        payload = out["checkpoint"]["payload"]
+        self.assertEqual((payload["phase"], payload["next"], payload["blockers"]),
+                         ("phase [REDACTED]", "next [REDACTED]", ["blocked [REDACTED]"]))
+        self.assertEqual(payload["sources"], [{"kind": "file", "ref": "src/[REDACTED]", "item": "item [REDACTED]"}])
+        self.assertEqual(payload["assignments"], [{"task": "task [REDACTED]", "agent_id": "agent-1",
+                                                   "observed_state": "running", "write_scope": ["scripts/a.py"]}])
+        decision, evidence = out["log"]["newest"]
+        self.assertEqual((decision["text"], decision["refs"]), ("rotate [REDACTED]", ["ref [REDACTED]"]))
+        self.assertEqual((evidence["claim"], evidence["ref"]), ("claim [REDACTED]", "t.py [REDACTED]"))
+        # What a caller writes with stays verbatim: revision, ids, work_id and the template.
+        self.assertEqual((out["expected"], out["checkpoint"]["revision"]), (written["revision"],) * 2)
+        self.assertEqual((payload["work_id"], decision["id"], evidence["id"]), ("A", "D1", "E1"))
+        self.assertEqual(set(out["template"]), {"work_id", "phase", "sources", "assignments", "blockers", "next",
+                                                "suggested_skills", "new_decisions", "new_evidence"})
+
+    def test_status_redacts_schema_1_decisions_evidence_and_other_works(self):
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0"
+        legacy = dict(self.payload("legacy next"), work_id="A", decisions=["old " + token],
+                      evidence=[{"claim": "claim " + token, "ref": "r " + token, "state": "pass-observed"}])
+        old = self.record_v1(self.root, "s1", legacy, None, "old")
+        self.record(dict(self.request("B"), phase="phase " + token), request_id="b1")
+        out = self.status("A")
+        self.assertNotIn(token, json.dumps(out))
+        payload = out["checkpoint"]["payload"]
+        self.assertEqual(payload["decisions"], ["old [REDACTED]"])
+        self.assertEqual(payload["evidence"], [{"claim": "claim [REDACTED]", "ref": "r [REDACTED]",
+                                                "state": "pass-observed"}])
+        self.assertEqual(out["expected"], old["revision"])
+        self.assertEqual([(w["work_id"], w["phase"]) for w in out["other_works"]], [("B", "phase [REDACTED]")])
+
     def test_status_template_is_a_valid_record_request(self):
         template = self.status()["template"]
         self.assertEqual(set(template), {"work_id", "phase", "sources", "assignments", "blockers", "next",

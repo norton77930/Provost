@@ -20,6 +20,31 @@ STATUS_SOURCES = 10  # recent repo files prefilled into template.sources
 STATUS_LOG = 10  # newest decision log entries of the shown work in status
 
 
+def _redacted_checkpoint(card):
+    """The card with secret-like strings out of the payload text shown to the model (phase, next, blockers, source
+    item/ref, assignment task; a schema 1 card's decisions and evidence claim/ref). Revision, work_id, agent_id, write_scope and the rest stay verbatim."""
+    if not card:
+        return card
+    payload = dict(card["payload"])
+    for key in ("phase", "next", "blockers"):
+        payload[key] = search.redact(payload[key])
+    payload["sources"] = [{**source, **{key: search.redact(source[key]) for key in ("item", "ref") if key in source}}
+                          for source in payload["sources"]]
+    payload["assignments"] = [{**item, "task": search.redact(item["task"])} for item in payload["assignments"]]
+    if "decisions" in payload:  # schema 1 cards still carry their decisions and evidence inline
+        payload["decisions"] = search.redact(payload["decisions"])
+    if "evidence" in payload:
+        payload["evidence"] = [{**item, **{key: search.redact(item[key]) for key in ("claim", "ref") if key in item}}
+                               for item in payload["evidence"]]
+    return {**card, "payload": payload}
+
+
+def _redacted_entry(entry):
+    """A log entry with secret-like strings out of its text fields; id, kind, state, at and links stay verbatim."""
+    return {**entry, **{key: search.redact(entry[key])
+                        for key in ("text", "claim", "ref", "refs", "redaction_reason") if key in entry}}
+
+
 def clear_reminder_flags(cfg_path, session):
     """Best effort: a missing dir or file, or any I/O error, leaves the record untouched."""
     if not isinstance(session, str) or not SPOOL_SESSION.fullmatch(session):
@@ -163,12 +188,12 @@ def main(argv=None):
                     checkpoint = next((head for head in heads if head["payload"]["work_id"] == work), None)
                     result = {"workspace": str(root.root), "session_id": options.session,
                               "expected": checkpoint["revision"] if checkpoint else None,
-                              "checkpoint": checkpoint,
+                              "checkpoint": _redacted_checkpoint(checkpoint),
                               "facts": None,
                               "template": {"work_id": "", "phase": "", "sources": [],
                                            "assignments": [], "blockers": [], "next": "", "suggested_skills": [],
                                            "new_decisions": [], "new_evidence": []}}
-                    others = [{"work_id": head["payload"]["work_id"], "phase": head["payload"]["phase"],
+                    others = [{"work_id": head["payload"]["work_id"], "phase": search.redact(head["payload"]["phase"]),
                                "revision": head["revision"], "recorded_at": head["recorded_at"]}
                               for head in heads if head["payload"]["work_id"] != work]
                     if others:  # only for a session with several works: single-work output is unchanged
@@ -178,7 +203,8 @@ def main(argv=None):
                         result["broken_works"] = broken
                     try:
                         entries = read_log(root, work) if work is not None else []
-                        result["log"] = {"total": len(entries), "newest": newest_entries(entries, STATUS_LOG)}
+                        result["log"] = {"total": len(entries), "newest": [_redacted_entry(entry)
+                                                                      for entry in newest_entries(entries, STATUS_LOG)]}
                     except StoreError as exc:
                         result["log"] = {"error": str(exc)}
                     try:
