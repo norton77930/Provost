@@ -6,7 +6,7 @@ from pathlib import Path
 from . import facts
 from .config import ConfigError, handoff_home, load_config, resolve_mode, workspace_key
 from .notifications import PARTIAL, notice
-from .search import redact
+from .search import evidence_claims, redact
 from .store import (CACHE_SESSION, FACTS_MARKER, StoreError, _base, _when, as_workspace, atomic_write, current,
                     digest, guard, is_done, latest, locate, newest_entries, read_log, record_chains, session_dir,
                     snapshot, snapshot_cards, storage_ready, work_states)
@@ -314,14 +314,13 @@ def _decision_variants(title, lines, total, note=""):
 def _log_state(entries, adopted_at=None):
     """(newest current decisions, current count, open evidence, passed count, passed before adoption) of a log.
 
-    Superseded decisions are dropped; each evidence chain (linked by updates) counts by its
-    newest entry. With adopted_at (the card's adoption time), a pass-observed newest entry
-    whose `at` precedes it is listed as passed before adoption, not counted as passed. Lists
-    are oldest first by store.newest_entries (time, then log order)."""
+    Superseded decisions are dropped; each evidence claim counts by its current entry
+    (search.evidence_claims). With adopted_at (the card's adoption time), a pass-observed
+    current entry whose `at` precedes it is listed as passed before adoption, not counted as
+    passed. Lists are oldest first by store.newest_entries (time, then log order)."""
     superseded = {e["supersedes"] for e in entries if e["kind"] == "decision" and "supersedes" in e}
-    updated = {e["updates"] for e in entries if e["kind"] == "evidence" and "updates" in e}
     live = [e for e in entries if e["kind"] == "decision" and e["id"] not in superseded]
-    heads = [e for e in entries if e["kind"] == "evidence" and e["id"] not in updated]
+    heads = [latest for latest, _ in evidence_claims(entries)]
     pending = [e for e in heads if e["state"] != "pass-observed"]
     before = [e for e in heads if e["state"] == "pass-observed" and adopted_at is not None
               and _utc(e["at"]) < adopted_at]

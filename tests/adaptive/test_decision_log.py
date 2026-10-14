@@ -86,6 +86,48 @@ class DecisionLogTests(FixtureCase):
         self.assertEqual([e["text"] for e in self.status()["log"]["newest"]], ["other work"])
         self.assertEqual(self.status("C")["log"], {"total": 0, "newest": []})
 
+    def test_status_redacts_model_facing_text_and_keeps_write_inputs_verbatim(self):
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0"
+        data = self.request(decisions=[{"text": "rotate " + token, "refs": ["ref " + token]}],
+                            evidence=[{"claim": "claim " + token, "state": "fail", "ref": "t.py " + token}])
+        data.update(phase="phase " + token, blockers=["blocked " + token],
+                    sources=[{"kind": "file", "ref": "src/" + token, "item": "item " + token}],
+                    assignments=[{"task": "task " + token, "agent_id": "agent-1", "observed_state": "running",
+                                  "write_scope": ["scripts/a.py"]}])
+        data["next"] = "next " + token
+        written = self.record(data)
+        out = self.status()
+        self.assertNotIn(token, json.dumps(out))
+        payload = out["checkpoint"]["payload"]
+        self.assertEqual((payload["phase"], payload["next"], payload["blockers"]),
+                         ("phase [REDACTED]", "next [REDACTED]", ["blocked [REDACTED]"]))
+        self.assertEqual(payload["sources"], [{"kind": "file", "ref": "src/[REDACTED]", "item": "item [REDACTED]"}])
+        self.assertEqual(payload["assignments"], [{"task": "task [REDACTED]", "agent_id": "agent-1",
+                                                   "observed_state": "running", "write_scope": ["scripts/a.py"]}])
+        decision, evidence = out["log"]["newest"]
+        self.assertEqual((decision["text"], decision["refs"]), ("rotate [REDACTED]", ["ref [REDACTED]"]))
+        self.assertEqual((evidence["claim"], evidence["ref"]), ("claim [REDACTED]", "t.py [REDACTED]"))
+        # What a caller writes with stays verbatim: revision, ids, work_id and the template.
+        self.assertEqual((out["expected"], out["checkpoint"]["revision"]), (written["revision"],) * 2)
+        self.assertEqual((payload["work_id"], decision["id"], evidence["id"]), ("A", "D1", "E1"))
+        self.assertEqual(set(out["template"]), {"work_id", "phase", "sources", "assignments", "blockers", "next",
+                                                "suggested_skills", "new_decisions", "new_evidence"})
+
+    def test_status_redacts_schema_1_decisions_evidence_and_other_works(self):
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0"
+        legacy = dict(self.payload("legacy next"), work_id="A", decisions=["old " + token],
+                      evidence=[{"claim": "claim " + token, "ref": "r " + token, "state": "pass-observed"}])
+        old = self.record_v1(self.root, "s1", legacy, None, "old")
+        self.record(dict(self.request("B"), phase="phase " + token), request_id="b1")
+        out = self.status("A")
+        self.assertNotIn(token, json.dumps(out))
+        payload = out["checkpoint"]["payload"]
+        self.assertEqual(payload["decisions"], ["old [REDACTED]"])
+        self.assertEqual(payload["evidence"], [{"claim": "claim [REDACTED]", "ref": "r [REDACTED]",
+                                                "state": "pass-observed"}])
+        self.assertEqual(out["expected"], old["revision"])
+        self.assertEqual([(w["work_id"], w["phase"]) for w in out["other_works"]], [("B", "phase [REDACTED]")])
+
     def test_status_template_is_a_valid_record_request(self):
         template = self.status()["template"]
         self.assertEqual(set(template), {"work_id", "phase", "sources", "assignments", "blockers", "next",
@@ -105,6 +147,27 @@ class DecisionLogTests(FixtureCase):
                 self.assertIn("new_evidence", out["detail"])
         self.assertIsNone(self.status()["checkpoint"])
         self.assertEqual(list(self.store_home.glob("v2/repos/*/logs/*.jsonl")), [])
+
+    def test_invalid_payload_names_the_offending_fields(self):
+        def rejected(data):
+            code, out = self.runtime("record", "--expected", "null", "--request-id", "r1", data=data)
+            self.assertEqual((code, out["error"]), (1, "INVALID_PAYLOAD"))
+            return out["detail"]
+
+        data = self.request()
+        data.pop("suggested_skills")
+        self.assertEqual(rejected(data), "missing: suggested_skills")
+        self.assertEqual(rejected(dict(self.request(), foo=1, bar=2)), "unexpected: bar, foo")
+        data = dict(self.request(), foo=1)
+        data.pop("next")
+        data.pop("blockers")
+        self.assertEqual(rejected(data), "missing: blockers, next; unexpected: foo")
+        for field, value in (("work_id", ""), ("phase", 3), ("next", ""), ("sources", "x"), ("assignments", {}),
+                             ("blockers", "x"), ("suggested_skills", None), ("blockers", [1]),
+                             ("suggested_skills", ["ok", 2])):
+            with self.subTest(field=field, value=value):
+                self.assertIn(field, rejected(dict(self.request(), **{field: value})))
+        self.assertIsNone(self.status()["checkpoint"])
 
     def test_structurally_invalid_entries_are_rejected_before_anything_is_written(self):
         cases = {"INVALID_DECISION": [{"text": 5}, {"refs": []}, {"text": "t", "refs": "abc"},

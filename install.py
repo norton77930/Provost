@@ -316,7 +316,7 @@ def install(config, changes):
             kept.append(keep_local(config, rel).relative_to(config).as_posix())
         manifest = {"schema_version": 1, "changed": changed, "created": created, "kept_local": kept}
         atomic_write(backup / "manifest.json", (json.dumps(manifest, indent=2) + "\n").encode("utf-8"))
-    except OSError as exc:
+    except (OSError, InstallError) as exc:  # InstallError: no free name for the kept copy
         drop_kept(config, kept)  # the local file is unchanged, so its kept copy is only a duplicate
         # Nothing managed has been written yet. The partial backup dir is kept (an error path should
         # not delete anything) and named, so the user can see it holds only unfinished copies.

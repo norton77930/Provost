@@ -223,7 +223,7 @@ def record(root, session, payload, expected, request_id, *, config_path, cursor=
         warnings.append(_warning("LOG_LARGE", "the log of work %s has %d entries (over %d); consider splitting the "
                                               "work" % (work_id, len(log), LOG_LARGE)))
     warnings = search.redact(warnings)
-    return {**data, "warnings": warnings, "echo": echo(search.redact(data), search.redact(log), warnings)}
+    return {**data, "warnings": warnings, "echo": echo(search.redact(data), log, warnings)}
 
 
 def _warning(code, message):
@@ -291,7 +291,9 @@ def _clip(text, limit):
 
 def echo(data, log, warnings):
     """The record echo, at most ECHO_MAX characters. Over the cap it drops the oldest shown decisions,
-    then the oldest open evidence, then the last warnings, counting each, and finally clips the card."""
+    then the oldest open evidence, then the last warnings, counting each, and finally clips the card.
+    `log` is the stored log: claims group on their stored text (search.evidence_claims), and the shown
+    entries are redacted before they are clipped."""
     card = data["payload"]
     ids = data.get("log_entries", [])
     listed = (", ".join(ids) if len(ids) <= ECHO_IDS
@@ -307,15 +309,13 @@ def echo(data, log, warnings):
     card_text = " ".join(lines[0].split()) + "".join("\n" + " ".join(line.split()) for line in lines[1:])
     sections = []
     if log is not None:
-        evidence = [e for e in log if e["kind"] == "evidence"]
-        updated = {e["updates"] for e in evidence if "updates" in e}
-        still_open = [e for e in evidence if e["id"] not in updated and e["state"] != PASSED]
+        still_open = [e for e, _ in search.evidence_claims(log) if e["state"] != PASSED]
         superseded = {e["supersedes"] for e in log if e["kind"] == "decision" and "supersedes" in e}
         current = [e for e in log if e["kind"] == "decision" and e["id"] not in superseded]
+        shown = search.redact(store.newest_entries(still_open, len(still_open)))
         sections.append(["Open evidence", [_clip("- %s [%s] %s (%s)" % (e["id"], e["state"], e["claim"], e["ref"]),
-                                                 ECHO_ITEM) for e in store.newest_entries(still_open, len(still_open))],
-                         0, 0])
-        recent = store.newest_entries(current, ECHO_DECISIONS)[::-1]  # newest first
+                                                 ECHO_ITEM) for e in shown], 0, 0])
+        recent = search.redact(store.newest_entries(current, ECHO_DECISIONS)[::-1])  # newest first
         sections.append(["Recent decisions", [_clip("- %s %s" % (e["id"], e["text"]), ECHO_ITEM) for e in recent],
                          0, -1])
     sections.append(["Warnings", [_clip("- %s: %s" % (w["code"], w["message"]), ECHO_ITEM) for w in warnings], 0, -1])
