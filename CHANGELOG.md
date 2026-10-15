@@ -34,7 +34,9 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   from unverified work, list what is still running or uncommitted, and carry
   open questions with their options. A 2026-10-13 baseline of 44 compactions
   found no context-loss corrections; these were the only gaps against
-  ctx-handoff-mod's handoff checklist.
+  ctx-handoff-mod's handoff checklist. Summaries also keep attribution (hook
+  output and injected context are never written up as user requests) and copy
+  forbidding and secret rules word for word, after ctx-handoff-mod 0.7.0.
 
 ### Changed
 
