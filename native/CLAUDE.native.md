@@ -20,7 +20,7 @@ The user may correct the classification at any time; adopt the correction immedi
 
 ## 2. Difficulty axis — who implements, with how much effort
 
-Interaction shape comes first: outcome unclear → discuss (or `/grill-me`) before any implementation; clear but broad/high-impact direction → explore read-only, then plan; clear bounded outcome → execute. Plan mode is optional, not a phase: the Completion Contract is the moderate-tier plan and the spec file (§7) is the hard-tier plan, both written in auto mode. Use plan mode only when the user wants a hard no-edit guarantee during exploration or the approve/edit-plan UI before a multi-slice run.
+Interaction shape comes first: outcome unclear → discuss (or `/grill-me`) before any implementation; clear but broad/high-impact direction → explore read-only, then plan; clear bounded outcome → execute. The Completion Contract is the moderate-tier plan and the spec file (§7) is the hard-tier plan, both written in auto mode. Use plan mode only when the user wants a hard no-edit guarantee during exploration or the approve/edit-plan UI before a multi-slice run.
 
 - **簡單 (simple)**: local, reversible, obvious — finishable in a handful of tool calls. The main session does it directly — no roles, no Completion Contract, no review. Do not add ceremony because roles are available. If a simple task grows into a moderate one mid-way, finish it in the main session and note the reclassification in the report; do not hand off half-done work.
 - **中等 (moderate)**: bounded change with a clear seam. The main session plans and briefs; `implementer` writes the code. The main session does not implement moderate work itself.
