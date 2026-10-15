@@ -31,7 +31,8 @@ END = b"<!-- claudex-native:end -->"
 # installer first overwrites it; once such a copy exists, later installs only use the backup dir.
 KEEP_LOCAL = "skills/handoff/SKILL.md"
 HOOK_EVENTS = {"SessionStart": f"{RUNTIME}/hooks/native-event",
-               "PostToolUse": f"{RUNTIME}/hooks/native-facts"}
+               "PostToolUse": f"{RUNTIME}/hooks/native-facts",
+               "Stop": f"{RUNTIME}/hooks/native-event"}
 
 
 class InstallError(Exception):

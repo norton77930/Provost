@@ -570,7 +570,8 @@ class SettingsTests(InstallCase):
     def hooks(self, start, post):
         return {"env": {"TOKEN": SECRET}, "hooks": {
             "SessionStart": [{"hooks": [dict(type="command", **start)]}],
-            "PostToolUse": [{"matcher": "*", "hooks": [dict(type="command", **post)]}]}}
+            "PostToolUse": [{"matcher": "*", "hooks": [dict(type="command", **post)]}],
+            "Stop": [{"hooks": [dict(type="command", **start)]}]}}
 
     def test_plain_command_strings(self):
         base = "/home/u/.claude/" + RUNTIME + "/hooks/"
@@ -587,6 +588,10 @@ class SettingsTests(InstallCase):
         self.assertEqual(self.settings({"env": {"TOKEN": SECRET}}), "not-registered")
         partial = self.hooks({"command": f"/x/{RUNTIME}/hooks/native-event"}, {"command": "/x/other"})
         self.assertEqual(self.settings(partial), "not-registered")
+        no_stop = self.hooks({"command": f"/x/{RUNTIME}/hooks/native-event"},
+                             {"command": f"/x/{RUNTIME}/hooks/native-facts"})
+        del no_stop["hooks"]["Stop"]
+        self.assertEqual(self.settings(no_stop), "not-registered")
 
     def test_missing_or_unparsable_is_unknown(self):
         self.assertEqual(self.settings(None), "unknown")

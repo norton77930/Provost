@@ -518,3 +518,147 @@ class NativeFactsTests(FixtureCase):
         base = runtime_hash(copy)
         (copy / "hooks" / "native-facts").unlink()
         self.assertNotEqual(runtime_hash(copy), base)
+
+
+DECLARE_REMINDER = ("Policy \u00a71: this session edited repo files without the \u5206\u985e classification declaration. "
+                    "State it at the top of your next response "
+                    "(\u5206\u985e:<\u96e3\u5ea6>/<\u98a8\u96aa>/\u8b49\u64da:<\u2026> \u2192 <\u8def\u5f91>).")
+DECLARATION = "\u5206\u985e:\u4e2d\u7b49/\u7121\u98a8\u96aa/\u8b49\u64da:\u6e2c\u8a66 \u2192 implementer-sonnet"
+
+
+class DeclarationReminderTests(FixtureCase):
+    """The Stop scan flags main-session repo edits made before any 分類 declaration; the next prompt reminds once."""
+
+    def setUp(self):
+        super().setUp()
+        self.facts_dir = self.config_path.parent / "cache" / "facts"
+        self.marker = self.enable_facts(SESSION)
+        self.transcript = self.root / "t.jsonl"
+        self.transcript.write_bytes(b"")
+        self.ids = 0
+
+    def append(self, *lines, newline=True):
+        with self.transcript.open("ab") as handle:
+            for line in lines:
+                handle.write(json.dumps(line, ensure_ascii=False).encode("utf-8") + (b"\n" if newline else b""))
+
+    def assistant(self, text=None, edit=None, tool="Edit", sidechain=False):
+        content = [{"type": "text", "text": text}] if text else []
+        if edit:
+            self.ids += 1
+            key = "notebook_path" if tool == "NotebookEdit" else "file_path"
+            content.append({"type": "tool_use", "id": "tu%d" % self.ids, "name": tool, "input": {key: edit}})
+        return {"type": "assistant", "isSidechain": sidechain, "message": {"role": "assistant", "content": content}}
+
+    def stop(self, **extra):
+        from provost_runtime.hooks import handle_event
+        data = {"session_id": SESSION, "transcript_path": str(self.transcript), "cwd": str(self.root),
+                "hook_event_name": "Stop", "stop_hook_active": False, "last_assistant_message": "done", **extra}
+        self.assertEqual(handle_event(data, self.config_path), {})
+
+    def prompt(self, text="go on"):
+        stdin = json.dumps({"session_id": SESSION, "hook_event_name": "UserPromptSubmit", "prompt": text})
+        result = self.run_bash(HOOK, stdin=stdin)
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        return json.loads(result.stdout)
+
+    def context(self, text="go on"):
+        return self.prompt(text)["hookSpecificOutput"]["additionalContext"]
+
+    def flags(self):
+        return sorted(p.name[len(SESSION) + 1:] for p in self.facts_dir.glob(SESSION + ".*")
+                      if p.suffix not in (".jsonl", ".enabled", ".declare-cursor"))
+
+    def test_undeclared_edit_reminds_once(self):
+        self.append(self.assistant("Editing now.", edit="C:\\Users\\x\\repo\\a.py"))
+        self.stop()
+        self.assertEqual(self.context(), DECLARE_REMINDER)
+        self.assertEqual(self.prompt(), {})
+        self.append(self.assistant(edit="/repo/b.py", tool="Write"))
+        self.stop()
+        self.assertEqual(self.prompt(), {})  # one reminder per declaration window
+        self.assertEqual(self.flags(), ["declare-reminded", "undeclared"])
+
+    def test_declaration_covers_its_turn_and_follow_ups(self):
+        self.append(self.assistant(DECLARATION), self.assistant(edit="/repo/a.py"))
+        self.stop()
+        self.assertEqual(self.prompt(), {})
+        self.append({"type": "user", "message": {"role": "user", "content": "ok, do as you suggest"}},
+                    self.assistant(edit="/repo/b.py", tool="NotebookEdit"))
+        self.stop()
+        self.assertEqual(self.prompt(), {})
+        self.assertEqual(self.flags(), ["declared"])
+
+    def test_declaration_after_the_reminder_closes_it(self):
+        self.append(self.assistant(edit="/repo/a.py"))
+        self.stop()
+        self.assertEqual(self.context(), DECLARE_REMINDER)
+        self.append(self.assistant("**\u5206\u985e\uff1a\u7c21\u55ae** / \u7121\u98a8\u96aa"))
+        self.stop()
+        self.assertEqual(self.flags(), ["declare-reminded", "declared"])
+        self.assertEqual(self.prompt(), {})
+
+    def test_mentions_are_not_declarations(self):
+        self.append(self.assistant("The `\u5206\u985e:` line is missing; \u5206\u985e:\u4e2d\u7b49 later.",
+                                   edit="/repo/a.py"),
+                    {"type": "user", "message": {"role": "user", "content": DECLARATION}})
+        self.stop()
+        self.assertEqual(self.context(), DECLARE_REMINDER)
+
+    def test_subagent_scratch_and_rejected_edits_do_not_remind(self):
+        self.append(self.assistant(edit="/repo/a.py", sidechain=True),
+                    *[self.assistant(edit=path) for path in
+                      ("/tmp/x.py", "C:\\Users\\x\\AppData\\Local\\Temp\\y.md",
+                       "C:/Users/x/.claude/projects/p/memory/m.md", "/home/u/.claude/jobs/j/out.txt")],
+                    self.assistant(edit="/repo/b.py"),
+                    {"type": "user", "message": {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": "tu%d" % self.ids, "is_error": True,
+                         "content": "The user doesn't want to proceed"}]}})
+        self.stop()
+        self.assertEqual(self.prompt(), {})
+        self.assertEqual(self.flags(), [])
+
+    def test_disabled_session_writes_nothing(self):
+        self.append(self.assistant(edit="/repo/a.py"))
+        self.marker.unlink()
+        self.stop()
+        self.config_path.write_text(json.dumps(dict(self.cfg, handoff=False)), encoding="utf-8")
+        self.marker.touch()
+        self.stop()
+        self.assertEqual(sorted(p.name for p in self.facts_dir.iterdir()), [SESSION + ".enabled"])
+        self.config_path.write_text(json.dumps(self.cfg), encoding="utf-8")
+        self.stop(agent_id="a1")  # never a subagent's event
+        self.assertEqual(sorted(p.name for p in self.facts_dir.iterdir()), [SESSION + ".enabled"])
+
+    def test_only_new_complete_lines_are_read(self):
+        self.append(self.assistant(DECLARATION))
+        self.stop()
+        (self.facts_dir / f"{SESSION}.declared").unlink()  # what a done record does
+        self.append(self.assistant(edit="/repo/a.py"), newline=False)
+        self.stop()
+        self.assertEqual(self.flags(), [])  # a partial line waits for its newline
+        with self.transcript.open("ab") as handle:
+            handle.write(b"\n")
+        self.stop()
+        self.assertEqual(self.flags(), ["undeclared"])  # the old declaration is behind the cursor
+
+    def test_first_scan_reads_only_the_tail(self):
+        from unittest import mock
+        self.append(self.assistant(DECLARATION), {"type": "user", "message": {"content": "x" * 400}},
+                    self.assistant(edit="/repo/a.py"))
+        with mock.patch("provost_runtime.hooks.DECLARE_SCAN_BYTES", 300):
+            self.stop()
+        self.assertEqual(self.flags(), ["undeclared"])
+
+    def test_combines_with_record_and_result_reminders(self):
+        self.append(self.assistant(edit="/repo/a.py"))
+        self.stop()
+        (self.facts_dir / f"{SESSION}.pending-edit").touch()
+        handback = '<agent-message from="a1">\n[Subagent hand-back] done\n</agent-message>'
+        context = self.context(handback)
+        self.assertTrue(context.startswith("Handoff: since the last record"))
+        self.assertIn(" A subagent result also just arrived", context)
+        self.assertTrue(context.endswith(" " + DECLARE_REMINDER))
+        context = self.context(handback)
+        self.assertTrue(context.startswith("Handoff: a subagent result just arrived"))
+        self.assertNotIn("\u5206\u985e", context)

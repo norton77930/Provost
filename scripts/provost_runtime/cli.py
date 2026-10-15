@@ -10,8 +10,8 @@ from .config import ConfigError, config_path, handoff_home, load_config, resolve
 from .hooks import (binding, cursor, handle_event, last_binding_at, recovery_context,
                     resolve_transcript, workspace_root)
 from .facts import SPOOL_SESSION
-from .store import (FACTS_FLAGS, StoreError, broken_works, cards, guard, list_snapshots, newest_entries, prune,
-                    read_log, resume, snapshot, storage_ready)
+from .store import (DECLARE_FLAGS, FACTS_FLAGS, StoreError, broken_works, cards, guard, is_done, list_snapshots,
+                    newest_entries, prune, read_log, resume, snapshot, storage_ready)
 
 
 RUNTIME_ROOT = Path(__file__).resolve().parents[2]
@@ -45,12 +45,12 @@ def _redacted_entry(entry):
                         for key in ("text", "claim", "ref", "refs", "redaction_reason") if key in entry}}
 
 
-def clear_reminder_flags(cfg_path, session):
+def clear_reminder_flags(cfg_path, session, names=REMINDER_FLAGS):
     """Best effort: a missing dir or file, or any I/O error, leaves the record untouched."""
     if not isinstance(session, str) or not SPOOL_SESSION.fullmatch(session):
         return
     cache = Path(cfg_path).parent / "cache"
-    for name in REMINDER_FLAGS:
+    for name in names:
         flag = cache / "facts" / f"{session}.{name}"
         try:
             guard(cache, flag)
@@ -239,6 +239,8 @@ def main(argv=None):
                                            cursor=cursor(resolve_transcript(source.get("transcript_path"))),
                                            join=options.join)
                     clear_reminder_flags(config_path(), options.session)
+                    if is_done(payload.get("phase")):  # the declaration covered the work this record closed
+                        clear_reminder_flags(config_path(), options.session, DECLARE_FLAGS)
                 elif options.command == "snapshot":
                     if not options.request_id:
                         raise StoreError("REQUEST_ID_REQUIRED")

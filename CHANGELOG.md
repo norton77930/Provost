@@ -37,6 +37,12 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   ctx-handoff-mod's handoff checklist. Summaries also keep attribution (hook
   output and injected context are never written up as user requests) and copy
   forbidding and secret rules word for word, after ctx-handoff-mod 0.7.0.
+- Declaration reminder: an async `Stop` hook (`hooks/native-event`) scans the
+  transcript bytes added since its last scan for the policy §1 `分類:` line and
+  for main-session repo edits; when files were edited before any declaration,
+  the next prompt's `native-facts` context asks for it, once per window (until a
+  `record` with phase `done`). `install.py check` now also requires the `Stop`
+  registration.
 
 ### Changed
 

@@ -1,5 +1,6 @@
 """Claude event adapter. Saving errors must never become compaction decisions."""
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -7,8 +8,8 @@ from . import facts
 from .config import ConfigError, handoff_home, load_config, resolve_mode, workspace_key
 from .notifications import PARTIAL, notice
 from .search import evidence_claims, redact
-from .store import (CACHE_SESSION, FACTS_MARKER, StoreError, _base, _when, as_workspace, atomic_write, current,
-                    digest, guard, is_done, latest, locate, newest_entries, read_log, record_chains, session_dir,
+from .store import (CACHE_SESSION, DECLARE_CURSOR, FACTS_MARKER, StoreError, _base, _when, as_workspace,
+                    atomic_write, current, digest, guard, is_done, latest, locate, newest_entries, read_log, record_chains, session_dir,
                     snapshot, snapshot_cards, storage_ready, work_states)
 
 PLUGIN = Path(__file__).resolve().parents[2]
@@ -27,6 +28,13 @@ MENU_WORKS = 5                    # joinable works listed at startup, clear and 
 MENU_PHASE_LIMIT = 40
 PARTIAL_STATUS = ("Save status: the last compaction saved facts only. Before continuing, write a decision record "
                   "from the compaction summary: run status (it prefills facts and template.sources), then record.")
+DECLARE_SCAN_BYTES = 16 * 1024 * 1024  # most transcript bytes one Stop scan reads (the newest ones)
+# Policy §1's declaration line: 分類 then a difficulty, at a line start; markdown emphasis, quote or list marks
+# and a full-width colon are allowed, so a mention inside prose or code does not count.
+DECLARATION = re.compile(r"^[ \t>*_`#-]*分類[ \t*_`]*[:：][ \t*_`]*(簡單|中等|機械|困難)", re.M)
+EDIT_TOOLS = {"Edit": "file_path", "Write": "file_path", "NotebookEdit": "notebook_path"}
+# Cheap byte filter before parsing a line: the declaration (raw UTF-8 or \u-escaped), an edit tool, a failed result.
+DECLARE_TOKENS = ("分類".encode("utf-8"), b"\\u5206\\u985e", b'"Edit"', b'"Write"', b'"NotebookEdit"', b'"is_error"')
 NEVER_RECORDED = ("No handoff checkpoint: this session has not recorded yet; continue from the compact summary "
                   "and record a milestone now.")
 
@@ -547,6 +555,86 @@ def facts_enabled(config_path, session):
         return False
 
 
+def _declared(text):
+    return isinstance(text, str) and DECLARATION.search(text) is not None
+
+
+def _scan_lines(lines):
+    """(declared, edited): whether the main session's assistant text holds a 分類 declaration line, and
+    whether it edited a repo file (mirrors native-facts: Edit/Write/NotebookEdit outside facts.OUTSIDE)
+    with a tool call that did not come back as an error."""
+    declared, edits, failed = False, set(), set()
+    for raw in lines:
+        if not any(token in raw for token in DECLARE_TOKENS):
+            continue
+        try:
+            line = json.loads(raw)
+            content = line["message"]["content"]
+        except (ValueError, KeyError, TypeError):
+            continue
+        if line.get("isSidechain") or not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if line.get("type") == "assistant":
+                if block.get("type") == "text" and _declared(block.get("text")):
+                    declared = True
+                elif block.get("type") == "tool_use" and block.get("name") in EDIT_TOOLS:
+                    tool_input = block.get("input") if isinstance(block.get("input"), dict) else {}
+                    path = tool_input.get(EDIT_TOOLS[block["name"]])
+                    if isinstance(path, str) and path and not facts._outside(path):
+                        edits.add(block.get("id"))
+            elif line.get("type") == "user" and block.get("type") == "tool_result" and block.get("is_error"):
+                failed.add(block.get("tool_use_id"))
+    return declared, bool(edits - failed)
+
+
+def scan_declaration(event, config_path):
+    """Stop (async): read the transcript bytes appended since the last scan; set <session>.declared on a 分類
+    declaration, else <session>.undeclared when the main session edited a repo file. Only complete lines are
+    consumed; the first scan, or more than DECLARE_SCAN_BYTES of new bytes, reads only that tail. Never raises,
+    never stores transcript text."""
+    try:
+        session = event.get("session_id")
+        if ("agent_id" in event or not load_config(config_path).get("handoff")
+                or not facts_enabled(config_path, session)):
+            return {}
+        marker = _marker(config_path, session)
+        state = marker.with_name(session + "." + DECLARE_CURSOR)
+        path = resolve_transcript(event.get("transcript_path"))
+        source = cursor(path)
+        if source is None:
+            return {}
+        try:
+            saved = json.loads(state.read_text(encoding="utf-8"))
+            start = saved["offset"] if saved["source"] == source["source"] else None
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+            start = None
+        size = source["bytes"]
+        tail = not isinstance(start, int) or start > size or size - start > DECLARE_SCAN_BYTES
+        if tail:
+            start = max(0, size - DECLARE_SCAN_BYTES)
+        with open(path, "rb") as handle:
+            handle.seek(start)
+            data = handle.read(size - start)
+        end = data.rfind(b"\n") + 1
+        lines = data[:end].split(b"\n")
+        if tail and start > 0:
+            lines = lines[1:]  # the first line was cut by the tail
+        declared, edited = _scan_lines(lines)
+        flag, missing = marker.with_name(session + ".declared"), marker.with_name(session + ".undeclared")
+        if declared:
+            flag.touch()
+            missing.unlink(missing_ok=True)
+        elif edited and not flag.exists():
+            missing.touch()
+        state.write_text(json.dumps({"source": source["source"], "offset": start + end}), encoding="utf-8")
+    except Exception:  # an async reminder aid must never surface an error
+        pass
+    return {}
+
+
 def fold_facts(config_path, root, session):
     """Fold the facts spool before the snapshot. Never raises: returns (facts, None) or (None, code)."""
     try:
@@ -584,6 +672,8 @@ def handle_event(event, config_path):
     name = event.get("hook_event_name") if isinstance(event, dict) else None
     source = event.get("source", "startup") if isinstance(event, dict) else "startup"
     key = None
+    if name == "Stop":
+        return scan_declaration(event, config_path)
     try:
         if name not in ("SessionStart", "PreCompact", "PostCompact"):
             return {}
