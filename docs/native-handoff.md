@@ -638,8 +638,8 @@ Activity is the newest record/snapshot timestamp (else file mtime) or the mtime 
 `facts.json`, so a session resumed today is not expired. Each listed session (and
 reclaimable leftover) whose session id is known from `binding.json` or `facts.json`
 also names, under `facts_cache`, its existing files in `<provost dir>/cache/facts`:
-the spool `<session_id>.jsonl`, `.folding-*` spool leftovers, the three reminder
-flags and the `.enabled` marker. `--apply` deletes them after the session dir itself is removed; a failed
+the spool `<session_id>.jsonl`, `.folding-*` spool leftovers, the reminder
+flags, the declaration scan's `.declare-cursor` and the `.enabled` marker. `--apply` deletes them after the session dir itself is removed; a failed
 delete is reported in `errors` with the file name in `left_at`. Cache files whose
 session has no directory anywhere in the store are listed per session under
 `orphan_facts_cache` (`candidates`, `removed`, `skipped`, `errors`; present only when
@@ -979,6 +979,25 @@ hook, and for `UserPromptSubmit` as a sync hook.
   result and ignores the flags; when both apply they share one context.
   Teammate messages without the hand-back tag, background-command
   notifications, other statuses and ordinary prompts behave as above.
+- Policy §1 asks the main session to open each non-trivial request with a `分類:`
+  declaration. `hooks/native-event`, registered for `Stop` as an async hook, reads
+  the transcript bytes appended since its last scan (the offset is kept in
+  `<session_id>.declare-cursor`; the first scan, or more than 16 MB of new bytes,
+  reads only the newest 16 MB; a partial last line waits for the next scan). A
+  main-session assistant text line that starts with `分類:` (or `分類：`, optionally
+  behind markdown marks) and a difficulty (`簡單`, `中等`, `機械`, `困難`) touches
+  `<session_id>.declared` and removes `.undeclared`; otherwise an Edit, Write or
+  NotebookEdit of a non-scratch path (the scratch locations above) whose result
+  is not an error touches `<session_id>.undeclared` unless `.declared` exists.
+  Sidechain lines and subagent transcripts never count. The next
+  `UserPromptSubmit` with `.undeclared`, without `.declared` or
+  `<session_id>.declare-reminded`, creates `.declare-reminded` and appends the
+  declaration reminder to the same context. The declaration window therefore runs
+  from the first declaration until a `record` whose phase is `done` deletes
+  `.declared`, `.undeclared` and `.declare-reminded` (other records keep them,
+  because follow-up turns of the same request do not repeat the declaration), so
+  it reminds at most once per window and never on follow-ups. The scan stores no
+  transcript text and never raises.
 - A `cd`/`git -C`/`Set-Location` target that names the event's own `cwd` (after
   normalizing slashes, case, a trailing `/` and a Git Bash `/x/` drive prefix) is
   not stored as a `dir` fact; relative targets are kept as written.
@@ -1014,10 +1033,18 @@ not at the session's real start.
       {"hooks": [
         {"type": "command", "command": "bash \"<runtime>/hooks/native-facts\"", "timeout": 10}
       ]}
+    ],
+    "Stop": [
+      {"hooks": [
+        {"type": "command", "command": "bash \"<runtime>/hooks/native-event\"", "async": true, "timeout": 20}
+      ]}
     ]
   }
 }
 ```
+
+`python install.py check` reports `settings: not-registered` until the
+`SessionStart`, `PostToolUse` and `Stop` registrations are all present.
 
 Do not register either hook for `SubagentStop`. That event's context is delivered
 to the subagent's own conversation and keeps the subagent running, so it would loop

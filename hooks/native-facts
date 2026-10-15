@@ -23,8 +23,13 @@
 #   agent's completed <task-notification> that does not point at a
 #   SubagentHandback delivery (its pointer or interim phrasing; background-command
 #   notifications never count).
-#   Both arrive as one additionalContext; otherwise {}. `record` deletes all
-#   three flags.
+#   With <session_id>.undeclared (set by the Stop scan in the Python runtime:
+#   a main-session repo edit and no 分類 declaration) and neither .declared nor
+#   .declare-reminded, it creates .declare-reminded and adds the policy §1
+#   declaration reminder once per declaration window.
+#   All arrive as one additionalContext; otherwise {}. `record` deletes the
+#   three record flags; a record with phase done also deletes the three
+#   declaration flags.
 set -uo pipefail
 config_file="${PROVOST_CONFIG:-${HOME}/.claude/provost/config.json}"
 config=""
@@ -141,6 +146,13 @@ if [[ "$event" == UserPromptSubmit && "$session_id" =~ ^[A-Za-z0-9-]+$ ]]; then
             else
                 msg="Handoff: a subagent result just arrived. If it changes the work state, record the result milestone now (status, then record); facts are captured automatically."
             fi
+        fi
+        # Once per declaration window: the Stop scan found a main-session repo edit and no 分類 line.
+        # The text is \u-escaped JSON, so the hook's output stays ASCII.
+        if [[ -e "${flag}.undeclared" && ! -e "${flag}.declared" && ! -e "${flag}.declare-reminded" ]] \
+                && : 2>/dev/null > "${flag}.declare-reminded"; then
+            [[ -n "$msg" ]] && msg+=" "
+            msg+='Policy §1: this session edited repo files without the 分類 classification declaration. State it at the top of your next response (分類:<難度>/<風險>/證據:<…> → <路徑>).'
         fi
     fi
     if [[ -n "$msg" ]]; then

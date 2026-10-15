@@ -1268,7 +1268,11 @@ FACTS_FLAGS = ("pending-edit", "pending-dispatch", "reminded")  # reminder flags
 # Enablement marker: a native SessionStart with handoff enabled for the workspace creates it; capture,
 # reminders and the PreCompact fold run only for sessions that have it. record never clears it.
 FACTS_MARKER = "enabled"
-CACHE_FLAGS = (*FACTS_FLAGS, FACTS_MARKER)
+# Declaration reminder: the Stop scan sets declared/undeclared, native-facts sets declare-reminded; a record
+# that closes its work (phase done) clears these three. declare-cursor is the scan's transcript offset.
+DECLARE_FLAGS = ("declared", "undeclared", "declare-reminded")
+DECLARE_CURSOR = "declare-cursor"
+CACHE_FLAGS = (*FACTS_FLAGS, *DECLARE_FLAGS, DECLARE_CURSOR, FACTS_MARKER)
 CACHE_FILE = re.compile(r"^([A-Za-z0-9-]+)\.(?:jsonl(?:\.folding-[A-Za-z0-9]+)?|%s)$" % "|".join(CACHE_FLAGS))
 # Rewritten on resume (binding), compaction and every write; their mtime counts as activity.
 ACTIVITY_FILES = SESSION_FILES - {".lock"}

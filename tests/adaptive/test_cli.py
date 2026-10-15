@@ -204,6 +204,24 @@ class CliTests(FixtureCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(facts.parent.exists())
 
+    def test_done_record_closes_the_declaration_window(self):
+        bind(self.root, "s1", {})
+        facts = self.config_path.parent / "cache" / "facts"
+        facts.mkdir(parents=True)
+        window = [facts / f"s1.{name}" for name in ("declared", "undeclared", "declare-reminded")]
+        cursor = facts / "s1.declare-cursor"
+        for path in window + [cursor]:
+            path.touch()
+        args = ("record", "--workspace", str(self.root), "--session", "s1")
+        result = self.run_cli(*args, "--expected", "null", "--request-id", "r1", data=self.payload())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(all(p.exists() for p in window))  # a work in progress keeps its declaration
+        result = self.run_cli(*args, "--expected", json.loads(result.stdout)["revision"], "--request-id", "r2",
+                              data=dict(self.payload(), phase=" Done "))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([p.name for p in window if p.exists()], [])
+        self.assertTrue(cursor.exists())
+
     def test_reminder_rearms_after_record(self):
         hook = REPO / "hooks" / "native-facts"
         bind(self.root, "s1", {})
