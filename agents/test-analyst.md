@@ -1,6 +1,6 @@
 ---
 name: test-analyst
-description: Read-only test execution and regression analysis — dispatch it to run existing tests, reproduce failures, and analyze regression behavior without filling the main-session context with test output. Executes non-mutating test and inspection commands; editing sources, tests, fixtures, or configuration stays with the writer roles.
+description: Read-only test execution and regression analysis — dispatch it to run existing tests, reproduce failures, and analyze regression behavior without filling the main-session context with test output. Use it for the planned final verification when the suite is slow (minutes) or noisy — e2e/Playwright gates, full multi-language suites — instead of running it in the main session. Executes non-mutating test and inspection commands; editing sources, tests, fixtures, or configuration stays with the writer roles.
 model: haiku
 effort: medium
 tools: Read, Glob, Grep, Bash

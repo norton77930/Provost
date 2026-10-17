@@ -418,6 +418,24 @@ class SessionStartBudgetTests(FixtureCase):
         self.start("startup")
         self.assertFalse(facts_dir.exists())
 
+    def test_subagent_model_override_is_warned_about(self):
+        from provost_runtime import hooks
+        warning = ("Warning: CLAUDE_CODE_SUBAGENT_MODEL is set (haiku); it overrides every role's model frontmatter, "
+                   "so per-role model routing is off. Tell the user once.")
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SUBAGENT_MODEL": "haiku"}):
+            self.assertIn(warning, self.start("startup"))
+            with mock.patch.object(hooks, "PLUGIN", Path("C:/" + "p" * 2600)), \
+                    mock.patch.object(hooks, "_policy", return_value="POLICY " * 3000):
+                self.assertIn(warning, self.start("startup"))
+
+    def test_no_warning_when_subagent_model_is_unset_or_empty(self):
+        for value in (None, ""):
+            with self.subTest(value=value), mock.patch.dict(os.environ):
+                os.environ.pop("CLAUDE_CODE_SUBAGENT_MODEL", None)
+                if value is not None:
+                    os.environ["CLAUDE_CODE_SUBAGENT_MODEL"] = value
+                self.assertNotIn("CLAUDE_CODE_SUBAGENT_MODEL", self.start("startup"))
+
     def test_marker_needs_resolved_workspace_and_usable_session(self):
         facts_dir = self.config_path.parent / "cache" / "facts"
         self.cfg["workspace_roots"] = []
