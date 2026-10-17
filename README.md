@@ -94,70 +94,85 @@ See [`docs/native-handoff.md`](docs/native-handoff.md).
 Requirements: Claude Code, Python 3.11+, and on Windows Git Bash (the hooks are
 bash scripts).
 
-1. Add the markers to your `~/.claude/CLAUDE.md` where the policy should go. The
-   installer only ever replaces the text between them:
+```bash
+git clone https://github.com/norton77930/Provost
+python Provost/install.py setup
+```
 
-   ```markdown
-   <!-- claudex-native:begin -->
-   <!-- claudex-native:end -->
-   ```
+Then restart Claude Code and confirm with
+`bash ~/.claude/provost/runtime/native-pilot-v1/hooks/runtime doctor`.
 
-2. Preview, install, and check:
+`setup` does everything an install needs, and `--dry-run` shows it first:
 
-   ```bash
-   python install.py check              # read-only; exit 0 = no drift, 1 = drift
-   python install.py install --dry-run  # what would change
-   python install.py install            # backs up every changed file first
-   ```
+- copies the policy, roles, skills and runtime into `~/.claude` (the same as
+  `install`);
+- appends the `<!-- claudex-native:begin -->` / `<!-- claudex-native:end -->`
+  markers to `~/.claude/CLAUDE.md` when it has none (the policy only ever goes
+  between them, and a malformed pair is refused);
+- adds the six hook registrations below to `~/.claude/settings.json` when they
+  are missing. Everything else in the file is kept, it is re-serialized with a
+  2-space indent, and a file that is not valid JSON is refused. No value from it
+  is ever printed;
+- writes `~/.claude/provost/config.json` with handoff on when it does not exist.
 
-   Backups go to `~/.claude/provost/backups/install-<UTC time>/` with a
-   `manifest.json`; a failed install rolls back. The first time it replaces a
-   local `skills/handoff/SKILL.md` that differs, it also keeps that copy beside it
-   as `SKILL.md.local-<UTC time>.bak`. `CLAUDE_CONFIG_DIR` and `--config-dir` are
-   honoured. After upgrading to the decision log, run `migrate` and review it
-   before `migrate --apply` and any `prune --apply` (see the guide's
-   [Install and rollout](docs/native-handoff.md#install-and-rollout)).
-
-3. Register the hooks in `~/.claude/settings.json` (the installer never edits
-   it; `check` reports whether they are registered). Replace `<runtime>` with
-   the absolute path of `~/.claude/provost/runtime/native-pilot-v1`:
-
-   ```json
-   "hooks": {
-     "SessionStart": [{"matcher": "startup|clear|compact|resume|fork", "hooks": [
-       {"type": "command", "command": "bash \"<runtime>/hooks/native-event\"", "timeout": 30}]}],
-     "PreCompact": [{"matcher": "manual|auto", "hooks": [
-       {"type": "command", "command": "bash \"<runtime>/hooks/native-event\"", "timeout": 30}]}],
-     "PostCompact": [{"matcher": "manual|auto", "hooks": [
-       {"type": "command", "command": "bash \"<runtime>/hooks/native-event\"", "timeout": 30}]}],
-     "PostToolUse": [{"matcher": "Edit|Write|NotebookEdit|Agent|Bash|PowerShell|EnterWorktree|ExitWorktree", "hooks": [
-       {"type": "command", "command": "bash \"<runtime>/hooks/native-facts\"", "async": true, "timeout": 20}]}],
-     "UserPromptSubmit": [{"hooks": [
-       {"type": "command", "command": "bash \"<runtime>/hooks/native-facts\"", "timeout": 10}]}]
-   }
-   ```
-
-4. Enable the runtime in `~/.claude/provost/config.json`, then confirm with
-   `bash <runtime>/hooks/runtime doctor`:
-
-   ```json
-   {
-     "schema_version": 1,
-     "mode": "adaptive",
-     "workspace_roots": [],
-     "all_workspaces": true,
-     "max_writers": 2,
-     "burst_writers": 3,
-     "handoff": true
-   }
-   ```
-
-   `exclude_roots` (a list of directories) turns handoff off below them. See
-   [`docs/native-handoff.md`](docs/native-handoff.md) for storage, retention
-   and recovery.
+Every changed file is backed up first to
+`~/.claude/provost/backups/install-<UTC time>/` with a `manifest.json`, and a
+failed run rolls back. Running `setup` again changes nothing. The first time it
+replaces a local `skills/handoff/SKILL.md` that differs, it also keeps that copy
+beside it as `SKILL.md.local-<UTC time>.bak`. The backup of `settings.json` is a
+full copy, credentials included, and backups are never pruned. The installer
+honours `CLAUDE_CONFIG_DIR` and `--config-dir`; the hooks themselves read
+`~/.claude/provost/config.json` unless `PROVOST_CONFIG` points elsewhere.
 
 After changing anything in the repository, run `python install.py check` to see
-what differs from the live setup, and `install` to apply it.
+what differs from the live setup (exit 0 = no drift, 1 = drift), and
+`python install.py install` to apply it; `install` never touches `settings.json`.
+After upgrading to the decision log, run `migrate` and review it before
+`migrate --apply` and any `prune --apply` (see the guide's
+[Install and rollout](docs/native-handoff.md#install-and-rollout)).
+
+<details>
+<summary><b>What setup registers, to do it by hand</b></summary>
+
+Replace `<runtime>` with the absolute path of
+`~/.claude/provost/runtime/native-pilot-v1`:
+
+```json
+"hooks": {
+  "SessionStart": [{"matcher": "startup|clear|compact|resume|fork", "hooks": [
+    {"type": "command", "command": "bash \"<runtime>/hooks/native-event\"", "timeout": 30}]}],
+  "PreCompact": [{"matcher": "manual|auto", "hooks": [
+    {"type": "command", "command": "bash \"<runtime>/hooks/native-event\"", "timeout": 30}]}],
+  "PostCompact": [{"matcher": "manual|auto", "hooks": [
+    {"type": "command", "command": "bash \"<runtime>/hooks/native-event\"", "timeout": 30}]}],
+  "PostToolUse": [{"matcher": "Edit|Write|NotebookEdit|Agent|Bash|PowerShell|EnterWorktree|ExitWorktree", "hooks": [
+    {"type": "command", "command": "bash \"<runtime>/hooks/native-facts\"", "async": true, "timeout": 20}]}],
+  "UserPromptSubmit": [{"hooks": [
+    {"type": "command", "command": "bash \"<runtime>/hooks/native-facts\"", "timeout": 10}]}],
+  "Stop": [{"hooks": [
+    {"type": "command", "command": "bash \"<runtime>/hooks/native-event\"", "async": true, "timeout": 20}]}]
+}
+```
+
+The `~/.claude/provost/config.json` it writes:
+
+```json
+{
+  "schema_version": 1,
+  "mode": "adaptive",
+  "workspace_roots": [],
+  "all_workspaces": true,
+  "max_writers": 2,
+  "burst_writers": 3,
+  "handoff": true
+}
+```
+
+`exclude_roots` (a list of directories) turns handoff off below them. See
+[`docs/native-handoff.md`](docs/native-handoff.md) for storage, retention
+and recovery.
+
+</details>
 
 ## Evidence so far
 

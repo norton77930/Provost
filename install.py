@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Install this repository's Claude Code setup into a config dir, or report drift.
 
-python install.py [install|check] [--dry-run] [--config-dir DIR] [--source DIR] [--json]
+python install.py [install|check|setup] [--dry-run] [--config-dir DIR] [--source DIR] [--json]
 
 check (default) is read-only: exit 0 no drift, 1 drift, 2 error (--dry-run is rejected with check).
 install writes only changed targets, after backing them up: exit 0 success, 2 error.
+setup is install plus first-time wiring: it appends the CLAUDE.md markers when there are none,
+adds the missing Provost hook registrations to settings.json (other values are kept; the file is
+re-serialized with 2-space indent) and writes provost/config.json when it does not exist.
 The first time it replaces a local skills/handoff/SKILL.md it also keeps that copy beside it.
-An error or interrupt during install rolls back and names the backup dir.
-Stdlib only; never reads or prints settings.json values beyond the hook commands it inspects.
+An error or interrupt during install or setup rolls back and names the backup dir.
+Stdlib only; never prints settings.json values, and inspects only its hook entries.
 """
 import argparse
 import hashlib
@@ -33,6 +36,21 @@ KEEP_LOCAL = "skills/handoff/SKILL.md"
 HOOK_EVENTS = {"SessionStart": f"{RUNTIME}/hooks/native-event",
                "PostToolUse": f"{RUNTIME}/hooks/native-facts",
                "Stop": f"{RUNTIME}/hooks/native-event"}
+SETTINGS = "settings.json"
+RUNTIME_CONFIG = "provost/config.json"
+# What setup registers: (event, matcher or None, hook, extra hook keys), as in docs/native-handoff.md.
+REGISTRATIONS = (
+    ("SessionStart", "startup|clear|compact|resume|fork", "native-event", {"timeout": 30}),
+    ("PreCompact", "manual|auto", "native-event", {"timeout": 30}),
+    ("PostCompact", "manual|auto", "native-event", {"timeout": 30}),
+    ("PostToolUse", "Edit|Write|NotebookEdit|Agent|Bash|PowerShell|EnterWorktree|ExitWorktree",
+     "native-facts", {"async": True, "timeout": 20}),
+    ("UserPromptSubmit", None, "native-facts", {"timeout": 10}),
+    ("Stop", None, "native-event", {"async": True, "timeout": 20}),
+)
+DEFAULT_CONFIG = {"schema_version": 1, "mode": "adaptive", "workspace_roots": [], "all_workspaces": True,
+                  "max_writers": 2, "burst_writers": 3, "handoff": True}
+BOM = b"\xef\xbb\xbf"
 
 
 class InstallError(Exception):
@@ -42,7 +60,7 @@ class InstallError(Exception):
 @dataclass
 class Target:
     rel: str           # posix path relative to the config dir
-    source: Path
+    source: Path | None  # None: desired is built in memory (setup's settings and runtime config)
     policy: bool = False
     desired: bytes = b""
     status: str = ""   # ok | modified | missing
@@ -137,13 +155,14 @@ def policy_body(source_bytes, eol):
     return body.replace(b"\n", eol) if eol != b"\n" else body
 
 
-def evaluate(config, targets):
+def evaluate(config, targets, policy_current=None):
+    """policy_current: CLAUDE.md bytes to use instead of the file (setup with markers to add)."""
     for target in targets:
         path = config / target.rel
         if target.policy:
-            if not path.is_file():
+            if policy_current is None and not path.is_file():
                 raise InstallError(f"{POLICY_TARGET} missing in config dir: markers required")
-            current = path.read_bytes()
+            current = path.read_bytes() if policy_current is None else policy_current
             before, body, after, eol = split_policy(current)
             wanted = policy_body(target.source.read_bytes(), eol)
             target.desired = before + wanted + after
@@ -185,7 +204,7 @@ def check_layout(source, config, targets):
 def settings_status(config):
     """ok | not-registered | unknown. Only hook command strings are inspected; nothing is printed."""
     try:
-        data = json.loads((config / "settings.json").read_text(encoding="utf-8"))
+        data = json.loads((config / SETTINGS).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return "unknown"
     hooks = data.get("hooks") if isinstance(data, dict) else None
@@ -214,6 +233,81 @@ def _hook_strings(groups):
 def _ends_with(text, suffix):
     text = text.replace("\\", "/").strip().rstrip("\"' ")
     return text == suffix or text.endswith("/" + suffix)
+
+
+def with_markers(config):
+    """(CLAUDE.md bytes with the marker section, whether setup adds it); malformed markers are an error."""
+    path = config / POLICY_TARGET
+    data = path.read_bytes() if path.is_file() else b""
+    lines = data.splitlines(keepends=True)
+    if any(line.rstrip(b"\r\n") in (BEGIN, END) for line in lines) or _near_misses(lines):
+        split_policy(data)  # raises unless exactly one well-formed section exists
+        return data, False
+    eol = b"\r\n" if b"\r\n" in data else b"\n"
+    gap = b"" if not data else (eol if data.endswith(b"\n") else eol + eol)
+    return data + gap + BEGIN + eol + END + eol, True
+
+
+def _unique_keys(pairs):
+    keys = [key for key, _ in pairs]
+    if len(keys) != len(set(keys)):  # json.loads would silently drop all but the last value
+        raise ValueError("duplicate key")
+    return dict(pairs)
+
+
+def with_hooks(config):
+    """(settings.json bytes with the missing registrations, events added); never echoes values."""
+    path = config / SETTINGS
+    raw = path.read_bytes() if path.is_file() else None
+    data = {}
+    if raw is not None:
+        try:
+            data = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=_unique_keys)
+        except ValueError:  # includes UnicodeDecodeError; its message could quote file content
+            raise InstallError(f"{SETTINGS} is not valid JSON (or repeats a key); "
+                               "fix it first, nothing was changed") from None
+    if not isinstance(data, dict):
+        raise InstallError(f"{SETTINGS} is not a JSON object; nothing was changed")
+    hooks = data.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        raise InstallError(f"{SETTINGS}: \"hooks\" is not an object; nothing was changed")
+    runtime = (config / RUNTIME).as_posix()
+    if '"' in runtime:
+        raise InstallError("config dir path contains a double quote; register the hooks by hand")
+    added = []
+    for event, matcher, name, extra in REGISTRATIONS:
+        groups = hooks.setdefault(event, [])
+        if not isinstance(groups, list):
+            raise InstallError(f"{SETTINGS}: hooks.{event} is not a list; nothing was changed")
+        if any(_ends_with(text, f"{RUNTIME}/hooks/{name}") for text in _hook_strings(groups)):
+            continue
+        group = {} if matcher is None else {"matcher": matcher}
+        group["hooks"] = [{"type": "command", "command": f'bash "{runtime}/hooks/{name}"', **extra}]
+        groups.append(group)
+        added.append(event)
+    if not added:
+        return raw, added
+    text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    if raw is not None and b"\r\n" in raw:
+        text = text.replace("\n", "\r\n")
+    return (BOM if raw is not None and raw.startswith(BOM) else b"") + text.encode("utf-8"), added
+
+
+def setup_targets(config):
+    """Build setup's in-memory targets; returns (policy bytes, settings/config targets, report)."""
+    policy, markers = with_markers(config)
+    settings, added = with_hooks(config)
+    extra = []
+    if added:
+        extra.append(Target(SETTINGS, None, desired=settings,
+                            status="modified" if (config / SETTINGS).exists() else "missing"))
+    runtime_config = config / RUNTIME_CONFIG
+    if not runtime_config.exists():
+        extra.append(Target(RUNTIME_CONFIG, None, status="missing",
+                            desired=(json.dumps(DEFAULT_CONFIG, indent=2) + "\n").encode("utf-8")))
+    report = {"markers": markers, "register": added,
+              "runtime_config": "keep" if runtime_config.exists() else "create"}
+    return policy, extra, report
 
 
 def atomic_write(path, data, mode=None):
@@ -331,7 +425,8 @@ def install(config, changes):
             for directory in missing_dirs(config, path):
                 directory.mkdir()
                 new_dirs.append(directory)
-            mode = stat.S_IMODE((path if target.policy else target.source).stat().st_mode)
+            ref = path if target.policy or target.source is None else target.source
+            mode = stat.S_IMODE(ref.stat().st_mode) if ref.exists() else None
             # Record first: an interrupt after os.replace must still roll this target back.
             # Rolling back a target that was never written is harmless (restore or unlink a no-op).
             written.append(target.rel)
@@ -382,8 +477,9 @@ def rollback(config, backup, written, changed, new_dirs):
 
 def parse(argv):
     parser = argparse.ArgumentParser(prog="install.py", description=__doc__.splitlines()[0])
-    parser.add_argument("command", nargs="?", choices=("install", "check"), default="check")
-    parser.add_argument("--dry-run", action="store_true", help="install: print the plan, write nothing")
+    parser.add_argument("command", nargs="?", choices=("install", "check", "setup"), default="check")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="install, setup: print the plan, write nothing")
     parser.add_argument("--config-dir", help="default: $CLAUDE_CONFIG_DIR or ~/.claude")
     parser.add_argument("--source", help="default: the directory containing install.py")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
@@ -400,12 +496,41 @@ def emit(args, payload, lines):
         print("\n".join(lines))
 
 
+def run_setup(args, config, changes, report):
+    would = "would " if args.dry_run else ""
+    steps = ([f"{would}add the claudex-native markers to {POLICY_TARGET}"] if report["markers"] else [])
+    steps += [f"{would}register the {event} hook in {SETTINGS}" for event in report["register"]]
+    if report["runtime_config"] == "create":
+        steps.append(f"{would}create {RUNTIME_CONFIG} (adaptive mode, handoff on)")
+    plan = [{"path": t.rel, "action": "create" if t.status == "missing" else "update"} for t in changes]
+    payload = {"command": "setup", "dry_run": args.dry_run, **report, "plan": plan, "backup": None}
+    lines = steps + [f"{would}{p['action']:<6} {p['path']}" for p in plan]
+    if args.dry_run or not changes:
+        emit(args, payload, lines or ["nothing to set up: already installed and registered"])
+        return 0
+    backup, changed, created, _ = install(config, changes)
+    payload.update(backup=str(backup), changed=changed, created=created)
+    doctor = f'bash "{(config / RUNTIME).as_posix()}/hooks/runtime" doctor'
+    emit(args, payload, lines + [f"set up: {len(changed)} updated, {len(created)} created",
+                                 f"backup: {backup}",
+                                 f"next: restart Claude Code, then run {doctor}"])
+    return 0
+
+
 def main(argv=None):
     args = parse(argv)
     config = Path(args.config_dir or os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").absolute()
     source = Path(args.source).absolute() if args.source else Path(__file__).resolve().parent
     try:
         targets = source_targets(source)
+        if args.command == "setup":
+            policy, setup_extra, report = setup_targets(config)
+            check_layout(source, config, targets + setup_extra)
+            evaluate(config, targets, policy)
+            # settings and runtime config before the policy section, which stays the last write
+            changes = ([t for t in targets if t.status != "ok" and not t.policy] + setup_extra
+                       + [t for t in targets if t.status != "ok" and t.policy])
+            return run_setup(args, config, changes, report)
         check_layout(source, config, targets)
         evaluate(config, targets)
         changes = [t for t in targets if t.status != "ok"]
