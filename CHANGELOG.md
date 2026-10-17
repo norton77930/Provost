@@ -86,6 +86,15 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   → `migrate --apply` → only then `prune --apply`. Rollback limits are in the
   guide under [Migrate](docs/native-handoff.md#migrate) and
   [Redact](docs/native-handoff.md#redact).
+- Routing for the rarely dispatched roles (1.0% and 0.4% of 838 dispatches,
+  2026-09-06..10-17). Policy §2: same-shaped edits across 5 or more files are
+  機械, not 簡單, and main doing them needs a named blocker; 機械 also covers
+  wording/version changes and docs or tests whose content the brief supplies.
+  §3/§4: the planned final verification goes to `test-analyst` when the suite is
+  slow or noisy (e2e/Playwright, full multi-language suites), which is not
+  double-checking. The `mech-executor` and `test-analyst` descriptions say the
+  same. SessionStart warns when `CLAUDE_CODE_SUBAGENT_MODEL` is set, since it
+  overrides every role's model frontmatter (idea from pilotfish).
 
 ### Fixed
 

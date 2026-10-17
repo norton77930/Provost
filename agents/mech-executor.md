@@ -1,6 +1,6 @@
 ---
 name: mech-executor
-description: Mechanical batch execution of a fully specified, repetitive change — renames, pattern application, same-shaped edits across many files. Hand off any batch whose spec is complete and whose verification commands are named. It stops and reports rather than guessing when the spec has gaps; debugging and design work belong with implementer instead.
+description: Mechanical batch execution of a fully specified, repetitive change — renames, pattern application, wording or version changes, same-shaped edits across many files, docs or tests whose exact content the brief supplies. Hand off any batch whose spec is complete and whose verification commands are named; same-shaped edits across 5 or more files belong here rather than in the main session, even when each edit is trivial. It stops and reports rather than guessing when the spec has gaps; debugging and design work belong with implementer instead.
 model: haiku
 effort: high
 tools: Read, Glob, Grep, Write, Edit, Bash

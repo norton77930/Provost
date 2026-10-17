@@ -24,7 +24,7 @@ Interaction shape comes first: outcome unclear → discuss (or `/grill-me`) befo
 
 - **簡單 (simple)**: local, reversible, obvious — finishable in a handful of tool calls. The main session does it directly — no roles, no Completion Contract, no review. Do not add ceremony because roles are available. If a simple task grows into a moderate one mid-way, finish it in the main session and note the reclassification in the report; do not hand off half-done work.
 - **中等 (moderate)**: bounded change with a clear seam. The main session plans and briefs; `implementer` writes the code. The main session does not implement moderate work itself.
-- **機械 (mechanical)**: fully specified repetition across files (renames, pattern application). Dispatch `mech-executor` with a literal spec and named verification commands.
+- **機械 (mechanical)**: fully specified, same-shaped repetition — renames, pattern application, wording or version changes across files, docs or tests whose exact content the brief supplies. Same-shaped edits across 5 or more files are 機械, not 簡單, even when each edit is trivial; doing them in main needs a named blocker in the declaration (`主 session 做,因為 <blocker>`). Dispatch `mech-executor` with a literal spec, the exact file list and named verification commands. A small mechanical step inside a moderate slice (a version bump) may stay in that slice.
 - **困難 (hard)**: multi-module, multi-session, or complex acceptance. Spec gate applies (§7). The main session owns investigation and design; each bounded implementation slice goes to `implementer`. Keep a slice in the main session only when the investigation and the fix are one coupled path — and then say so in the declaration (`主 session 實作,因為 <reason>`). A slice you can name and order is by definition briefable; "faster to do it myself" and autonomous-run pressure ("keep going until done") are not reasons.
 
 Difficulty decides **who implements and at what effort**. Difficulty alone never triggers review.
@@ -35,7 +35,7 @@ For each claim, ask how its failure would show, then pick the cheapest evidence 
 
 | Failure would show as | Evidence | Provided by |
 |---|---|---|
-| A test goes red | run the focused tests | `implementer` in its own loop, or `test-analyst` for a broader existing suite |
+| A test goes red | run the focused tests | `implementer` in its own loop; the planned final verification goes to `test-analyst` when the suite is slow (minutes) or its output would flood main (e2e/Playwright gates, full multi-language suites), otherwise main runs it |
 | A screen, CLI, or interaction misbehaves | live verification — run the app, open the browser, exercise the path | main session (`run` skill, browser tools), or `test-analyst` when it needs no browser |
 | Invisible to both tests and a live run: cross-module compatibility, error-handling paths, data conversion, concurrency/lifecycle/consistency, security | fresh-context review | `code-reviewer` |
 | An exposed interface or architectural boundary changes | architecture review | `architecture-reviewer` (in addition to the row above) |
@@ -50,9 +50,9 @@ For each claim, ask how its failure would show, then pick the cheapest evidence 
 
 Delegate for clear task boundaries, useful parallelism and context isolation. Delegation is not automatically cheaper than main: consider the selected model, briefing/report overhead and total work. Keep simple work in main and use the dedicated roles for bounded work under the rules below.
 
-**Do delegate:** fully specified batch changes → `mech-executor`; read-only reconnaissance or genuinely independent multi-surface exploration → `Explore`; every moderate-or-harder implementation slice → `implementer`; risk-triggered post-completion review → the matching reviewer (fresh context outperforms self-critique).
+**Do delegate:** fully specified batch changes → `mech-executor`; a slow or noisy planned test run → `test-analyst` (§3); read-only reconnaissance or genuinely independent multi-surface exploration → `Explore`; every moderate-or-harder implementation slice → `implementer`; risk-triggered post-completion review → the matching reviewer (fresh context outperforms self-critique).
 
-**Do NOT delegate:** simple work you can finish yourself in a handful of tool calls (dispatch overhead exceeds the win); verification or double-checking of your own work (that stays in your own loop; the risk axis alone decides reviews); diagnosis of a single unknown bug — it stays with you from diagnosis to a bounded fix brief, and never build an Explore→implementer pipeline for it.
+**Do NOT delegate:** simple work you can finish yourself in a handful of tool calls (dispatch overhead exceeds the win); verification or double-checking of your own work (that stays in your own loop; the risk axis alone decides reviews; handing the one planned verification to `test-analyst` for context isolation is not double-checking); diagnosis of a single unknown bug — it stays with you from diagnosis to a bounded fix brief, and never build an Explore→implementer pipeline for it.
 
 Use the dependency and ownership checks below to dispatch ready implementation slices concurrently, with normal cap 2, conditional burst cap 3. A project single-writer rule overrides these personal limits — this is policy, not an engine lock. Brief a role precisely the first time: goal, constraints, the seam, the verification command. Read its final report as the deliverable and do not re-derive its findings. Expected TDD RED is normal. After one evidence-based correction leaves the same substantive blocker, choose an appropriate escalation or takeover. API interruptions are not failed implementation attempts: inspect worker state and partial work before retrying or taking over; never duplicate uncertain active work.
 

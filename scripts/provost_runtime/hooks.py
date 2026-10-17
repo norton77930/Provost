@@ -1,5 +1,6 @@
 """Claude event adapter. Saving errors must never become compaction decisions."""
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -737,6 +738,12 @@ def handle_event(event, config_path):
             # guide keeps it), so it never displaces recovered state.
             sections = [[policy + info, short + info, shortest], [], [], [], [], [], [], [], [],
                         [contract, ""] if enabled else []]
+            override = os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL")
+            if override:
+                # Part of the identity section, so it survives every shrink step short of clipping.
+                note = ("\nWarning: CLAUDE_CODE_SUBAGENT_MODEL is set (" + override + "); it overrides every role's "
+                        "model frontmatter, so per-role model routing is off. Tell the user once.")
+                sections[0] = [variant + note for variant in sections[0]]
             status, warning, partial = [], "", False
             if enabled:
                 # Only a session PreCompact could fold for: the marker this SessionStart creates does not count.
