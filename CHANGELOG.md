@@ -43,6 +43,10 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   the next prompt's `native-facts` context asks for it, once per window (until a
   `record` with phase `done`). `install.py check` now also requires the `Stop`
   registration.
+- Policy §6 task list: an approved plan of three or more steps is recorded with
+  `TaskCreate` before the first step starts, and each step is set
+  `in_progress` and `completed` with `TaskUpdate` as work moves, so the whole
+  plan and its progress stay visible (a task-board mod reads this list).
 
 ### Changed
 
