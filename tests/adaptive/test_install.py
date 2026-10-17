@@ -603,6 +603,151 @@ class SettingsTests(InstallCase):
         self.assertEqual((code, report["settings"]), (0, "not-registered"))
 
 
+class SetupTests(InstallCase):
+    EVENTS = ("SessionStart", "PreCompact", "PostCompact", "PostToolUse", "UserPromptSubmit", "Stop")
+
+    def run_setup(self, *argv):
+        code, out, err = self.run_cli("setup", *argv)
+        self.assertNotIn(SECRET, out + err)
+        return code, out, err
+
+    def settings_data(self):
+        return json.loads((self.config / "settings.json").read_text(encoding="utf-8-sig"))
+
+    def provost_commands(self, event):
+        return [hook["command"] for group in self.settings_data()["hooks"].get(event, [])
+                for hook in group["hooks"] if RUNTIME in hook.get("command", "")]
+
+    def test_fresh_config_is_fully_set_up(self):
+        (self.config / "CLAUDE.md").unlink()
+        (self.config / "settings.json").unlink()
+        code, out, err = self.run_setup()
+        self.assertEqual(code, 0, err)
+        code, report = self.check_json()
+        self.assertEqual((code, report["settings"]), (0, "ok"), report)
+        text = (self.config / "CLAUDE.md").read_text(encoding="utf-8")
+        self.assertIn(f"{BEGIN}\n# Policy\n\nline two\n{END}\n", text)
+        runtime = (self.config / RUNTIME).as_posix()
+        for event in self.EVENTS:
+            name = "native-facts" if event in ("PostToolUse", "UserPromptSubmit") else "native-event"
+            self.assertEqual(self.provost_commands(event), [f'bash "{runtime}/hooks/{name}"'], event)
+        stop = self.settings_data()["hooks"]["Stop"][0]["hooks"][0]
+        self.assertEqual((stop.get("async"), stop.get("timeout")), (True, 20))
+        config = json.loads((self.config / "provost/config.json").read_text(encoding="utf-8"))
+        self.assertEqual((config["mode"], config["handoff"], config["max_writers"]), ("adaptive", True, 2))
+
+    def test_other_settings_are_kept_and_backed_up(self):
+        mine = {"type": "command", "command": "my-linter"}
+        original = {"model": "opus", "env": {"TOKEN": SECRET},
+                    "hooks": {"PostToolUse": [{"matcher": "Edit", "hooks": [mine]}]}, "theme": "dark"}
+        write(self.config / "settings.json", json.dumps(original, indent=4))
+        before = (self.config / "settings.json").read_bytes()
+        for argv in ((), ("--json",)):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.run_setup("--dry-run", *argv)[0], 0)
+        self.assertEqual(self.run_setup()[0], 0)
+        data = self.settings_data()
+        self.assertEqual(list(data), ["model", "env", "hooks", "theme"])
+        self.assertEqual(data["env"], {"TOKEN": SECRET})
+        self.assertEqual(data["hooks"]["PostToolUse"][0], {"matcher": "Edit", "hooks": [mine]})
+        self.assertEqual(len(data["hooks"]["PostToolUse"]), 2)
+        self.assertEqual((self.backups()[0] / "settings.json").read_bytes(), before)
+
+    def test_second_setup_changes_nothing(self):
+        self.assertEqual(self.run_setup()[0], 0)
+        before = self.snapshot()
+        code, out, _ = self.run_setup()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(len(self.backups()), 1)
+
+    def test_existing_registration_is_not_duplicated(self):
+        bash = "C:/Program Files/Git/bin/bash.exe"
+        stop = {"type": "command", "command": bash, "args": [f"C:\\x\\{RUNTIME}\\hooks\\native-event"]}
+        write(self.config / "settings.json", json.dumps({"hooks": {"Stop": [{"hooks": [stop]}]}}))
+        self.assertEqual(self.run_setup()[0], 0)
+        data = self.settings_data()
+        self.assertEqual(data["hooks"]["Stop"], [{"hooks": [stop]}])
+        self.assertEqual(set(data["hooks"]), set(self.EVENTS))
+
+    def test_unusable_settings_are_refused_and_nothing_written(self):
+        cases = {"unparsable": '{"env": {"TOKEN": "' + SECRET + '"',
+                 "not an object": "[1, 2]",
+                 "hooks not an object": json.dumps({"env": {"TOKEN": SECRET}, "hooks": []}),
+                 "event not a list": json.dumps({"hooks": {"Stop": {"hooks": []}}})}
+        for name, text in cases.items():
+            with self.subTest(name):
+                write(self.config / "settings.json", text)
+                before = self.snapshot()
+                code, _, err = self.run_setup()
+                self.assertEqual(code, 2)
+                self.assertIn("settings.json", err)
+                self.assertEqual(self.snapshot(), before)
+                self.assertEqual(self.backups(), [])
+
+    def test_settings_bom_and_crlf_are_kept(self):
+        write(self.config / "settings.json", b"\xef\xbb\xbf" + b'{\r\n  "env": {"TOKEN": "x"}\r\n}\r\n')
+        self.assertEqual(self.run_setup()[0], 0)
+        data = (self.config / "settings.json").read_bytes()
+        self.assertTrue(data.startswith(b"\xef\xbb\xbf{\r\n"))
+        self.assertNotIn(b"\n", data.replace(b"\r\n", b""))
+
+    def test_markers_are_appended_when_absent(self):
+        for eol in ("\n", "\r\n"):
+            with self.subTest(eol=repr(eol)):
+                mine = f"# Mine{eol}keep this".encode()
+                write(self.config / "CLAUDE.md", mine)
+                self.assertEqual(self.run_setup()[0], 0)
+                body = "# Policy\n\nline two\n".replace("\n", eol)
+                self.assertEqual((self.config / "CLAUDE.md").read_bytes(),
+                                 mine + f"{eol}{eol}{BEGIN}{eol}{body}{END}{eol}".encode())
+
+    def test_malformed_markers_are_refused(self):
+        for data in (claude_md() + f"{BEGIN}\n".encode(), f"# Mine\n {BEGIN}\n{END}\n".encode(),
+                     f"{END}\n{BEGIN}\n".encode(), f"# Mine\n{BEGIN}\n".encode()):
+            with self.subTest(data=data):
+                write(self.config / "CLAUDE.md", data)
+                before = self.snapshot()
+                code, _, err = self.run_setup()
+                self.assertEqual(code, 2)
+                self.assertIn("marker", err)
+                self.assertEqual(self.snapshot(), before)
+
+    def test_existing_runtime_config_is_kept(self):
+        write(self.config / "provost/config.json", '{"mine": true}\n')
+        self.assertEqual(self.run_setup()[0], 0)
+        self.assertEqual((self.config / "provost/config.json").read_bytes(), b'{"mine": true}\n')
+
+    def test_dry_run_writes_nothing_and_names_the_plan(self):
+        before = self.snapshot()
+        code, out, _ = self.run_setup("--dry-run")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.backups(), [])
+        for word in ("settings.json", "provost/config.json", "Stop"):
+            self.assertIn(word, out)
+        code, out, _ = self.run_setup("--dry-run", "--json")
+        plan = json.loads(out)
+        self.assertEqual(sorted(plan["register"]), sorted(self.EVENTS))
+        self.assertTrue(plan["dry_run"])
+
+    def test_failed_write_rolls_back_settings_too(self):
+        before = self.snapshot()
+        real_replace = os.replace
+
+        def flaky(src, dst):
+            if Path(dst).name == "CLAUDE.md":
+                raise OSError("disk full")
+            return real_replace(src, dst)
+
+        with mock.patch.object(install.os, "replace", flaky):
+            code, _, err = self.run_setup()
+        self.assertEqual(code, 2)
+        self.assertIn("rolled back", err)
+        after = {k: v for k, v in self.snapshot().items() if not k.startswith("provost/backups/")}
+        self.assertEqual(after, before)
+
+
 class SafetyTests(InstallCase):
     def test_config_inside_source_refused(self):
         inner = self.source / "claude"

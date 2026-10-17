@@ -61,28 +61,23 @@ runtime 在 `~/.claude/provost/handoffs` 為每個 session 保存一條 sealed �
 
 需求：Claude Code、Python 3.11 以上；Windows 需要 Git Bash（hook 是 bash 腳本）。
 
-1. 在 `~/.claude/CLAUDE.md` 想放政策的位置加上標記。安裝程式只會替換兩行之間的內容：
+```bash
+git clone https://github.com/norton77930/Provost
+python Provost/install.py setup
+```
 
-   ```markdown
-   <!-- claudex-native:begin -->
-   <!-- claudex-native:end -->
-   ```
+接著重啟 Claude Code，用 `bash ~/.claude/provost/runtime/native-pilot-v1/hooks/runtime doctor` 確認。
 
-2. 預覽、安裝、檢查：
+`setup` 一次做完安裝需要的所有步驟，加 `--dry-run` 可以先看它會做什麼：
 
-   ```bash
-   python install.py check              # 唯讀；exit 0 = 無漂移，1 = 有漂移
-   python install.py install --dry-run  # 列出會改什麼
-   python install.py install            # 每個要改的檔案都先備份
-   ```
+- 把政策、角色、skill 和 runtime 複製到 `~/.claude`（和 `install` 相同）；
+- `~/.claude/CLAUDE.md` 沒有標記時，在檔尾補上 `<!-- claudex-native:begin -->` / `<!-- claudex-native:end -->`（政策只會寫在兩行之間；標記格式有誤會直接拒絕）；
+- `~/.claude/settings.json` 缺少的 hook 註冊會補上 6 條（內容見 [README.md 的 Install](README.md#install)）。檔案裡其他內容都保留，重新以 2 格縮排寫回；不是合法 JSON 的檔案會拒絕處理，也絕不印出檔案裡的任何值；
+- `~/.claude/provost/config.json` 不存在時，寫入開啟 handoff 的預設值。
 
-   備份在 `~/.claude/provost/backups/install-<UTC 時間>/`，附 `manifest.json`；安裝失敗會自動回滾。第一次覆蓋內容不同的本機 `skills/handoff/SKILL.md` 時，會先在旁邊另存一份 `SKILL.md.local-<UTC 時間>.bak`。支援 `CLAUDE_CONFIG_DIR` 和 `--config-dir`。升級到 decision log 後，先跑 `migrate` 並檢視結果，再跑 `migrate --apply`，最後才 `prune --apply`（見指南的 [Install and rollout](docs/native-handoff.md#install-and-rollout)）。
+每個要改的檔案都先備份到 `~/.claude/provost/backups/install-<UTC 時間>/`，附 `manifest.json`；失敗會自動回滾。重跑 `setup` 不會再改任何東西。第一次覆蓋內容不同的本機 `skills/handoff/SKILL.md` 時，會先在旁邊另存一份 `SKILL.md.local-<UTC 時間>.bak`。`settings.json` 的備份是完整副本（含其中的憑證），備份不會自動清除。安裝程式支援 `CLAUDE_CONFIG_DIR` 和 `--config-dir`；hook 本身讀的是 `~/.claude/provost/config.json`，除非用 `PROVOST_CONFIG` 指到別處。
 
-3. 在 `~/.claude/settings.json` 註冊 hook（安裝程式不會改這個檔；`check` 會回報有沒有註冊）。設定內容見 [README.md 的 Install 第 3 步](README.md#install)，`<runtime>` 換成 `~/.claude/provost/runtime/native-pilot-v1` 的絕對路徑。
-
-4. 在 `~/.claude/provost/config.json` 啟用 runtime（範例見 [README.md 的 Install 第 4 步](README.md#install)），再用 `bash <runtime>/hooks/runtime doctor` 確認。
-
-之後 repo 有任何變動，先跑 `python install.py check` 看和實際設定差在哪，再用 `install` 套用。
+之後 repo 有任何變動，先跑 `python install.py check` 看和實際設定差在哪（exit 0 = 無漂移，1 = 有漂移），再用 `python install.py install` 套用；`install` 不會碰 `settings.json`。升級到 decision log 後，先跑 `migrate` 並檢視結果，再跑 `migrate --apply`，最後才 `prune --apply`（見指南的 [Install and rollout](docs/native-handoff.md#install-and-rollout)）。
 
 ## 目前的證據
 
