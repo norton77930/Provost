@@ -14,6 +14,12 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Added
 
+- `python install.py setup`: a one-step install that also appends the
+  `claudex-native` markers to `CLAUDE.md` when there are none, adds the missing
+  hook registrations to `settings.json` (other values kept, invalid JSON
+  refused, nothing printed from it) and writes a default `provost/config.json`,
+  all under the same backup and rollback as `install`. The README's manual hook
+  list now includes the `Stop` registration it was missing.
 - Native handoff runtime (`scripts/provost_runtime/`, `hooks/native-event`,
   `hooks/native-facts`): sealed per-session record chains shared by a checkout
   and its worktrees, compaction recovery, facts capture and reminders, decision
