@@ -5,7 +5,8 @@ handoff runtime for Claude Code.
 
 *[中文說明 →](README.zh-TW.md)*
 
-<!-- promo video (en, 46 s): paste the GitHub user-attachments URL on the next line -->
+<!-- promo video (en, 46 s) -->
+https://github.com/user-attachments/assets/6e564d31-55b6-4271-a65d-1d8c1cebe413
 
 Provost is the source of truth for one Claude Code setup that is used every day.
 The main session classifies each request by difficulty and risk, keeps simple

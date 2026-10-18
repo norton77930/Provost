@@ -4,7 +4,8 @@
 
 *[English →](README.md)*
 
-<!-- 宣傳影片（zh-TW，46 秒）：在下一行貼上 GitHub user-attachments 網址 -->
+<!-- 宣傳影片（zh-TW，46 秒） -->
+https://github.com/user-attachments/assets/bd4974d6-1f6c-481e-8c40-2c687c8536b4
 
 Provost 是一套每天實際在用的 Claude Code 設定的正本。主 session 先依難度和風險為每個請求分類：簡單的工作自己做，有界的 slice 交給比較便宜的 implementer 角色，只有在失敗「測試和實機都看不出來」時才找全新 context 的 reviewer。一個小型 runtime 會記下決策和派工，讓工作撐過 context 壓縮和 session 重啟。
 
