@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <img src="docs/demo/routing-zh-TW.png" width="100%"
-    alt="四個請求的分類：改按鈕文字留在主 session；12 個檔案改名交給 Haiku 上的 mech-executor；UI 表單交給 implementer-sonnet 並用實機瀏覽器檢查；token 過期的錯誤處理交給 implementer-sonnet，再由 code-reviewer 審查；實作成本 −53~66%">
+  <img src="docs/demo/hero-zh-TW.png" width="100%"
+    alt="一樣的工作，不一樣的價格。左邊：一般的 Claude Code 每一步（改檔、測試、自我審查、瀏覽器、context 到 92%）都用 Opus，成本 100%。右邊：用 Provost，12 個檔案改名交給 Haiku 上的 mech-executor，按鈕文字留在 main，註冊表單交給 implementer-sonnet 並用實機瀏覽器檢查，token 過期錯誤處理交給 implementer-sonnet 再由 code-reviewer 審查，認證或 migration 停下來等你，context 接近上限時由 PreCompact 存檔、PostCompact 還原；實作成本 −53~66%">
 </p>
 
 <p align="center">

@@ -9,8 +9,8 @@
 </p>
 
 <p align="center">
-  <img src="docs/demo/routing-en.png" width="100%"
-    alt="Four requests classified: a button label stays in the main session, a 12-file rename goes to mech-executor on Haiku, a UI form goes to implementer-sonnet with a live browser check, expired-token error handling goes to implementer-sonnet and then code-reviewer; build cost −53–66%">
+  <img src="docs/demo/hero-en.png" width="100%"
+    alt="Same work, different price. Left: plain Claude Code runs every step (edits, tests, self-review, browser, a context at 92%) on Opus, cost 100%. Right: with Provost a 12-file rename goes to mech-executor on Haiku, a button label stays in main, a UI form goes to implementer-sonnet with a live browser check, expired-token errors go to implementer-sonnet and code-reviewer, auth or a migration stops for you, and PreCompact/PostCompact keep decisions near the context limit; build cost −53–66%">
 </p>
 
 <p align="center">
