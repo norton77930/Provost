@@ -918,6 +918,12 @@ migrated entries as they are.
 
 ## Install and rollout
 
+A new installation uses `python install.py setup`, which also registers all six
+hooks (SessionStart, PreCompact, PostCompact, PostToolUse, UserPromptSubmit, Stop)
+in `settings.json` and writes `provost/config.json`. `python install.py install` is
+for upgrading an existing installation and never touches `settings.json`. The full
+registration JSON is under [Install](../README.md#install) in the README.
+
 `python install.py install` copies the runtime and the repository's `/handoff` skill
 (`skills/handoff/SKILL.md`) into the Claude config dir; `python install.py check`
 reports the skill like every other target (`missing`, `modified` or `ok`). The first
@@ -930,7 +936,8 @@ other changes. `--dry-run` names the copy it would keep.
 
 Rolling out the decision log, in this order:
 
-1. Merge, then `python install.py install`.
+1. Merge, then an existing installation runs `python install.py install` (a new
+   installation uses `setup`).
 2. `migrate` (dry run); the user reviews its output.
 3. `migrate --apply`.
 4. Only then `prune` and, after the user has reviewed its listing, `prune --apply`
@@ -1020,6 +1027,9 @@ started before the facts layer was installed has no marker until its next
 SessionStart (resume or compact); from then on its facts, including the
 `git log --since` window of session commits, start at its first captured event,
 not at the session's real start.
+
+`python install.py setup` registers these hooks (together with SessionStart,
+PreCompact and PostCompact); the JSON below is for registering them by hand.
 
 ```json
 {

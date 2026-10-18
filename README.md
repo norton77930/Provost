@@ -5,6 +5,8 @@ handoff runtime for Claude Code.
 
 *[中文說明 →](README.zh-TW.md)*
 
+<!-- promo video (en, 46 s): paste the GitHub user-attachments URL on the next line -->
+
 Provost is the source of truth for one Claude Code setup that is used every day.
 The main session classifies each request by difficulty and risk, keeps simple
 work for itself, hands bounded slices to cheaper implementer roles, and calls a
@@ -14,6 +16,32 @@ context compaction and session restarts.
 
 It is published as it is used: tuned for one person's work, Windows first, and
 installed by copying files into the Claude config directory with a drift check.
+
+## Why
+
+- **The problem:** a main agent that does everything itself — edits, test runs,
+  self-review, browser checks — pays the top model's price for every step.
+- **① Classify, then route and verify.** Simple work stays in the main session;
+  mechanical batches go to `mech-executor` on Haiku; a UI change closes with a
+  live browser check; a reviewer is dispatched only when the risk calls for one
+  (e.g. error-handling paths go to `code-reviewer`).
+- **② Hooks: compact early, keep decisions.** Cost per call grows about ×2.3
+  between a ≤200K and a 400–600K context. PreCompact saves the decisions,
+  PostCompact restores them, so compacting early is safe.
+- **Result (one user, real work):** build cost −53–66% with
+  `implementer-sonnet` at equal quality (34-slice trial); main-session weekly
+  cost −37% before/after and the hooks themselves at 3.6% of total spend
+  (7 days measured).
+
+## Quick start
+
+```bash
+git clone https://github.com/norton77930/Provost
+python Provost/install.py setup
+```
+
+Requirements, what `setup` changes and how to do it by hand are under
+[Install](#install).
 
 ## What is in the repository
 
@@ -184,6 +212,14 @@ Single user, real work, not a controlled experiment:
 - Over two weeks (2026-09-28 to 10-12, 84 sessions) the main session wrote about
   3% of changed code lines; implementer roles wrote the rest across 270
   dispatches.
+- `implementer-sonnet` cost 53–66% less than `implementer` on the trialled
+  slices, with equal review outcomes.
+- Cost per call rose about ×2.3 from a ≤200K-token context to 400–600K.
+  Compacting earlier (`autoCompactWindow`) cut the main session's weekly cost by
+  37% (7 days measured); the handoff hooks are what make early compaction safe, so the −37% is the
+  setting plus the hooks, not the hooks alone.
+- Across 44 compactions, no session needed the user to re-explain lost context.
+- The hook mechanism itself cost 3.6% of total spend over a measured week.
 
 ## Tests
 

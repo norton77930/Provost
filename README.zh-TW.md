@@ -4,9 +4,27 @@
 
 *[English →](README.md)*
 
+<!-- 宣傳影片（zh-TW，46 秒）：在下一行貼上 GitHub user-attachments 網址 -->
+
 Provost 是一套每天實際在用的 Claude Code 設定的正本。主 session 先依難度和風險為每個請求分類：簡單的工作自己做，有界的 slice 交給比較便宜的 implementer 角色，只有在失敗「測試和實機都看不出來」時才找全新 context 的 reviewer。一個小型 runtime 會記下決策和派工，讓工作撐過 context 壓縮和 session 重啟。
 
 它照實際使用的樣子公開：為一個人的工作調校、以 Windows 為主，用「複製檔案到 Claude 設定目錄＋漂移檢查」的方式安裝。
+
+## 為什麼
+
+- **問題：** main agent 什麼都自己做——改檔、跑測試、自我審查、開瀏覽器檢查——每一步都是 Opus 的價格。
+- **① 先分類，再派工和驗收。** 簡單的工作留在主 session；機械性批次交給 Haiku 上的 `mech-executor`；UI 改動用實機瀏覽器檢查收尾；只有風險需要時才派 reviewer（例如錯誤處理路徑交給 `code-reviewer`）。
+- **② Hook：早點壓縮，決策不會丟。** 每次呼叫的成本在 context 從 ≤200K 長到 400–600K 之間約增加 ×2.3。PreCompact 存下決策，PostCompact 還原，所以早點壓縮是安全的。
+- **結果（一位使用者，真實工作）：** 用 `implementer-sonnet` 實作成本 −53~66%，品質相當（34 個 slice 的對照試驗）；主 session 每週成本 −37%（前後對照），Hook 本身只占總花費 3.6%（7 天實測）。
+
+## 快速開始
+
+```bash
+git clone https://github.com/norton77930/Provost
+python Provost/install.py setup
+```
+
+需求、`setup` 會改動什麼，以及如何手動完成，見[安裝](#安裝)。
 
 ## Repo 內容
 
@@ -85,6 +103,10 @@ python Provost/install.py setup
 
 - `implementer-sonnet` 在 5 個 repo、34 個 slice 上和 `implementer` 對照試驗（含同一份 brief 的配對），2026-10-04 起成為預設 implementer。
 - 兩週內（2026-09-28 到 10-12，84 個 session），主 session 只寫了約 3% 的程式碼行數，其餘由 implementer 角色透過 270 次派工完成。
+- 在試驗過的 slice 上，`implementer-sonnet` 的成本比 `implementer` 低 53–66%，審查結果相當。
+- 每次呼叫的成本從 ≤200K token 的 context 到 400–600K 約增加 ×2.3。提早壓縮（`autoCompactWindow`）讓主 session 的每週成本下降 37%（7 天實測）；handoff hook 是讓提早壓縮安全的關鍵，所以 −37% 是「設定加 hook」的合計效果，不是單靠 hook。
+- 44 次壓縮中，沒有任何一個 session 需要使用者重新說明遺失的 context。
+- 實測一週內，hook 機制本身只占總花費的 3.6%。
 
 ## 測試
 
