@@ -32,6 +32,9 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   handoff off) starts a new episode. The per-session count lives in
   `<provost dir>/cache/acceptance/<session_id>.pushes`; a counter error never
   blocks.
+- Acceptance gates, stale evidence (#46): a `machine`, `live` or `visual` gate that
+  passed before the session's last main-session edit (read from the transcript) is
+  stale and holds the turn end until it is re-run.
 - Acceptance gates, dispatch reminder (#47): `hooks/acceptance-gate` is also
   registered for `PreToolUse` with matcher `Agent` (synchronous). When the main
   session dispatches `implementer`, `implementer-sonnet` or `mech-executor` while

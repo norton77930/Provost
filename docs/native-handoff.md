@@ -1154,6 +1154,18 @@ behalf, because a hook cannot tell those apart. With the `cache/acceptance` fold
 present (after the first push), `native-facts` also reads every `PostToolUse` event
 with handoff off, only to find that it has nothing to do.
 
+A `machine`, `live` or `visual` gate with status `pass` goes **stale** when the main
+session edits a file after it: its `ranAt` is before the session's last edit, or it
+has no `ranAt` and the session has edited anything. A stale gate holds the turn like
+a pending one; the reason shows both times (local clock) and the gate must be re-run
+with a fresh `ranAt`. `review` and `human` gates never go stale. The last edit is
+read from the session transcript (the newest 8 MB): main-session Edit, Write and
+NotebookEdit calls that did not fail. Edits under `.claude/acceptance/` and the
+runtime's usual outside paths (temp dirs, `.claude/projects/`, `.claude/jobs/`) do
+not count, and neither do subagent edits, which are recorded in their own
+transcripts. If the edit history cannot be read, only pending and failed gates hold
+the turn.
+
 `python install.py setup` registers it; by hand, add it as its own `Stop` entry
 without `"async"`:
 
