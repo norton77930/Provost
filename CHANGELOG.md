@@ -14,6 +14,15 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Added
 
+- Acceptance gates, first slice (#44): `hooks/acceptance-gate`, registered for
+  `Stop` as a synchronous hook, blocks the main turn end while an acceptance file
+  the session wrote (`<cwd>/.claude/acceptance/*.json`, modified at or after the
+  session's first transcript timestamp) has a non-`human` gate `pending` or `fail`,
+  or is malformed; the reason lists every unmet gate id and the file path. Without
+  an acceptance directory it exits before starting Python; any internal error ends
+  the turn. The schema and settings entry are in the operations guide;
+  `install.py setup` registers the hook and `check` reports `not-registered`
+  without a synchronous registration.
 - `python install.py setup`: a one-step install that also appends the
   `claudex-native` markers to `CLAUDE.md` when there are none, adds the missing
   hook registrations to `settings.json` (other values kept, invalid JSON

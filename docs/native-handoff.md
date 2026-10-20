@@ -918,10 +918,12 @@ migrated entries as they are.
 
 ## Install and rollout
 
-A new installation uses `python install.py setup`, which also registers all six
-hooks (SessionStart, PreCompact, PostCompact, PostToolUse, UserPromptSubmit, Stop)
-in `settings.json` and writes `provost/config.json`. `python install.py install` is
-for upgrading an existing installation and never touches `settings.json`. The full
+A new installation uses `python install.py setup`, which also registers all seven
+hook entries (SessionStart, PreCompact, PostCompact, PostToolUse, UserPromptSubmit,
+and Stop twice: the async declaration scan and the synchronous
+[acceptance gate](#acceptance-gates)) in `settings.json` and writes
+`provost/config.json`. `python install.py install` is for upgrading an existing
+installation and never touches `settings.json`. The full
 registration JSON is under [Install](../README.md#install) in the README.
 
 `python install.py install` copies the runtime and the repository's `/handoff` skill
@@ -1054,7 +1056,8 @@ PreCompact and PostCompact); the JSON below is for registering them by hand.
 ```
 
 `python install.py check` reports `settings: not-registered` until the
-`SessionStart`, `PostToolUse` and `Stop` registrations are all present.
+`SessionStart`, `PostToolUse` and both `Stop` registrations (this one and the
+synchronous [acceptance gate](#acceptance-gates)) are all present.
 
 Do not register either hook for `SubagentStop`. That event's context is delivered
 to the subagent's own conversation and keeps the subagent running, so it would loop
@@ -1063,3 +1066,84 @@ the worker instead of reaching main.
 `hooks/native-reminder` has been removed. It used to remind on `PostToolUse(Agent)`
 synchronously, which cost every dispatch about 0.6 s; `native-facts` took over its
 reminders. Remove any registration that still points at it.
+
+## Acceptance gates
+
+A non-simple task can carry an **acceptance file**: the list of gates the main
+session must pass before it reports the task done. The main session writes it with
+the Write tool as `<working tree>/.claude/acceptance/<task>.json`, where the working
+tree is the `cwd` Claude Code sends with the `Stop` event.
+
+```json
+{
+  "task": "Chat panel matches the feature-020 mockup",
+  "gates": [
+    {"id": "unit-tests", "kind": "machine", "check": "npm test", "status": "pass",
+     "ranAt": "2026-10-21T09:12:00Z", "evidence": "212 passed", "source": "docs/spec.md"},
+    {"id": "panel-dark-zh", "kind": "visual", "check": "panel, dark theme, zh-TW, fixture: 3 sites",
+     "status": "pending", "source": "design/feature-020.png"},
+    {"id": "merge", "kind": "human", "check": "merge the PR", "status": "pending"}
+  ]
+}
+```
+
+| Field | Required | Value |
+|---|---|---|
+| `task` | yes | string: the task the gates accept |
+| `gates` | yes | list of gate objects (may be empty) |
+| `gates[].id` | yes | non-empty string, named in the block reason |
+| `gates[].kind` | yes | `machine`, `live`, `visual`, `review` or `human` |
+| `gates[].check` | yes | string: what closes the gate (command, steps, state and fixture data) |
+| `gates[].status` | yes | `pass`, `fail` or `pending` |
+| `gates[].ranAt` | no | ISO 8601 time the check last ran (no zone counts as UTC) |
+| `gates[].evidence` | no | string: result summary, observed output, screenshot path or verdict |
+| `gates[].source` | no | string: path or URL of the mockup, spec or issue the gate is judged against |
+
+Other keys are ignored. `human` gates (release, tag, merge and other outward
+actions) are the owner's decision and never hold the turn.
+
+`hooks/acceptance-gate`, registered for `Stop` as a **synchronous** hook (beside
+`native-event`'s async `Stop` registration, which keeps the 分類 declaration scan),
+answers at every main-turn end:
+
+- No `<cwd>/.claude/acceptance` directory: the bash part exits 0 with no output
+  before any interpreter starts. This is the common case and costs no Python start.
+- Otherwise the runtime reads every `*.json` file in that directory whose
+  modification time is at or after the session start, which is the first timestamped
+  line of the session's transcript. A resume or compaction appends to the same
+  transcript, so a resumed session keeps its own files; files from earlier sessions
+  (and from before a `/clear`) are ignored.
+- While any such file has a non-`human` gate whose status is `pending` or `fail`, it
+  returns `{"decision": "block", "reason": ...}`; the reason lists every unmet gate id
+  with its status, grouped under its file's path. Claude Code shows the reason to the
+  main session, which keeps working instead of ending the turn.
+- A file that does not match the schema (not UTF-8 JSON, larger than 1 MB, a missing
+  or mistyped field, an unknown `kind` or `status`, an unparsable `ranAt`) also
+  blocks; the reason names the file and its first problem, so a typo cannot switch
+  enforcement off unnoticed.
+- Otherwise, and on any internal error (an unreadable transcript, an unexpected
+  exception, invalid hook input), it returns no decision and the turn ends: a broken
+  check never traps a session. It needs no `provost/config.json` and works with
+  handoff off.
+
+`python install.py setup` registers it; by hand, add it as its own `Stop` entry
+without `"async"`:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {"hooks": [
+        {"type": "command", "command": "bash \"<runtime>/hooks/native-event\"", "async": true, "timeout": 20}
+      ]},
+      {"hooks": [
+        {"type": "command", "command": "bash \"<runtime>/hooks/acceptance-gate\"", "timeout": 30}
+      ]}
+    ]
+  }
+}
+```
+
+`python install.py check` reports `settings: not-registered` while the synchronous
+registration is missing; an `acceptance-gate` entry marked `"async": true` does not
+count, because an async hook cannot block. Do not register it for `SubagentStop`.

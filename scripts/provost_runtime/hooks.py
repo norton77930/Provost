@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import facts
+from . import acceptance as acceptance_gates, facts
 from .config import ConfigError, handoff_home, load_config, resolve_mode, workspace_key
 from .notifications import PARTIAL, notice
 from .search import evidence_claims, redact
@@ -669,10 +669,14 @@ def _event_key(event, checkpoint):
                               "revision": checkpoint["revision"] if checkpoint else None}, sort_keys=True))
 
 
-def handle_event(event, config_path):
+def handle_event(event, config_path, acceptance=False):
+    """acceptance: the event came from hooks/acceptance-gate (the synchronous Stop registration), which
+    answers only Stop; hooks/native-event's async Stop registration keeps the declaration scan."""
     name = event.get("hook_event_name") if isinstance(event, dict) else None
     source = event.get("source", "startup") if isinstance(event, dict) else "startup"
     key = None
+    if acceptance:
+        return acceptance_gates.check(event) if name == "Stop" else {}
     if name == "Stop":
         return scan_declaration(event, config_path)
     try:

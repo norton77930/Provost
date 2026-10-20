@@ -28,7 +28,7 @@ def write(path, data):
 
 
 def make_source(root):
-    for name in ("_python.sh", "runtime", "native-event", "native-facts"):
+    for name in ("_python.sh", "runtime", "native-event", "native-facts", "acceptance-gate"):
         write(root / "hooks" / name, f"#!/bin/sh\necho {name}\n")
         os.chmod(root / "hooks" / name, 0o755)
     write(root / "hooks" / "native-reminder", "legacy\n")  # not managed
@@ -567,11 +567,14 @@ class SettingsTests(InstallCase):
         self.assertNotIn(SECRET, text_out[1] + text_out[2])
         return json.loads(out)["settings"]
 
-    def hooks(self, start, post):
+    def hooks(self, start, post, gate=None):
+        """gate: the synchronous Stop entry; by default start's command with acceptance-gate for native-event."""
+        if gate is None:
+            gate = json.loads(json.dumps(start).replace("native-event", "acceptance-gate"))
         return {"env": {"TOKEN": SECRET}, "hooks": {
             "SessionStart": [{"hooks": [dict(type="command", **start)]}],
             "PostToolUse": [{"matcher": "*", "hooks": [dict(type="command", **post)]}],
-            "Stop": [{"hooks": [dict(type="command", **start)]}]}}
+            "Stop": [{"hooks": [dict(type="command", **start)]}, {"hooks": [dict(type="command", **gate)]}]}}
 
     def test_plain_command_strings(self):
         base = "/home/u/.claude/" + RUNTIME + "/hooks/"
@@ -592,6 +595,17 @@ class SettingsTests(InstallCase):
                              {"command": f"/x/{RUNTIME}/hooks/native-facts"})
         del no_stop["hooks"]["Stop"]
         self.assertEqual(self.settings(no_stop), "not-registered")
+
+    def test_synchronous_stop_gate_is_required(self):
+        base = f"/x/{RUNTIME}/hooks/"
+        start, post = {"command": base + "native-event"}, {"command": base + "native-facts"}
+        self.assertEqual(self.settings(self.hooks(start, post)), "ok")
+        no_gate = self.hooks(start, post)
+        del no_gate["hooks"]["Stop"][1]
+        self.assertEqual(self.settings(no_gate), "not-registered")
+        # An async registration cannot block the turn end, so it does not count.
+        async_gate = self.hooks(start, post, gate={"command": base + "acceptance-gate", "async": True})
+        self.assertEqual(self.settings(async_gate), "not-registered")
 
     def test_missing_or_unparsable_is_unknown(self):
         self.assertEqual(self.settings(None), "unknown")
@@ -629,10 +643,12 @@ class SetupTests(InstallCase):
         self.assertIn(f"{BEGIN}\n# Policy\n\nline two\n{END}\n", text)
         runtime = (self.config / RUNTIME).as_posix()
         for event in self.EVENTS:
-            name = "native-facts" if event in ("PostToolUse", "UserPromptSubmit") else "native-event"
-            self.assertEqual(self.provost_commands(event), [f'bash "{runtime}/hooks/{name}"'], event)
-        stop = self.settings_data()["hooks"]["Stop"][0]["hooks"][0]
+            names = {"PostToolUse": ["native-facts"], "UserPromptSubmit": ["native-facts"],
+                     "Stop": ["native-event", "acceptance-gate"]}.get(event, ["native-event"])
+            self.assertEqual(self.provost_commands(event), [f'bash "{runtime}/hooks/{n}"' for n in names], event)
+        stop, gate = (group["hooks"][0] for group in self.settings_data()["hooks"]["Stop"])
         self.assertEqual((stop.get("async"), stop.get("timeout")), (True, 20))
+        self.assertEqual((gate.get("async"), gate.get("timeout")), (None, 30))
         config = json.loads((self.config / "provost/config.json").read_text(encoding="utf-8"))
         self.assertEqual((config["mode"], config["handoff"], config["max_writers"]), ("adaptive", True, 2))
 
@@ -667,7 +683,9 @@ class SetupTests(InstallCase):
         write(self.config / "settings.json", json.dumps({"hooks": {"Stop": [{"hooks": [stop]}]}}))
         self.assertEqual(self.run_setup()[0], 0)
         data = self.settings_data()
-        self.assertEqual(data["hooks"]["Stop"], [{"hooks": [stop]}])
+        gate = {"type": "command", "command": f'bash "{(self.config / RUNTIME).as_posix()}/hooks/acceptance-gate"',
+                "timeout": 30}
+        self.assertEqual(data["hooks"]["Stop"], [{"hooks": [stop]}, {"hooks": [gate]}])
         self.assertEqual(set(data["hooks"]), set(self.EVENTS))
 
     def test_unusable_settings_are_refused_and_nothing_written(self):

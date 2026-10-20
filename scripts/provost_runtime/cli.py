@@ -63,7 +63,7 @@ def runtime_hash(root=RUNTIME_ROOT):
     """Line-ending-insensitive digest of the runtime files; a missing file changes it."""
     root = Path(root)
     rels = {p.relative_to(root).as_posix() for p in (root / "scripts" / "provost_runtime").glob("*.py")}
-    rels |= {"hooks/runtime", "hooks/native-event", "hooks/native-facts", "hooks/_python.sh"}
+    rels |= {"hooks/runtime", "hooks/native-event", "hooks/native-facts", "hooks/acceptance-gate", "hooks/_python.sh"}
     digest = hashlib.sha256()
     for rel in sorted(rels):
         try:
@@ -81,7 +81,8 @@ class Parser(argparse.ArgumentParser):
 
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
-    if args == ["native-hook"]:
+    if args in (["native-hook"], ["acceptance-hook"]):
+        gate = args[0] == "acceptance-hook"  # hooks/acceptance-gate: the synchronous Stop check
         try:
             raw = sys.stdin.read(1024 * 1024 + 1)
             if len(raw) > 1024 * 1024:
@@ -89,9 +90,10 @@ def main(argv=None):
             event = json.loads(raw)
             if not isinstance(event, dict):
                 raise ValueError()
-            result = handle_event(event, config_path())
+            result = handle_event(event, config_path(), acceptance=gate)
         except (ValueError, OSError):
-            result = {"systemMessage": "Provost: invalid hook input; no handoff saved."}
+            # The gate never blocks on its own failure: no decision, the turn ends.
+            result = {} if gate else {"systemMessage": "Provost: invalid hook input; no handoff saved."}
         print(json.dumps(result, ensure_ascii=True))
         return 0
     try:

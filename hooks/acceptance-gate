@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Acceptance gate entrypoint. Register it for Stop as a synchronous hook (no "async"), beside
+# native-event's async Stop registration: only a synchronous hook can block the turn end.
+# The common case, no <cwd>/.claude/acceptance directory, exits 0 with no output using bash builtins
+# only, before any interpreter starts (each process costs about 0.5 s on Windows). Otherwise
+# provost_runtime.cli acceptance-hook decides: a block decision while a session acceptance file has a
+# non-human gate pending or failed (or is malformed), else {}. Every failure ends with no decision, so
+# a broken check never traps a session. Always exits 0.
+set -uo pipefail
+input=""
+IFS= read -r -d '' input || true
+# The event's cwd as sent: a JSON string whose escaped backslashes (Windows paths) become /. Any other
+# escape left in it (\uXXXX, \") cannot be decoded here, so Python decides for that path.
+cwd_re='"cwd"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)"'
+[[ "$input" =~ $cwd_re ]] || exit 0
+cwd="${BASH_REMATCH[1]//\\\\//}"
+[[ -n "$cwd" ]] || exit 0
+if [[ "$cwd" != *\\* && ! -d "${cwd%/}/.claude/acceptance" ]]; then
+    exit 0
+fi
+_src="${BASH_SOURCE[0]//\\//}"
+[[ "$_src" == */* ]] || _src="./${_src}"
+# shellcheck source=_python.sh
+source "${_src%/*}/_python.sh"
+if provost_find_python 2>/dev/null &&
+    output="$("${PROVOST_PY[@]}" -m provost_runtime.cli acceptance-hook <<< "$input" 2>/dev/null)" &&
+    [[ -n "$output" ]]; then
+    printf '%s\n' "$output"
+fi
+exit 0

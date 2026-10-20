@@ -21,7 +21,8 @@ BASH4_ONLY = {
 
 class PackagingTests(unittest.TestCase):
     def test_entrypoints_and_guides_ship(self):
-        for path in ("hooks/runtime", "hooks/native-event", "hooks/native-facts", "hooks/_python.sh",
+        for path in ("hooks/runtime", "hooks/native-event", "hooks/native-facts", "hooks/acceptance-gate",
+                     "hooks/_python.sh",
                      "skills/handoff/SKILL.md", "docs/native-handoff.md",
                      "docs/compatibility/spec-kit.md", "docs/compatibility/openspec.md",
                      "docs/compatibility/matt-workflow.md"):
@@ -29,7 +30,8 @@ class PackagingTests(unittest.TestCase):
 
     def test_hooks_run_on_bash_3_2(self):
         scripts = sorted(p for p in (REPO / "hooks").iterdir() if p.is_file())
-        self.assertTrue({"native-facts", "native-event", "runtime", "_python.sh"} <= {p.name for p in scripts})
+        self.assertTrue({"native-facts", "native-event", "acceptance-gate", "runtime", "_python.sh"}
+                        <= {p.name for p in scripts})
         found = []
         for path in scripts:
             lines = path.read_text(encoding="utf-8").splitlines()

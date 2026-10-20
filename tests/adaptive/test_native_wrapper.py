@@ -61,3 +61,34 @@ class NativeWrapperTests(FixtureCase):
         self.assertTrue(self.cache_file.read_text(encoding="utf-8").strip().endswith("/bin/python3"))
         result, log, _ = self.native_event()
         self.assertEqual(len([c for c in log.read_text(encoding="utf-8").splitlines() if " -c " in c]), 1)
+
+    def test_acceptance_gate_starts_no_interpreter_without_acceptance_dir(self):
+        log = self.root / "python.log"
+        bin_dir = self.root / "bin"
+        self.fake_interpreter(bin_dir, "python3", log)
+        hook = REPO / "hooks" / "acceptance-gate"
+        stop = json.dumps({"session_id": "s1", "transcript_path": str(self.root / "t.jsonl"),
+                           "cwd": str(self.root), "hook_event_name": "Stop", "last_assistant_message": "done"})
+        result = self.run_bash(hook, path_dirs=[bin_dir], stdin=stop)
+        self.assertEqual((result.returncode, result.stdout), (0, ""), result.stderr)
+        self.assertFalse(log.exists(), "no acceptance directory: no interpreter may start")
+        (self.root / ".claude" / "acceptance").mkdir(parents=True)
+        result = self.run_bash(hook, path_dirs=[bin_dir], stdin=stop)
+        self.assertEqual((result.returncode, json.loads(result.stdout)), (0, {}), result.stderr)
+        self.assertIn("-m provost_runtime.cli acceptance-hook", log.read_text(encoding="utf-8"))
+
+    def test_acceptance_gate_blocks_end_to_end(self):
+        transcript = self.root / "t.jsonl"
+        transcript.write_text(json.dumps({"type": "user", "timestamp": "2020-01-01T00:00:00Z"}) + "\n",
+                              encoding="utf-8")
+        directory = self.root / ".claude" / "acceptance"
+        directory.mkdir(parents=True)
+        (directory / "task.json").write_text(json.dumps({"task": "t", "gates": [
+            {"id": "unit-tests", "kind": "machine", "check": "pytest", "status": "pending"}]}), encoding="utf-8")
+        stop = json.dumps({"session_id": "s1", "transcript_path": str(transcript), "cwd": str(self.root),
+                           "hook_event_name": "Stop"})
+        result = self.run_bash(REPO / "hooks" / "acceptance-gate", stdin=stop)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(output["decision"], "block")
+        self.assertIn("unit-tests", output["reason"])

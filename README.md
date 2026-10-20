@@ -85,7 +85,7 @@ Then restart Claude Code and confirm with
 - appends the `<!-- claudex-native:begin -->` / `<!-- claudex-native:end -->`
   markers to `~/.claude/CLAUDE.md` when it has none (the policy only ever goes
   between them, and a malformed pair is refused);
-- adds the six hook registrations below to `~/.claude/settings.json` when they
+- adds the seven hook registrations below to `~/.claude/settings.json` when they
   are missing. Everything else in the file is kept, it is re-serialized with a
   2-space indent, and a file that is not valid JSON is refused. No value from it
   is ever printed;
@@ -128,7 +128,9 @@ Replace `<runtime>` with the absolute path of
   "UserPromptSubmit": [{"hooks": [
     {"type": "command", "command": "bash \"<runtime>/hooks/native-facts\"", "timeout": 10}]}],
   "Stop": [{"hooks": [
-    {"type": "command", "command": "bash \"<runtime>/hooks/native-event\"", "async": true, "timeout": 20}]}]
+    {"type": "command", "command": "bash \"<runtime>/hooks/native-event\"", "async": true, "timeout": 20}]},
+    {"hooks": [
+    {"type": "command", "command": "bash \"<runtime>/hooks/acceptance-gate\"", "timeout": 30}]}]
 }
 ```
 
