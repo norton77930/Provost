@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import acceptance as acceptance_gates, facts
+from . import acceptance as acceptance_gates, dispatch_reminder, facts
 from .config import ConfigError, handoff_home, load_config, resolve_mode, workspace_key
 from .notifications import PARTIAL, notice
 from .search import evidence_claims, redact
@@ -670,13 +670,16 @@ def _event_key(event, checkpoint):
 
 
 def handle_event(event, config_path, acceptance=False):
-    """acceptance: the event came from hooks/acceptance-gate (the synchronous Stop registration), which
-    answers only Stop; hooks/native-event's async Stop registration keeps the declaration scan."""
+    """acceptance: the event came from hooks/acceptance-gate (the synchronous Stop and PreToolUse Agent
+    registrations), which answers only those; hooks/native-event's async Stop registration keeps the
+    declaration scan."""
     name = event.get("hook_event_name") if isinstance(event, dict) else None
     source = event.get("source", "startup") if isinstance(event, dict) else "startup"
     key = None
     if acceptance:
-        return acceptance_gates.check(event, config_path) if name == "Stop" else {}
+        if name == "Stop":
+            return acceptance_gates.check(event, config_path)
+        return dispatch_reminder.remind(event) if name == "PreToolUse" else {}
     if name == "Stop":
         return scan_declaration(event, config_path)
     try:

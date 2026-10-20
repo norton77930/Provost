@@ -32,6 +32,15 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   handoff off) starts a new episode. The per-session count lives in
   `<provost dir>/cache/acceptance/<session_id>.pushes`; a counter error never
   blocks.
+- Acceptance gates, dispatch reminder (#47): `hooks/acceptance-gate` is also
+  registered for `PreToolUse` with matcher `Agent` (synchronous). When the main
+  session dispatches `implementer`, `implementer-sonnet` or `mech-executor` while
+  the session has an acceptance file and the brief does not mention any session
+  file's name (so `.claude/acceptance/<name>` and absolute paths count), it returns
+  additional context asking to cite the file and, for visual gates, the fixture
+  data and screenshot output directory. Advisory only: never a deny; other roles,
+  a cited file, subagent dispatches, no session file or any error return nothing.
+  `install.py setup` registers it and `check` reports `not-registered` without it.
 - `python install.py setup`: a one-step install that also appends the
   `claudex-native` markers to `CLAUDE.md` when there are none, adds the missing
   hook registrations to `settings.json` (other values kept, invalid JSON

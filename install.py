@@ -33,11 +33,14 @@ END = b"<!-- claudex-native:end -->"
 # A local copy of this file that differs is kept beside it (<name>.local-<UTC time>.bak) before the
 # installer first overwrites it; once such a copy exists, later installs only use the backup dir.
 KEEP_LOCAL = "skills/handoff/SKILL.md"
-# The hooks check requires per event; Stop needs both the async declaration scan and the acceptance gate.
+# The hooks check requires per event; Stop needs both the async declaration scan and the acceptance gate,
+# PreToolUse the acceptance gate's dispatch reminder.
 HOOK_EVENTS = {"SessionStart": ("native-event",),
+               "PreToolUse": ("acceptance-gate",),
                "PostToolUse": ("native-facts",),
                "Stop": ("native-event", "acceptance-gate")}
-# Hooks that count only when registered without "async": true (an async Stop hook cannot block the turn).
+# Hooks that count only when registered without "async": true (an async Stop hook cannot block the turn,
+# and an async PreToolUse hook cannot add context to the dispatch).
 SYNC_HOOKS = ("acceptance-gate",)
 SETTINGS = "settings.json"
 RUNTIME_CONFIG = "provost/config.json"
@@ -46,6 +49,7 @@ REGISTRATIONS = (
     ("SessionStart", "startup|clear|compact|resume|fork", "native-event", {"timeout": 30}),
     ("PreCompact", "manual|auto", "native-event", {"timeout": 30}),
     ("PostCompact", "manual|auto", "native-event", {"timeout": 30}),
+    ("PreToolUse", "Agent", "acceptance-gate", {"timeout": 30}),
     ("PostToolUse", "Edit|Write|NotebookEdit|Agent|Bash|PowerShell|EnterWorktree|ExitWorktree",
      "native-facts", {"async": True, "timeout": 20}),
     ("UserPromptSubmit", None, "native-facts", {"timeout": 10}),

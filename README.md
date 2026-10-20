@@ -85,7 +85,7 @@ Then restart Claude Code and confirm with
 - appends the `<!-- claudex-native:begin -->` / `<!-- claudex-native:end -->`
   markers to `~/.claude/CLAUDE.md` when it has none (the policy only ever goes
   between them, and a malformed pair is refused);
-- adds the seven hook registrations below to `~/.claude/settings.json` when they
+- adds the eight hook registrations below to `~/.claude/settings.json` when they
   are missing. Everything else in the file is kept, it is re-serialized with a
   2-space indent, and a file that is not valid JSON is refused. No value from it
   is ever printed;
@@ -123,6 +123,8 @@ Replace `<runtime>` with the absolute path of
     {"type": "command", "command": "bash \"<runtime>/hooks/native-event\"", "timeout": 30}]}],
   "PostCompact": [{"matcher": "manual|auto", "hooks": [
     {"type": "command", "command": "bash \"<runtime>/hooks/native-event\"", "timeout": 30}]}],
+  "PreToolUse": [{"matcher": "Agent", "hooks": [
+    {"type": "command", "command": "bash \"<runtime>/hooks/acceptance-gate\"", "timeout": 30}]}],
   "PostToolUse": [{"matcher": "Edit|Write|NotebookEdit|Agent|Bash|PowerShell|EnterWorktree|ExitWorktree", "hooks": [
     {"type": "command", "command": "bash \"<runtime>/hooks/native-facts\"", "async": true, "timeout": 20}]}],
   "UserPromptSubmit": [{"hooks": [

@@ -1175,3 +1175,41 @@ without `"async"`:
 `python install.py check` reports `settings: not-registered` while the synchronous
 registration is missing; an `acceptance-gate` entry marked `"async": true` does not
 count, because an async hook cannot block. Do not register it for `SubagentStop`.
+
+### Dispatch reminder
+
+The same script, registered for `PreToolUse` with matcher `Agent` (also synchronous),
+reminds the main session to cite the acceptance file in an implementation brief. It
+adds context at dispatch time and never denies, asks or blocks one:
+
+- It speaks only when `tool_input.subagent_type` is `implementer`,
+  `implementer-sonnet` or `mech-executor`, the session has an acceptance file (the
+  same files and session start as the `Stop` check; a malformed file still counts),
+  and `tool_input.prompt` cites none of them.
+- **Citing** means the prompt contains a session file's name, for example
+  `feature.json`. That also matches `.claude/acceptance/feature.json` and an absolute
+  path, since both end in the name; backslashes and case are ignored. A longer name
+  (`myfeature.json`, `feature.json.bak`) is not a citation. Mentioning any one of the
+  session's files is enough.
+- The reply is `{"hookSpecificOutput": {"hookEventName": "PreToolUse",
+  "additionalContext": "..."}}`: one or two sentences naming the file path(s) to cite
+  and, when a file has `visual` gates, asking for the fixture data each screenshot
+  needs and the screenshot output directory.
+- It returns `{}` for any other role, a cited file, no acceptance directory or session
+  file, a dispatch made by a subagent (`agent_id`), a missing prompt, and on any
+  internal error.
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "Agent", "hooks": [
+        {"type": "command", "command": "bash \"<runtime>/hooks/acceptance-gate\"", "timeout": 30}
+      ]}
+    ]
+  }
+}
+```
+
+`python install.py setup` registers it, and `check` reports `settings: not-registered`
+while it is missing or marked `"async": true`.

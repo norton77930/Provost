@@ -6,6 +6,8 @@
 # provost_runtime.cli acceptance-hook decides: a block decision while a session acceptance file has a
 # non-human gate pending or failed (or is malformed), else {}. Every failure ends with no decision, so
 # a broken check never traps a session. Always exits 0.
+# Also register it for PreToolUse with matcher Agent (synchronous): it then adds a reminder to cite the
+# acceptance file when an implementation brief does not, and never denies a dispatch.
 set -uo pipefail
 input=""
 IFS= read -r -d '' input || true

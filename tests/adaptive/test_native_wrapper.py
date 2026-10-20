@@ -92,3 +92,11 @@ class NativeWrapperTests(FixtureCase):
         output = json.loads(result.stdout)
         self.assertEqual(output["decision"], "block")
         self.assertIn("unit-tests", output["reason"])
+        dispatch = json.dumps({"session_id": "s1", "transcript_path": str(transcript), "cwd": str(self.root),
+                               "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": {
+                                   "subagent_type": "implementer", "prompt": "Build it."}})
+        result = self.run_bash(REPO / "hooks" / "acceptance-gate", stdin=dispatch)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(list(output), ["hookSpecificOutput"])
+        self.assertIn("task.json", output["hookSpecificOutput"]["additionalContext"])
