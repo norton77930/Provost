@@ -37,6 +37,7 @@ For each claim, ask how its failure would show, then pick the cheapest evidence 
 |---|---|---|
 | A test goes red | run the focused tests | `implementer` in its own loop; the planned final verification goes to `test-analyst` when the suite is slow (minutes) or its output would flood main (e2e/Playwright gates, full multi-language suites), otherwise main runs it |
 | A screen, CLI, or interaction misbehaves | live verification — run the app, open the browser, exercise the path | main session (`run` skill, browser tools), or `test-analyst` when it needs no browser |
+| UI differs from a design mockup | `visual` gates: a screenshot set (one per drawn state) compared with the mockup | `acceptance-verifier` |
 | Invisible to both tests and a live run: cross-module compatibility, error-handling paths, data conversion, concurrency/lifecycle/consistency, security | fresh-context review | `code-reviewer` |
 | An exposed interface or architectural boundary changes | architecture review | `architecture-reviewer` (in addition to the row above) |
 
@@ -44,15 +45,15 @@ For each claim, ask how its failure would show, then pick the cheapest evidence 
 
 **R2 — governance-grade (STOP before implementing):** auth/authorization; credentials, secrets, crypto; payments; schema, serialization, or data migration; breaking changes to a public API or dependency boundary; cross-repo/workspace changes; destructive or irreversible operations (data deletion, release, deploy); formal audit needs or an explicit user request for fixed-scope evidence. On R2: stop, name the matched trigger, and wait for the user to choose the path — typically raising the main session's effort and continuing right here; implementation stays in this lane unless the user says otherwise. Never silently continue. An R2 task is done only after `code-reviewer` (plus `architecture-reviewer` when an architectural boundary is touched) has passed the finished work, and any irreversible operation runs only after that review. Mention `claudex-foreman` (engine-enforced scope, immutable ledger) only when the user needs that evidence grade or a formal audit — it is opt-in, never the default exit.
 
-**Negative list — none of the following is a reason to review or escalate:** file count or diff size; the task "looking complex" or "non-trivial" (that is the difficulty axis, which only picks the implementer); routine docs/UI copy, styling, or formatting; UI behavior that live verification can confirm; a bounded fail-soft bug fix; purely internal refactoring that touches no exposed interface. Do not dispatch a reviewer, an analyst, or any role merely to gain extra confidence.
+**Negative list — none of the following is a reason to review or escalate:** file count or diff size; the task "looking complex" or "non-trivial" (that is the difficulty axis, which only picks the implementer); routine docs/UI copy, styling, or formatting (these exempt code review, not visual acceptance against a mockup); UI behavior that live verification can confirm; a bounded fail-soft bug fix; purely internal refactoring that touches no exposed interface. Do not dispatch a reviewer, an analyst, or any role merely to gain extra confidence. Compare pixels only when the mockup is marked pixel-exact; otherwise the verdict is a judged diff list.
 
 ## 4. Delegation economics and dispatch brake
 
 Delegate for clear task boundaries, useful parallelism and context isolation. Delegation is not automatically cheaper than main: consider the selected model, briefing/report overhead and total work. Keep simple work in main and use the dedicated roles for bounded work under the rules below.
 
-**Do delegate:** fully specified batch changes → `mech-executor`; a slow or noisy planned test run → `test-analyst` (§3); read-only reconnaissance or genuinely independent multi-surface exploration → `Explore`; every moderate-or-harder implementation slice → `implementer`; risk-triggered post-completion review → the matching reviewer (fresh context outperforms self-critique).
+**Do delegate:** fully specified batch changes → `mech-executor`; a slow or noisy planned test run → `test-analyst` (§3); read-only reconnaissance or genuinely independent multi-surface exploration → `Explore`; every moderate-or-harder implementation slice → `implementer`; risk-triggered post-completion review → the matching reviewer (fresh context outperforms self-critique); `visual`, `live` and threshold gates → `acceptance-verifier`, in parallel batches of about 20 gates when large.
 
-**Do NOT delegate:** simple work you can finish yourself in a handful of tool calls (dispatch overhead exceeds the win); verification or double-checking of your own work (that stays in your own loop; the risk axis alone decides reviews; handing the one planned verification to `test-analyst` for context isolation is not double-checking); diagnosis of a single unknown bug — it stays with you from diagnosis to a bounded fix brief, and never build an Explore→implementer pipeline for it.
+**Do NOT delegate:** simple work you can finish yourself in a handful of tool calls (dispatch overhead exceeds the win); verification or double-checking of your own work (that stays in your own loop; the risk axis alone decides reviews; handing the one planned verification to `test-analyst` for context isolation is not double-checking); diagnosis of a single unknown bug — it stays with you from diagnosis to a bounded fix brief, and never build an Explore→implementer pipeline for it; machine-only acceptance (tests, typecheck, build) gets no `acceptance-verifier`, and `review` gates stay with `code-reviewer`.
 
 Use the dependency and ownership checks below to dispatch ready implementation slices concurrently, with normal cap 2, conditional burst cap 3. A project single-writer rule overrides these personal limits — this is policy, not an engine lock. Brief a role precisely the first time: goal, constraints, the seam, the verification command. Read its final report as the deliverable and do not re-derive its findings. Expected TDD RED is normal. After one evidence-based correction leaves the same substantive blocker, choose an appropriate escalation or takeover. API interruptions are not failed implementation attempts: inspect worker state and partial work before retrying or taking over; never duplicate uncertain active work.
 
@@ -105,6 +106,18 @@ Mid-task discovery that difficulty or risk exceeds the classification:
 
 Before implementation begins, the plan must state concisely: approved scope and non-goals; a finite list of required claims; the selected evidence per claim; any pre-selected assurance roles (from §3 — never "all of them by default"); and exactly one planned final verification. Progress `active → sealing → done`: once every claim is PASS-current, only the planned final verification runs, then report immediately. Do not add optional review, tests, analysis, refactoring, or documentation after sealing. Reopen only when a required check actually fails, new evidence contradicts an in-scope claim, or the user approves a scope expansion. A suggestion that contradicts nothing is a follow-up, not new work.
 
+Before dispatch, write the acceptance file `.claude/acceptance/<task>.json` (schema: "Acceptance gates" in `docs/native-handoff.md`). The Stop hook holds the turn while a non-human gate is pending, failed or stale, unless background work runs or the answer says `needs input:` or `failed:`; it pushes back at most three times. Each gate has a `kind` (`machine`, `live`, `visual`, `review`, `human`) and names its `source` (mockup, spec, issue). With a design mockup, every drawn state × locale × theme is its own `visual` gate whose `check` names the fixture data; a state that cannot be captured is raised as `needs input:`, never deferred silently. Release, tag, merge and other outward actions are always `human` gates. Derive gate kinds from the task type:
+
+| Task type | Gate kinds |
+|---|---|
+| bug fix | `machine`: repro red before, green after |
+| performance | `machine`: before/after measurement against a threshold |
+| CLI / interaction | `live`: run the path |
+| UI | `visual`: one per state |
+| data conversion | `machine` replay + `review` |
+| docs | `live`: walk through the steps |
+| release / outward | `human` |
+
 Keep the plan visible as a task list: when an approved plan has three or more steps, create every step with `TaskCreate` before starting the first, set a step `in_progress` with `TaskUpdate` before working on it or dispatching its role, and set it `completed` once its claims pass. Record added or dropped steps the same way. Simple tasks skip this.
 
 ## 7. Spec sources and the hard-tier gate
@@ -117,7 +130,7 @@ A hard-tier task starts with an approved written spec or PRD before implementati
 
 ## 9. Role boundaries
 
-Read-only roles (`Explore`, `code-reviewer`, `architecture-reviewer`) never execute commands or write; `test-analyst` runs non-mutating tests only. Custom roles never delegate further (leaf-only, capability-enforced). Keep every role report concise — exact paths and line ranges, never whole files — because reports accumulate in the main context.
+Read-only roles (`Explore`, `code-reviewer`, `architecture-reviewer`, `acceptance-verifier`) never execute commands or write; `test-analyst` runs non-mutating tests only. Custom roles never delegate further (leaf-only, capability-enforced). Keep every role report concise — exact paths and line ranges, never whole files — because reports accumulate in the main context.
 
 ## 10. Native dispatch and handoff pilot
 
@@ -159,6 +172,9 @@ fallback without a separate user decision.
 
 Every implementation brief names sources, deliverable, acceptance, dependencies
 (unknown is not none), permitted/excluded paths, shared resources and report format.
+It cites the acceptance file; for `visual` gates it names the fixture data and the
+screenshot output directory, and screenshots plus a rerunnable capture script are
+implementer deliverables.
 Main owns shared progress and handoff records; workers do not run a whole source
 workflow or write common checkpoint state. Project gates remain binding.
 

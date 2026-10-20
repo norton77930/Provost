@@ -120,6 +120,7 @@ Provost 是一套每天實際在用的 Claude Code 設定的正本。主 session
 | `implementer` | opus | medium | + Write, Edit, Bash | 有設計選擇的 slice；困難的以 `high` 派 |
 | `general-purpose` | opus | medium | Agent 以外全部 | 其他角色都不適合的有界非程式工作 |
 | `code-reviewer` | fable | high | Read, Glob, Grep | 風險觸發的全新 context 審查 |
+| `acceptance-verifier` | sonnet | high | Read, Glob | 對照來源判定 visual、live 與門檻 gate，回報 PASS、ISSUES 或 BLOCKED |
 | `architecture-reviewer` | fable | high | Read, Glob, Grep | 對外介面或邊界改變時的審查 |
 
 reviewer 只有在明確遇到 Fable 額度用完的錯誤時，才改用 `opus`。
@@ -133,7 +134,7 @@ runtime 在 `~/.claude/provost/handoffs` 為每個 session 保存一條 sealed �
 | 路徑 | 內容 | 安裝到（`~/.claude` 底下） |
 |---|---|---|
 | [`native/CLAUDE.native.md`](native/CLAUDE.native.md) | 編排政策 | `CLAUDE.md` 中 `claudex-native` 標記之間 |
-| [`agents/`](agents/) | 8 個 subagent 角色 | `agents/` |
+| [`agents/`](agents/) | 9 個 subagent 角色 | `agents/` |
 | [`hooks/`](hooks/)、[`scripts/provost_runtime/`](scripts/provost_runtime/) | handoff runtime 與 hook | `provost/runtime/native-pilot-v1/` |
 | [`skills/verification-before-completion/`](skills/verification-before-completion/) | 宣告完成前的驗證紀律 | `skills/` |
 | [`skills/handoff/`](skills/handoff/) | `/handoff` skill（存檔、接續、搜尋） | `skills/handoff/` |

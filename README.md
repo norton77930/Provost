@@ -204,6 +204,7 @@ The full text is [`native/CLAUDE.native.md`](native/CLAUDE.native.md).
 | `implementer` | opus | medium | + Write, Edit, Bash | Slices with real design choices; dispatched at `high` for hard ones |
 | `general-purpose` | opus | medium | all but Agent | Bounded non-code work no other role fits |
 | `code-reviewer` | fable | high | Read, Glob, Grep | Risk-triggered fresh-context review of a declared claim |
+| `acceptance-verifier` | sonnet | high | Read, Glob | Judging visual, live and threshold gates against their source; reports PASS, ISSUES or BLOCKED |
 | `architecture-reviewer` | fable | high | Read, Glob, Grep | Review when an exposed interface or boundary changes |
 
 Reviewers fall back to `opus` only when a run fails with an explicit Fable quota
@@ -227,7 +228,7 @@ See [`docs/native-handoff.md`](docs/native-handoff.md).
 | Path | What it is | Installed to (in `~/.claude`) |
 |---|---|---|
 | [`native/CLAUDE.native.md`](native/CLAUDE.native.md) | The orchestration policy | between the `claudex-native` markers in `CLAUDE.md` |
-| [`agents/`](agents/) | Eight subagent roles | `agents/` |
+| [`agents/`](agents/) | Nine subagent roles | `agents/` |
 | [`hooks/`](hooks/), [`scripts/provost_runtime/`](scripts/provost_runtime/) | Handoff runtime and its hooks | `provost/runtime/native-pilot-v1/` |
 | [`skills/verification-before-completion/`](skills/verification-before-completion/) | Completion-claim discipline | `skills/` |
 | [`skills/handoff/`](skills/handoff/) | The `/handoff` skill (save, resume, search) | `skills/handoff/` |
