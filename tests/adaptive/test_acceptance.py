@@ -5,7 +5,7 @@ import time
 from contextlib import redirect_stdout
 from unittest import mock
 
-from _support import FixtureCase
+from _support import REPO, FixtureCase
 
 SESSION = "5d1c-ab12"
 HOUR = 3600
@@ -15,9 +15,8 @@ def gate(gate_id, status="pending", kind="machine", **extra):
     return {"id": gate_id, "kind": kind, "check": "run " + gate_id, "status": status, **extra}
 
 
-class AcceptanceStopTests(FixtureCase):
-    """The synchronous Stop registration (hooks/acceptance-gate) blocks the turn end while a session
-    acceptance file has a non-human gate pending or failed."""
+class AcceptanceCase(FixtureCase):
+    """A session that began an hour ago, its transcript, and acceptance files under <cwd>/.claude/acceptance."""
 
     def setUp(self):
         super().setUp()
@@ -51,6 +50,11 @@ class AcceptanceStopTests(FixtureCase):
         data = {"session_id": SESSION, "transcript_path": str(self.transcript), "cwd": str(self.root),
                 "hook_event_name": "Stop", "stop_hook_active": False, "last_assistant_message": "done", **extra}
         return handle_event(data, self.config_path, acceptance=acceptance)
+
+
+class AcceptanceStopTests(AcceptanceCase):
+    """The synchronous Stop registration (hooks/acceptance-gate) blocks the turn end while a session
+    acceptance file has a non-human gate pending or failed."""
 
     def test_no_acceptance_directory_or_file_is_no_decision(self):
         self.assertEqual(self.stop(), {})
@@ -106,12 +110,12 @@ class AcceptanceStopTests(FixtureCase):
             "no-id.json": json.dumps({"task": "t", "gates": [{"kind": "machine", "check": "c", "status": "pass"}]}),
             "bad-ran-at.json": json.dumps({"task": "t", "gates": [gate("g", "pass", ranAt="yesterday")]}),
         }
-        for name, raw in broken.items():
+        for index, (name, raw) in enumerate(broken.items()):
             with self.subTest(name):
                 for old in self.directory.glob("*.json") if self.directory.exists() else ():
                     old.unlink()
                 path = self.acceptance(name, None, raw=raw)
-                result = self.stop()
+                result = self.stop(session_id="case-%d" % index)  # each case its own push budget
                 self.assertEqual(result.get("decision"), "block", result)
                 self.assertIn(str(path), result["reason"])
                 self.assertIn("malformed", result["reason"].lower())
@@ -156,3 +160,90 @@ class AcceptanceStopTests(FixtureCase):
                     mock.patch.dict(os.environ, PROVOST_CONFIG=str(self.config_path)):
                 self.assertEqual(cli.main(["acceptance-hook"]), 0)
             self.assertEqual(json.loads(out.getvalue()).get("decision"), decision)
+
+
+class AcceptanceExemptionTests(AcceptanceCase):
+    """Legitimate pauses end the turn, and the gate pushes back at most three times per episode (#45)."""
+
+    def setUp(self):
+        super().setUp()
+        self.counter = self.config_path.parent / "cache" / "acceptance" / (SESSION + ".pushes")
+        self.acceptance("feature.json", [gate("unit-tests")])
+
+    def assertBlocks(self, push, **extra):
+        result = self.stop(**extra)
+        self.assertEqual(result.get("decision"), "block", result)
+        self.assertIn("push %d/3" % push, result["reason"])
+
+    def prompt(self, text="next", **cfg):
+        """The person's next prompt through the UserPromptSubmit registration (hooks/native-facts)."""
+        if cfg:
+            self.config_path.write_text(json.dumps(dict(self.cfg, **cfg)), encoding="utf-8")
+        stdin = json.dumps({"session_id": SESSION, "transcript_path": str(self.transcript), "cwd": str(self.root),
+                            "hook_event_name": "UserPromptSubmit", "prompt": text})
+        result = self.run_bash(REPO / "hooks" / "native-facts", stdin=stdin)
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        return json.loads(result.stdout)
+
+    def test_three_pushes_per_episode_then_no_decision(self):
+        for push in (1, 2, 3):
+            self.assertBlocks(push)
+        self.assertEqual(self.stop(), {})  # the fourth unmet Stop ends the turn
+        self.assertEqual(self.stop(), {})  # and the budget stays spent until a new episode
+
+    def test_background_tasks_end_the_turn_without_spending_a_push(self):
+        running = [{"id": "b1", "type": "bash", "status": "running"}]
+        self.assertEqual(self.stop(background_tasks=running), {})
+        self.assertFalse(self.counter.exists())
+        self.assertBlocks(1, background_tasks=[])
+
+    def test_blocker_line_ends_the_turn(self):
+        for message in ("needs input: which locale is the default?", "Done so far.\nfailed: npm test exits 1",
+                        "- needs input: pick a fixture", "* Failed: capture script", "> NEEDS INPUT: mockup?",
+                        "**needs input:** the dark mockup is missing", "__failed:__ build", "  - **failed**: x"):
+            with self.subTest(message):
+                self.assertEqual(self.stop(last_assistant_message=message), {})
+        self.assertFalse(self.counter.exists())
+        self.assertBlocks(1, last_assistant_message="Nothing here needs input: the tests failed: twice, now fixed.")
+
+    def test_subagent_stop_is_ignored(self):
+        self.assertEqual(self.stop(agent_id="a1", agent_type="implementer"), {})
+        self.assertFalse(self.counter.exists())
+
+    def test_stop_with_no_unmet_gate_resets_the_episode(self):
+        self.assertBlocks(1)
+        self.assertBlocks(2)
+        self.acceptance("feature.json", [gate("unit-tests", "pass")])
+        self.assertEqual(self.stop(), {})
+        self.acceptance("feature.json", [gate("unit-tests", "fail")])
+        self.assertBlocks(1)
+
+    def test_person_prompt_resets_the_episode(self):
+        for push in (1, 2, 3):
+            self.assertBlocks(push)
+        self.assertEqual(self.prompt(), {})
+        self.assertBlocks(1)
+
+    def test_person_prompt_resets_with_handoff_off(self):
+        self.assertBlocks(1)
+        self.assertBlocks(2)
+        self.assertEqual(self.prompt(handoff=False), {})
+        self.assertFalse((self.config_path.parent / "cache" / "facts").exists())
+        self.assertBlocks(1)
+
+    def test_subagent_results_and_notifications_do_not_reset(self):
+        self.assertBlocks(1)
+        for text in ("<task-notification><task-id>b1</task-id><status>completed</status></task-notification>",
+                     '<agent-message from="a1">[Subagent hand-back] done</agent-message>',
+                     'Another Claude session sent a message: <agent-message from="a1">hi</agent-message>'):
+            self.prompt(text)
+        self.assertBlocks(2)
+
+    def test_counter_errors_never_block(self):
+        self.counter.parent.mkdir(parents=True)
+        self.counter.write_text("garbage", encoding="utf-8")
+        self.assertEqual(self.stop(), {})  # unreadable count: no decision
+        self.counter.unlink()
+        self.counter.mkdir()  # the counter cannot be written
+        self.assertEqual(self.stop(), {})
+        self.assertEqual(self.stop(session_id="../escape"), {})  # a session id that names no cache file

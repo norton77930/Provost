@@ -676,7 +676,7 @@ def handle_event(event, config_path, acceptance=False):
     source = event.get("source", "startup") if isinstance(event, dict) else "startup"
     key = None
     if acceptance:
-        return acceptance_gates.check(event) if name == "Stop" else {}
+        return acceptance_gates.check(event, config_path) if name == "Stop" else {}
     if name == "Stop":
         return scan_declaration(event, config_path)
     try:

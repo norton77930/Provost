@@ -30,16 +30,21 @@
 #   All arrive as one additionalContext; otherwise {}. `record` deletes the
 #   three record flags; a record with phase done also deletes the three
 #   declaration flags.
+# - Acceptance gates, independent of handoff: every UserPromptSubmit that is the
+#   person's (not a subagent result or <task-notification>) empties the
+#   acceptance gate's push counter <provost dir>/cache/acceptance/<session_id>.pushes
+#   when it holds a count, so the person's prompt starts a new episode.
 set -uo pipefail
 config_file="${PROVOST_CONFIG:-${HOME}/.claude/provost/config.json}"
 config=""
 [[ -r "$config_file" ]] && { IFS= read -r -d '' config < "$config_file" || true; }
-if ! [[ "$config" =~ \"handoff\"[[:space:]]*:[[:space:]]*true([^A-Za-z0-9_]|$) ]]; then
-    printf '{}\n'
-    exit 0
-fi
 facts_dir="${config_file%[/\\]*}/cache/facts"
-if [[ ! -d "$facts_dir" ]]; then
+pushes_dir="${config_file%[/\\]*}/cache/acceptance"
+handoff=false
+if [[ "$config" =~ \"handoff\"[[:space:]]*:[[:space:]]*true([^A-Za-z0-9_]|$) && -d "$facts_dir" ]]; then
+    handoff=true
+fi
+if [[ "$handoff" != true && ! -d "$pushes_dir" ]]; then
     printf '{}\n'
     exit 0
 fi
@@ -105,7 +110,20 @@ get "$head" hook_event_name
 event="$val"
 get "$head" session_id
 session_id="$val"
+# < and > may be \u-escaped in a prompt.
+lt='(<|\\u003[cC])' gt='(>|\\u003[eE])' ws='([[:space:]]|\\[nrt])*'
+note_re='^'"$ws$lt"'task-notification'"$gt"
 if [[ "$event" == UserPromptSubmit && "$session_id" =~ ^[A-Za-z0-9-]+$ ]]; then
+    # A prompt that starts as a task notification or an agent message is not the person's.
+    agent_re='^'"$ws"'(Another Claude session sent a message:'"$ws"')?'"$lt"'agent-message'
+    pushes="${pushes_dir}/${session_id}.pushes"
+    if [[ -s "$pushes" ]] && get "$input" prompt && ! [[ "$val" =~ $note_re || "$val" =~ $agent_re ]]; then
+        : 2>/dev/null > "$pushes" || true
+    fi
+    if [[ "$handoff" != true ]]; then
+        printf '{}\n'
+        exit 0
+    fi
     flag="${facts_dir}/${session_id}"
     msg=""
     if [[ -e "${flag}.enabled" ]]; then
@@ -121,12 +139,9 @@ if [[ "$event" == UserPromptSubmit && "$session_id" =~ ^[A-Za-z0-9-]+$ ]]; then
         # completed) that does not just point at a SubagentHandback delivery: the
         # pointer "(its SubagentHandback call)" or the interim "... will deliver
         # its report through SubagentHandback ...". A result that merely mentions
-        # SubagentHandback still counts. < and > may be \u-escaped. A
-        # UserPromptSubmit has no tool_input, so the prompt is read from the whole
-        # input.
-        lt='(<|\\u003[cC])' gt='(>|\\u003[eE])' ws='([[:space:]]|\\[nrt])*'
+        # SubagentHandback still counts. A UserPromptSubmit has no tool_input, so
+        # the prompt is read from the whole input.
         hand_re='^'"$ws"'(Another Claude session sent a message:'"$ws"')?'"$lt"'agent-message from=\\"([^"\\]|\\[^"])*\\"'"$gt$ws"'\[Subagent hand-back\]'
-        note_re='^'"$ws$lt"'task-notification'"$gt"
         status_re="${lt}status${gt}([A-Za-z_-]*)${lt}"
         summary_re="${lt}summary${gt}(Agent )?"
         result=false
@@ -162,7 +177,7 @@ if [[ "$event" == UserPromptSubmit && "$session_id" =~ ^[A-Za-z0-9-]+$ ]]; then
     fi
     exit 0
 fi
-if [[ "$event" != PostToolUse || -z "$body" ]]; then
+if [[ "$handoff" != true || "$event" != PostToolUse || -z "$body" ]]; then
     printf '{}\n'
     exit 0
 fi

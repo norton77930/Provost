@@ -1114,17 +1114,45 @@ answers at every main-turn end:
   transcript, so a resumed session keeps its own files; files from earlier sessions
   (and from before a `/clear`) are ignored.
 - While any such file has a non-`human` gate whose status is `pending` or `fail`, it
-  returns `{"decision": "block", "reason": ...}`; the reason lists every unmet gate id
-  with its status, grouped under its file's path. Claude Code shows the reason to the
-  main session, which keeps working instead of ending the turn.
+  returns `{"decision": "block", "reason": ...}`; the reason says which push this is
+  (`push 1/3`) and lists every unmet gate id with its status, grouped under its file's
+  path. Claude Code shows the reason to the main session, which keeps working instead
+  of ending the turn.
 - A file that does not match the schema (not UTF-8 JSON, larger than 1 MB, a missing
   or mistyped field, an unknown `kind` or `status`, an unparsable `ranAt`) also
   blocks; the reason names the file and its first problem, so a typo cannot switch
   enforcement off unnoticed.
+- Legitimate pauses end the turn with no decision and spend no push: a `Stop` event
+  that carries `agent_id` (a subagent's; only the main session is gated); a non-empty
+  `background_tasks` (a test run or other work still running in the background); and
+  a stated blocker, a line of `last_assistant_message` that starts with
+  `needs input:` or `failed:` (any case, optionally behind a `-` or `*` bullet, a `>`
+  quote or `**`/`__` bold). A mention inside a sentence is not a blocker line.
+- **Push budget.** It blocks at most three times per episode; the fourth unmet `Stop`
+  returns no decision, and so does every later one until a new episode starts, so a
+  stuck session stops looping and waits for the owner. A new episode starts when a
+  `Stop` finds no unmet gate (the counter is deleted) or when the person sends a
+  prompt (see below). The count is kept per session in
+  `<provost dir>/cache/acceptance/<session_id>.pushes` (beside `cache/facts` and
+  `cache/notifications`; `<provost dir>` is the folder of `provost/config.json`, or of
+  `PROVOST_CONFIG`), replaced atomically on each push. A counter that cannot be read
+  or written, or a session id that cannot name it, ends the turn instead of blocking.
 - Otherwise, and on any internal error (an unreadable transcript, an unexpected
   exception, invalid hook input), it returns no decision and the turn ends: a broken
   check never traps a session. It needs no `provost/config.json` and works with
   handoff off.
+
+The person-prompt reset runs in `hooks/native-facts`' synchronous `UserPromptSubmit`
+registration (which `install.py setup` adds), with bash builtins only: when the
+session's `.pushes` file holds a count, it empties it, which the gate reads as zero.
+This works with handoff off. Limits: without that `UserPromptSubmit` registration
+only a clean `Stop` resets the count. A prompt that starts as a `<task-notification>`
+or an agent message (a subagent's hand-back, optionally behind the "Another Claude
+session sent a message:" wrapper) is not the person's and does not reset it; every
+other submitted prompt does, including any a tool or hook submits on the person's
+behalf, because a hook cannot tell those apart. With the `cache/acceptance` folder
+present (after the first push), `native-facts` also reads every `PostToolUse` event
+with handoff off, only to find that it has nothing to do.
 
 `python install.py setup` registers it; by hand, add it as its own `Stop` entry
 without `"async"`:

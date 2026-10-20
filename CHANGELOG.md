@@ -23,6 +23,15 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   the turn. The schema and settings entry are in the operations guide;
   `install.py setup` registers the hook and `check` reports `not-registered`
   without a synchronous registration.
+- Acceptance gates, exemptions and push budget (#45): the acceptance `Stop` check
+  ends the turn with no decision for a subagent's `Stop` (`agent_id`), while
+  `background_tasks` is non-empty, and when the answer has a `needs input:` or
+  `failed:` line (bullet, quote or bold prefix allowed). It blocks at most three
+  times per episode (the reason says `push 1/3`); a `Stop` with no unmet gate or
+  the person's next prompt (`hooks/native-facts`, `UserPromptSubmit`, also with
+  handoff off) starts a new episode. The per-session count lives in
+  `<provost dir>/cache/acceptance/<session_id>.pushes`; a counter error never
+  blocks.
 - `python install.py setup`: a one-step install that also appends the
   `claudex-native` markers to `CLAUDE.md` when there are none, adds the missing
   hook registrations to `settings.json` (other values kept, invalid JSON
