@@ -247,3 +247,81 @@ class AcceptanceExemptionTests(AcceptanceCase):
         self.counter.mkdir()  # the counter cannot be written
         self.assertEqual(self.stop(), {})
         self.assertEqual(self.stop(session_id="../escape"), {})  # a session id that names no cache file
+
+
+def iso(when):
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(when)) + ".000Z"
+
+
+def clock(when):
+    return time.strftime("%H:%M:%S", time.localtime(when))
+
+
+class AcceptanceStaleTests(AcceptanceCase):
+    """A machine, live or visual gate passed before the main session's last edit is stale (#46)."""
+
+    def setUp(self):
+        super().setUp()
+        self.now = int(time.time())
+        self.calls = 0
+
+    def edit(self, at, path=None, *, tool="Edit", error=False, sidechain=False):
+        """Append a main-session edit tool call and its result, both stamped at `at`, to the transcript."""
+        self.calls += 1
+        call = "toolu_%d" % self.calls
+        key = "notebook_path" if tool == "NotebookEdit" else "file_path"
+        target = path or "/work/repo/src/app.py"  # not self.root: temp dirs are facts.OUTSIDE
+        use = {"type": "assistant", "timestamp": iso(at), "isSidechain": sidechain,
+               "message": {"content": [{"type": "tool_use", "id": call, "name": tool, "input": {key: target}}]}}
+        result = {"type": "user", "timestamp": iso(at), "isSidechain": sidechain,
+                  "message": {"content": [{"type": "tool_result", "tool_use_id": call, "is_error": error,
+                                           "content": "ok"}]}}
+        with open(self.transcript, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(use) + "\n" + json.dumps(result) + "\n")
+
+    def test_pass_before_the_last_edit_is_stale_with_both_times(self):
+        ran, edited = self.now - 40 * 60, self.now - 30 * 60
+        self.edit(self.now - 50 * 60)
+        self.edit(edited, tool="Write")
+        path = self.acceptance("feature.json", [
+            gate("unit-tests", "pass", ranAt=iso(ran)), gate("cli", "pass", kind="live", ranAt=iso(ran)),
+            gate("ui", "pass", kind="visual", ranAt=iso(ran)),
+            gate("code-review", "pass", kind="review", ranAt=iso(ran)), gate("merge", "pass", kind="human")])
+        result = self.stop()
+        self.assertEqual(result.get("decision"), "block", result)
+        reason = result["reason"]
+        self.assertIn(str(path), reason)
+        for gate_id in ("unit-tests", "cli", "ui"):
+            self.assertIn(gate_id + " (stale", reason)
+        self.assertIn(clock(ran), reason)
+        self.assertIn(clock(edited), reason)
+        self.assertNotIn("code-review", reason)  # review and human gates are never stale
+        self.assertNotIn("merge", reason)
+
+    def test_pass_after_the_last_edit_is_not_stale(self):
+        self.edit(self.now - 30 * 60)
+        self.acceptance("feature.json", [gate("unit-tests", "pass", ranAt=iso(self.now - 20 * 60))])
+        self.assertEqual(self.stop(), {})
+
+    def test_pass_without_ran_at_is_stale_only_after_an_edit(self):
+        self.acceptance("feature.json", [gate("unit-tests", "pass")])
+        self.assertEqual(self.stop(), {})
+        edited = self.now - 30 * 60
+        self.edit(edited, tool="NotebookEdit")
+        reason = self.stop()["reason"]
+        self.assertIn("unit-tests (stale", reason)
+        self.assertIn(clock(edited), reason)
+
+    def test_edits_that_do_not_count(self):
+        self.acceptance("feature.json", [gate("unit-tests", "pass")])
+        self.edit(self.now - 30 * 60, "/work/repo/.claude/acceptance/feature.json")  # an acceptance file
+        self.edit(self.now - 30 * 60, ".claude\\acceptance\\other.json", tool="Write")
+        self.edit(self.now - 30 * 60, error=True)  # the edit failed
+        self.edit(self.now - 30 * 60, sidechain=True)  # a subagent's edit
+        self.assertEqual(self.stop(), {})
+
+    def test_unreadable_edit_history_fails_open(self):
+        self.edit(self.now - 30 * 60)
+        self.acceptance("feature.json", [gate("unit-tests", "pass")])
+        with mock.patch("provost_runtime.acceptance.last_edit", side_effect=OSError("boom")):
+            self.assertEqual(self.stop(), {})

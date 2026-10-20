@@ -1,8 +1,8 @@
 """Acceptance gates: the synchronous Stop check behind hooks/acceptance-gate.
 
 A main session that wrote an acceptance file for its task (<cwd>/.claude/acceptance/*.json, schema in
-docs/native-handoff.md, "Acceptance gates") cannot end its turn while a non-human gate is pending or
-failed: check() returns a block decision naming every unmet gate id and its file. Without a session
+docs/native-handoff.md, "Acceptance gates") cannot end its turn while a non-human gate is pending,
+failed or stale (a machine, live or visual pass older than the last main-session edit): check() returns a block decision naming every unmet gate id and its file. Without a session
 acceptance file, or with only human gates unmet, it returns {}. A malformed file is named in the block
 reason, so a typo cannot switch enforcement off unnoticed. A subagent's Stop, running background work
 and a stated blocker line end the turn, and it blocks at most three times per episode (see check()).
@@ -26,6 +26,10 @@ STATUSES = ("pass", "fail", "pending")
 OPTIONAL = ("ranAt", "evidence", "source")
 FILE_LIMIT = 1024 * 1024           # an acceptance file larger than this is reported as malformed
 START_SCAN_BYTES = 8 * 1024 * 1024  # most transcript bytes read to find the session start
+EDIT_SCAN_BYTES = START_SCAN_BYTES  # most transcript bytes (the newest) read to find the last edit
+STALE_KINDS = ("machine", "live", "visual")  # a pass of these goes stale after an edit
+# Cheap byte filter before parsing a line for last_edit(): an edit tool call or a failed tool result.
+EDIT_TOKENS = (b'"Edit"', b'"Write"', b'"NotebookEdit"', b'"is_error"')
 GUIDE = "docs/native-handoff.md, section Acceptance gates"
 
 
@@ -52,7 +56,13 @@ def check(event, config_path=None):
         start = session_start(event)
         if start is None:  # unknown start: earlier sessions' files cannot be told apart, so no decision
             return {}
-        unmet, malformed = [], []
+        unmet, malformed, memo = [], [], []
+
+        def edited():  # read the transcript once, and only when a passed gate could be stale
+            if not memo:
+                memo.append(last_edit(event))
+            return memo[0]
+
         for path in session_files(directory, start):
             try:
                 gates = load(path)["gates"]
@@ -61,7 +71,7 @@ def check(event, config_path=None):
             except Malformed as exc:
                 malformed.append((path, str(exc)))
                 continue
-            held = [(item["id"], state) for item in gates for state in (unmet_state(item),) if state]
+            held = [(item["id"], state) for item in gates for state in (unmet_state(item, edited),) if state]
             if held:
                 unmet.append((path, held))
         counter = _counter(event, config_path)
@@ -122,14 +132,90 @@ def _spend(counter):
     return pushes + 1
 
 
-def unmet_state(gate):
-    """Why a gate holds the turn ("pending" or "fail"), or None when it does not; human gates never do.
+def unmet_state(gate, edited=None):
+    """Why a gate holds the turn ("pending", "fail" or "stale: ..."), or None when it does not; human gates
+    never do.
 
-    Issue #46 adds "stale" here: a machine, live or visual gate whose ranAt predates the session's last
-    main-session edit (taken from the facts layer)."""
+    edited is the session's last main-session edit (an aware datetime, see last_edit()), or a callable
+    returning it, called only for a gate that could be stale. A machine, live or visual gate with status
+    pass is stale when its ranAt is before edited, or when it has no usable ranAt and edited is not None.
+    Review and human gates are never stale."""
     if gate["kind"] == "human":
         return None
-    return gate["status"] if gate["status"] in ("pending", "fail") else None
+    if gate["status"] in ("pending", "fail"):
+        return gate["status"]
+    if gate["kind"] not in STALE_KINDS:
+        return None
+    if callable(edited):
+        edited = edited()
+    if edited is None:
+        return None
+    ran = _when(gate.get("ranAt"))
+    if ran is None:
+        return "stale: no ranAt, last edit at %s" % _clock(edited)
+    if ran < edited:
+        return "stale: ranAt %s is before the last edit at %s" % (_clock(ran), _clock(edited))
+    return None
+
+
+def last_edit(event):
+    """When the main session last edited a file (aware datetime), or None when it did not or it is unknown.
+
+    Source: the session transcript, not the facts layer. The facts spool (cache/facts) exists only with
+    handoff on and is filled by an async PostToolUse hook that can lag this synchronous Stop; the transcript
+    is always there and already holds every tool call before the Stop fires. Counted, mirroring
+    hooks._scan_lines: an Edit, Write or NotebookEdit tool_use on a main-session (non-sidechain) line whose
+    tool_result did not come back as an error, on a path that is neither facts.OUTSIDE nor under
+    .claude/acceptance/ (writing the acceptance file is not a code change); its time is the tool_use line's
+    timestamp. Subagent edits live in their own sidechain transcripts, so they do not count; a gate the
+    main session re-runs after a subagent's work still records a fresh ranAt. Only the newest
+    EDIT_SCAN_BYTES are read: an edit older than that is not seen (fail-open, the gate passes)."""
+    from . import facts
+    from .hooks import EDIT_TOOLS, resolve_transcript  # hooks imports this module
+    path = resolve_transcript(event.get("transcript_path"))
+    if not isinstance(path, str) or not path:
+        return None
+    with open(path, "rb") as handle:
+        size = handle.seek(0, 2)
+        start = max(0, size - EDIT_SCAN_BYTES)
+        handle.seek(start)
+        lines = handle.read().split(b"\n")
+    if start:
+        lines = lines[1:]  # the first line was cut by the tail
+    edits, failed = {}, set()
+    for raw in lines:
+        if not any(token in raw for token in EDIT_TOKENS):
+            continue
+        try:
+            line = json.loads(raw)
+            content = line["message"]["content"]
+        except (ValueError, KeyError, TypeError):
+            continue
+        if line.get("isSidechain") or not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if line.get("type") == "assistant" and block.get("type") == "tool_use" and block.get("name") in EDIT_TOOLS:
+                tool_input = block.get("input") if isinstance(block.get("input"), dict) else {}
+                target = tool_input.get(EDIT_TOOLS[block["name"]])
+                when = _when(line.get("timestamp"))
+                if (isinstance(target, str) and target and when is not None and not facts._outside(target)
+                        and not _acceptance_path(target)):
+                    edits[block.get("id")] = when
+            elif line.get("type") == "user" and block.get("type") == "tool_result" and block.get("is_error"):
+                failed.add(block.get("tool_use_id"))
+    times = [when for call, when in edits.items() if call not in failed]
+    return max(times) if times else None
+
+
+def _acceptance_path(path):
+    return "/.claude/acceptance/" in "/" + path.replace("\\", "/").lower()
+
+
+def _clock(when):
+    """Local wall-clock time for a reason line."""
+    return when.astimezone().strftime("%H:%M:%S")
 
 
 def _directory(event):
@@ -244,8 +330,9 @@ def _reason(unmet, malformed, push):
              "ends and waits for the owner)." % (push, PUSH_BUDGET, PUSH_BUDGET),
              "If you are blocked, say so on its own line starting with `needs input:` or `failed:`."]
     if unmet:
-        lines.append("Run each unmet gate's check and update its status, evidence and ranAt in the file "
-                     "(human gates are the owner's decision and never hold the turn):")
+        lines.append("Run each unmet gate's check and update its status, evidence and ranAt in the file; a "
+                     "stale gate passed before the last edit and must be re-run (human gates are the owner's "
+                     "decision and never hold the turn):")
         lines += ["- %s: %s" % (path, ", ".join("%s (%s)" % held for held in gates)) for path, gates in unmet]
     if malformed:
         lines.append("Malformed acceptance files; fix each to the schema (%s):" % GUIDE)
