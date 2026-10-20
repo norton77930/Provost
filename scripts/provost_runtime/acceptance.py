@@ -60,7 +60,10 @@ def check(event, config_path=None):
 
         def edited():  # read the transcript once, and only when a passed gate could be stale
             if not memo:
-                memo.append(last_edit(event))
+                try:
+                    memo.append(last_edit(event))
+                except Exception:  # unreadable edit history: unknown, so nothing is stale
+                    memo.append(None)
             return memo[0]
 
         for path in session_files(directory, start):
@@ -138,7 +141,8 @@ def unmet_state(gate, edited=None):
 
     edited is the session's last main-session edit (an aware datetime, see last_edit()), or a callable
     returning it, called only for a gate that could be stale. A machine, live or visual gate with status
-    pass is stale when its ranAt is before edited, or when it has no usable ranAt and edited is not None.
+    pass is stale when its ranAt is before edited, or when it has no usable ranAt (missing, or without a
+    time zone, which cannot be compared with the transcript's UTC) and edited is not None.
     Review and human gates are never stale."""
     if gate["kind"] == "human":
         return None
@@ -153,6 +157,8 @@ def unmet_state(gate, edited=None):
     ran = _when(gate.get("ranAt"))
     if ran is None:
         return "stale: no ranAt, last edit at %s" % _clock(edited)
+    if not _zoned(gate["ranAt"]):
+        return "stale: ranAt has no time zone, last edit at %s" % _clock(edited)
     if ran < edited:
         return "stale: ranAt %s is before the last edit at %s" % (_clock(ran), _clock(edited))
     return None
@@ -316,6 +322,11 @@ def load(path):
     return data
 
 
+def _zoned(text):
+    """True when ISO 8601 text carries a zone or offset (call only with text _when() parsed)."""
+    return datetime.fromisoformat(text).tzinfo is not None
+
+
 def _when(text):
     """An aware datetime from ISO 8601 text (naive counts as UTC), or None."""
     try:
@@ -326,13 +337,15 @@ def _when(text):
 
 
 def _reason(unmet, malformed, push):
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     lines = ["Acceptance gates are not passed, so this turn cannot end yet (push %d/%d; after %d the turn "
              "ends and waits for the owner)." % (push, PUSH_BUDGET, PUSH_BUDGET),
              "If you are blocked, say so on its own line starting with `needs input:` or `failed:`."]
     if unmet:
         lines.append("Run each unmet gate's check and update its status, evidence and ranAt in the file; a "
-                     "stale gate passed before the last edit and must be re-run (human gates are the owner's "
-                     "decision and never hold the turn):")
+                     "stale gate passed before the last edit, or has a ranAt without a time zone, and must be "
+                     "re-run (human gates are the owner's decision and never hold the turn). ranAt must be "
+                     "the clock with a zone, in UTC: now %s, e.g. `date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ`:" % now)
         lines += ["- %s: %s" % (path, ", ".join("%s (%s)" % held for held in gates)) for path, gates in unmet]
     if malformed:
         lines.append("Malformed acceptance files; fix each to the schema (%s):" % GUIDE)

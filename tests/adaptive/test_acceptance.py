@@ -1,6 +1,8 @@
+import calendar
 import io
 import json
 import os
+import re
 import time
 from contextlib import redirect_stdout
 from unittest import mock
@@ -325,3 +327,40 @@ class AcceptanceStaleTests(AcceptanceCase):
         self.acceptance("feature.json", [gate("unit-tests", "pass")])
         with mock.patch("provost_runtime.acceptance.last_edit", side_effect=OSError("boom")):
             self.assertEqual(self.stop(), {})
+
+    def test_unreadable_edit_history_still_holds_pending_gates(self):
+        self.acceptance("feature.json", [gate("unit-tests", "pass"), gate("cli", "pending")])
+        with mock.patch("provost_runtime.acceptance.last_edit", side_effect=OSError("boom")):
+            result = self.stop()
+        self.assertEqual(result.get("decision"), "block", result)
+        self.assertIn("cli (pending)", result["reason"])
+        self.assertNotIn("unit-tests", result["reason"])
+
+    def test_naive_ran_at_after_an_edit_is_stale_with_the_zone_message(self):
+        self.edit(self.now - 30 * 60)
+        naive = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(self.now - 20 * 60))  # after the edit, no zone
+        self.acceptance("feature.json", [gate("unit-tests", "pass", ranAt=naive)])
+        result = self.stop()
+        self.assertEqual(result.get("decision"), "block", result)
+        self.assertIn("unit-tests (stale", result["reason"])
+        self.assertIn("ranAt has no time zone", result["reason"])
+
+    def test_naive_ran_at_without_an_edit_is_not_stale(self):
+        naive = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(self.now))
+        self.acceptance("feature.json", [gate("unit-tests", "pass", ranAt=naive)])
+        self.assertEqual(self.stop(), {})
+
+    def test_ran_at_with_an_offset_after_the_edit_is_not_stale(self):
+        self.edit(self.now - 30 * 60)
+        east = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(self.now - 20 * 60 + 8 * HOUR)) + "+08:00"
+        self.acceptance("feature.json", [gate("unit-tests", "pass", ranAt=east)])
+        self.assertEqual(self.stop(), {})
+
+    def test_block_reason_states_the_utc_now(self):
+        self.acceptance("feature.json", [gate("unit-tests")])
+        reason = self.stop()["reason"]
+        match = re.search(r"now (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)", reason)
+        self.assertIsNotNone(match, reason)
+        stamp = calendar.timegm(time.strptime(match.group(1), "%Y-%m-%dT%H:%M:%SZ"))
+        self.assertLess(abs(stamp - time.time()), 120)
+        self.assertIn("ranAt", reason)

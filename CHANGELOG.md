@@ -44,6 +44,11 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   data and screenshot output directory. Advisory only: never a deny; other roles,
   a cited file, subagent dispatches, no session file or any error return nothing.
   `install.py setup` registers it and `check` reports `not-registered` without it.
+- Acceptance gates review fixes: the block reason states the current UTC time and
+  `ranAt` must be that clock with a zone; a passed gate whose `ranAt` has no time
+  zone is stale once the session has edited; an unreadable edit history no longer
+  drops the check, so pending and failed gates still hold the turn; the policy
+  says a `needs input:` or `failed:` line must be on its own line.
 - `python install.py setup`: a one-step install that also appends the
   `claudex-native` markers to `CLAUDE.md` when there are none, adds the missing
   hook registrations to `settings.json` (other values kept, invalid JSON

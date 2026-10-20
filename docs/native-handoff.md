@@ -1095,7 +1095,7 @@ tree is the `cwd` Claude Code sends with the `Stop` event.
 | `gates[].kind` | yes | `machine`, `live`, `visual`, `review` or `human` |
 | `gates[].check` | yes | string: what closes the gate (command, steps, state and fixture data) |
 | `gates[].status` | yes | `pass`, `fail` or `pending` |
-| `gates[].ranAt` | no | ISO 8601 time the check last ran (no zone counts as UTC) |
+| `gates[].ranAt` | no | ISO 8601 time the check last ran, read from the clock in UTC with a zone (`date -u +%Y-%m-%dT%H:%M:%SZ`); a time without a zone makes a passed gate stale once the session has edited |
 | `gates[].evidence` | no | string: result summary, observed output, screenshot path or verdict |
 | `gates[].source` | no | string: path or URL of the mockup, spec or issue the gate is judged against |
 
@@ -1156,9 +1156,11 @@ with handoff off, only to find that it has nothing to do.
 
 A `machine`, `live` or `visual` gate with status `pass` goes **stale** when the main
 session edits a file after it: its `ranAt` is before the session's last edit, or it
-has no `ranAt` and the session has edited anything. A stale gate holds the turn like
+has no `ranAt`, or a `ranAt` without a time zone (it cannot be compared with the
+transcript's UTC), and the session has edited anything. A stale gate holds the turn like
 a pending one; the reason shows both times (local clock) and the gate must be re-run
-with a fresh `ranAt`. `review` and `human` gates never go stale. The last edit is
+with a fresh `ranAt`. The block reason states the current time in UTC (`now ...Z`):
+`ranAt` must be the clock with a zone, never a guessed or local time without one. `review` and `human` gates never go stale. The last edit is
 read from the session transcript (the newest 8 MB): main-session Edit, Write and
 NotebookEdit calls that did not fail. Edits under `.claude/acceptance/` and the
 runtime's usual outside paths (temp dirs, `.claude/projects/`, `.claude/jobs/`) do
