@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 RUNTIME = "provost/runtime/native-pilot-v1"
-HOOKS = ("_python.sh", "runtime", "native-event", "native-facts")
+HOOKS = ("_python.sh", "runtime", "native-event", "native-facts", "acceptance-gate")
 POLICY_SOURCE = "native/CLAUDE.native.md"
 POLICY_TARGET = "CLAUDE.md"
 BEGIN = b"<!-- claudex-native:begin -->"
@@ -33,9 +33,15 @@ END = b"<!-- claudex-native:end -->"
 # A local copy of this file that differs is kept beside it (<name>.local-<UTC time>.bak) before the
 # installer first overwrites it; once such a copy exists, later installs only use the backup dir.
 KEEP_LOCAL = "skills/handoff/SKILL.md"
-HOOK_EVENTS = {"SessionStart": f"{RUNTIME}/hooks/native-event",
-               "PostToolUse": f"{RUNTIME}/hooks/native-facts",
-               "Stop": f"{RUNTIME}/hooks/native-event"}
+# The hooks check requires per event; Stop needs both the async declaration scan and the acceptance gate,
+# PreToolUse the acceptance gate's dispatch reminder.
+HOOK_EVENTS = {"SessionStart": ("native-event",),
+               "PreToolUse": ("acceptance-gate",),
+               "PostToolUse": ("native-facts",),
+               "Stop": ("native-event", "acceptance-gate")}
+# Hooks that count only when registered without "async": true (an async Stop hook cannot block the turn,
+# and an async PreToolUse hook cannot add context to the dispatch).
+SYNC_HOOKS = ("acceptance-gate",)
 SETTINGS = "settings.json"
 RUNTIME_CONFIG = "provost/config.json"
 # What setup registers: (event, matcher or None, hook, extra hook keys), as in docs/native-handoff.md.
@@ -43,10 +49,12 @@ REGISTRATIONS = (
     ("SessionStart", "startup|clear|compact|resume|fork", "native-event", {"timeout": 30}),
     ("PreCompact", "manual|auto", "native-event", {"timeout": 30}),
     ("PostCompact", "manual|auto", "native-event", {"timeout": 30}),
+    ("PreToolUse", "Agent", "acceptance-gate", {"timeout": 30}),
     ("PostToolUse", "Edit|Write|NotebookEdit|Agent|Bash|PowerShell|EnterWorktree|ExitWorktree",
      "native-facts", {"async": True, "timeout": 20}),
     ("UserPromptSubmit", None, "native-facts", {"timeout": 10}),
     ("Stop", None, "native-event", {"async": True, "timeout": 20}),
+    ("Stop", None, "acceptance-gate", {"timeout": 30}),
 )
 DEFAULT_CONFIG = {"schema_version": 1, "mode": "adaptive", "workspace_roots": [], "all_workspaces": True,
                   "max_writers": 2, "burst_writers": 3, "handoff": True}
@@ -210,17 +218,24 @@ def settings_status(config):
     hooks = data.get("hooks") if isinstance(data, dict) else None
     if not isinstance(hooks, dict):
         return "not-registered"
-    for event, suffix in HOOK_EVENTS.items():
-        if not any(_ends_with(text, suffix) for text in _hook_strings(hooks.get(event))):
-            return "not-registered"
+    for event, names in HOOK_EVENTS.items():
+        for name in names:
+            if not _registered(hooks.get(event), name):
+                return "not-registered"
     return "ok"
 
 
-def _hook_strings(groups):
+def _registered(groups, name):
+    """True when a hook entry of groups runs RUNTIME/hooks/<name> (synchronously, for SYNC_HOOKS)."""
+    return any(_ends_with(text, f"{RUNTIME}/hooks/{name}")
+               for text in _hook_strings(groups, sync_only=name in SYNC_HOOKS))
+
+
+def _hook_strings(groups, sync_only=False):
     for group in groups if isinstance(groups, list) else []:
         entries = group.get("hooks") if isinstance(group, dict) else None
         for hook in entries if isinstance(entries, list) else []:
-            if not isinstance(hook, dict):
+            if not isinstance(hook, dict) or (sync_only and hook.get("async") is True):
                 continue
             if isinstance(hook.get("command"), str):
                 yield hook["command"]
@@ -279,12 +294,13 @@ def with_hooks(config):
         groups = hooks.setdefault(event, [])
         if not isinstance(groups, list):
             raise InstallError(f"{SETTINGS}: hooks.{event} is not a list; nothing was changed")
-        if any(_ends_with(text, f"{RUNTIME}/hooks/{name}") for text in _hook_strings(groups)):
+        if _registered(groups, name):
             continue
         group = {} if matcher is None else {"matcher": matcher}
         group["hooks"] = [{"type": "command", "command": f'bash "{runtime}/hooks/{name}"', **extra}]
         groups.append(group)
-        added.append(event)
+        if event not in added:
+            added.append(event)
     if not added:
         return raw, added
     text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"

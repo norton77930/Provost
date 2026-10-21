@@ -14,6 +14,41 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Added
 
+- Acceptance gates, first slice (#44): `hooks/acceptance-gate`, registered for
+  `Stop` as a synchronous hook, blocks the main turn end while an acceptance file
+  the session wrote (`<cwd>/.claude/acceptance/*.json`, modified at or after the
+  session's first transcript timestamp) has a non-`human` gate `pending` or `fail`,
+  or is malformed; the reason lists every unmet gate id and the file path. Without
+  an acceptance directory it exits before starting Python; any internal error ends
+  the turn. The schema and settings entry are in the operations guide;
+  `install.py setup` registers the hook and `check` reports `not-registered`
+  without a synchronous registration.
+- Acceptance gates, exemptions and push budget (#45): the acceptance `Stop` check
+  ends the turn with no decision for a subagent's `Stop` (`agent_id`), while
+  `background_tasks` is non-empty, and when the answer has a `needs input:` or
+  `failed:` line (bullet, quote or bold prefix allowed). It blocks at most three
+  times per episode (the reason says `push 1/3`); a `Stop` with no unmet gate or
+  the person's next prompt (`hooks/native-facts`, `UserPromptSubmit`, also with
+  handoff off) starts a new episode. The per-session count lives in
+  `<provost dir>/cache/acceptance/<session_id>.pushes`; a counter error never
+  blocks.
+- Acceptance gates, stale evidence (#46): a `machine`, `live` or `visual` gate that
+  passed before the session's last main-session edit (read from the transcript) is
+  stale and holds the turn end until it is re-run.
+- Acceptance gates, dispatch reminder (#47): `hooks/acceptance-gate` is also
+  registered for `PreToolUse` with matcher `Agent` (synchronous). When the main
+  session dispatches `implementer`, `implementer-sonnet` or `mech-executor` while
+  the session has an acceptance file and the brief does not mention any session
+  file's name (so `.claude/acceptance/<name>` and absolute paths count), it returns
+  additional context asking to cite the file and, for visual gates, the fixture
+  data and screenshot output directory. Advisory only: never a deny; other roles,
+  a cited file, subagent dispatches, no session file or any error return nothing.
+  `install.py setup` registers it and `check` reports `not-registered` without it.
+- Acceptance gates review fixes: the block reason states the current UTC time and
+  `ranAt` must be that clock with a zone; a passed gate whose `ranAt` has no time
+  zone is stale once the session has edited; an unreadable edit history no longer
+  drops the check, so pending and failed gates still hold the turn; the policy
+  says a `needs input:` or `failed:` line must be on its own line.
 - `python install.py setup`: a one-step install that also appends the
   `claudex-native` markers to `CLAUDE.md` when there are none, adds the missing
   hook registrations to `settings.json` (other values kept, invalid JSON

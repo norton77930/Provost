@@ -80,7 +80,7 @@ python Provost/install.py setup
 
 - 把政策、角色、skill 和 runtime 複製到 `~/.claude`（和 `install` 相同）；
 - `~/.claude/CLAUDE.md` 沒有標記時，在檔尾補上 `<!-- claudex-native:begin -->` / `<!-- claudex-native:end -->`（政策只會寫在兩行之間；標記格式有誤會直接拒絕）；
-- `~/.claude/settings.json` 缺少的 hook 註冊會補上 6 條（內容見 [README.md 的 Install](README.md#install)）。檔案裡其他內容都保留，重新以 2 格縮排寫回；不是合法 JSON 的檔案會拒絕處理，也絕不印出檔案裡的任何值；
+- `~/.claude/settings.json` 缺少的 hook 註冊會補上 8 條（內容見 [README.md 的 Install](README.md#install)）。檔案裡其他內容都保留，重新以 2 格縮排寫回；不是合法 JSON 的檔案會拒絕處理，也絕不印出檔案裡的任何值；
 - `~/.claude/provost/config.json` 不存在時，寫入開啟 handoff 的預設值。
 
 每個要改的檔案都先備份到 `~/.claude/provost/backups/install-<UTC 時間>/`，附 `manifest.json`；失敗會自動回滾。重跑 `setup` 不會再改任何東西。第一次覆蓋內容不同的本機 `skills/handoff/SKILL.md` 時，會先在旁邊另存一份 `SKILL.md.local-<UTC 時間>.bak`。`settings.json` 的備份是完整副本（含其中的憑證），備份不會自動清除。安裝程式支援 `CLAUDE_CONFIG_DIR` 和 `--config-dir`；hook 本身讀的是 `~/.claude/provost/config.json`，除非用 `PROVOST_CONFIG` 指到別處。
@@ -120,6 +120,7 @@ Provost 是一套每天實際在用的 Claude Code 設定的正本。主 session
 | `implementer` | opus | medium | + Write, Edit, Bash | 有設計選擇的 slice；困難的以 `high` 派 |
 | `general-purpose` | opus | medium | Agent 以外全部 | 其他角色都不適合的有界非程式工作 |
 | `code-reviewer` | fable | high | Read, Glob, Grep | 風險觸發的全新 context 審查 |
+| `acceptance-verifier` | sonnet | high | Read, Glob | 對照來源判定 visual、live 與門檻 gate，回報 PASS、ISSUES 或 BLOCKED |
 | `architecture-reviewer` | fable | high | Read, Glob, Grep | 對外介面或邊界改變時的審查 |
 
 reviewer 只有在明確遇到 Fable 額度用完的錯誤時，才改用 `opus`。
@@ -133,7 +134,7 @@ runtime 在 `~/.claude/provost/handoffs` 為每個 session 保存一條 sealed �
 | 路徑 | 內容 | 安裝到（`~/.claude` 底下） |
 |---|---|---|
 | [`native/CLAUDE.native.md`](native/CLAUDE.native.md) | 編排政策 | `CLAUDE.md` 中 `claudex-native` 標記之間 |
-| [`agents/`](agents/) | 8 個 subagent 角色 | `agents/` |
+| [`agents/`](agents/) | 9 個 subagent 角色 | `agents/` |
 | [`hooks/`](hooks/)、[`scripts/provost_runtime/`](scripts/provost_runtime/) | handoff runtime 與 hook | `provost/runtime/native-pilot-v1/` |
 | [`skills/verification-before-completion/`](skills/verification-before-completion/) | 宣告完成前的驗證紀律 | `skills/` |
 | [`skills/handoff/`](skills/handoff/) | `/handoff` skill（存檔、接續、搜尋） | `skills/handoff/` |

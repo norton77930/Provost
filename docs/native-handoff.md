@@ -918,10 +918,12 @@ migrated entries as they are.
 
 ## Install and rollout
 
-A new installation uses `python install.py setup`, which also registers all six
-hooks (SessionStart, PreCompact, PostCompact, PostToolUse, UserPromptSubmit, Stop)
-in `settings.json` and writes `provost/config.json`. `python install.py install` is
-for upgrading an existing installation and never touches `settings.json`. The full
+A new installation uses `python install.py setup`, which also registers all seven
+hook entries (SessionStart, PreCompact, PostCompact, PostToolUse, UserPromptSubmit,
+and Stop twice: the async declaration scan and the synchronous
+[acceptance gate](#acceptance-gates)) in `settings.json` and writes
+`provost/config.json`. `python install.py install` is for upgrading an existing
+installation and never touches `settings.json`. The full
 registration JSON is under [Install](../README.md#install) in the README.
 
 `python install.py install` copies the runtime and the repository's `/handoff` skill
@@ -1054,7 +1056,8 @@ PreCompact and PostCompact); the JSON below is for registering them by hand.
 ```
 
 `python install.py check` reports `settings: not-registered` until the
-`SessionStart`, `PostToolUse` and `Stop` registrations are all present.
+`SessionStart`, `PostToolUse` and both `Stop` registrations (this one and the
+synchronous [acceptance gate](#acceptance-gates)) are all present.
 
 Do not register either hook for `SubagentStop`. That event's context is delivered
 to the subagent's own conversation and keeps the subagent running, so it would loop
@@ -1063,3 +1066,164 @@ the worker instead of reaching main.
 `hooks/native-reminder` has been removed. It used to remind on `PostToolUse(Agent)`
 synchronously, which cost every dispatch about 0.6 s; `native-facts` took over its
 reminders. Remove any registration that still points at it.
+
+## Acceptance gates
+
+A non-simple task can carry an **acceptance file**: the list of gates the main
+session must pass before it reports the task done. The main session writes it with
+the Write tool as `<working tree>/.claude/acceptance/<task>.json`, where the working
+tree is the `cwd` Claude Code sends with the `Stop` event.
+
+```json
+{
+  "task": "Chat panel matches the feature-020 mockup",
+  "gates": [
+    {"id": "unit-tests", "kind": "machine", "check": "npm test", "status": "pass",
+     "ranAt": "2026-10-21T09:12:00Z", "evidence": "212 passed", "source": "docs/spec.md"},
+    {"id": "panel-dark-zh", "kind": "visual", "check": "panel, dark theme, zh-TW, fixture: 3 sites",
+     "status": "pending", "source": "design/feature-020.png"},
+    {"id": "merge", "kind": "human", "check": "merge the PR", "status": "pending"}
+  ]
+}
+```
+
+| Field | Required | Value |
+|---|---|---|
+| `task` | yes | string: the task the gates accept |
+| `gates` | yes | list of gate objects (may be empty) |
+| `gates[].id` | yes | non-empty string, named in the block reason |
+| `gates[].kind` | yes | `machine`, `live`, `visual`, `review` or `human` |
+| `gates[].check` | yes | string: what closes the gate (command, steps, state and fixture data) |
+| `gates[].status` | yes | `pass`, `fail` or `pending` |
+| `gates[].ranAt` | no | ISO 8601 time the check last ran, read from the clock in UTC with a zone (`date -u +%Y-%m-%dT%H:%M:%SZ`); a time without a zone makes a passed gate stale once the session has edited |
+| `gates[].evidence` | no | string: result summary, observed output, screenshot path or verdict |
+| `gates[].source` | no | string: path or URL of the mockup, spec or issue the gate is judged against |
+
+Other keys are ignored. `human` gates (release, tag, merge and other outward
+actions) are the owner's decision and never hold the turn.
+
+`hooks/acceptance-gate`, registered for `Stop` as a **synchronous** hook (beside
+`native-event`'s async `Stop` registration, which keeps the 分類 declaration scan),
+answers at every main-turn end:
+
+- No `<cwd>/.claude/acceptance` directory: the bash part exits 0 with no output
+  before any interpreter starts. This is the common case and costs no Python start.
+- Otherwise the runtime reads every `*.json` file in that directory whose
+  modification time is at or after the session start, which is the first timestamped
+  line of the session's transcript. A resume or compaction appends to the same
+  transcript, so a resumed session keeps its own files; files from earlier sessions
+  (and from before a `/clear`) are ignored.
+- While any such file has a non-`human` gate whose status is `pending` or `fail`, it
+  returns `{"decision": "block", "reason": ...}`; the reason says which push this is
+  (`push 1/3`) and lists every unmet gate id with its status, grouped under its file's
+  path. Claude Code shows the reason to the main session, which keeps working instead
+  of ending the turn.
+- A file that does not match the schema (not UTF-8 JSON, larger than 1 MB, a missing
+  or mistyped field, an unknown `kind` or `status`, an unparsable `ranAt`) also
+  blocks; the reason names the file and its first problem, so a typo cannot switch
+  enforcement off unnoticed.
+- Legitimate pauses end the turn with no decision and spend no push: a `Stop` event
+  that carries `agent_id` (a subagent's; only the main session is gated); a non-empty
+  `background_tasks` (a test run or other work still running in the background); and
+  a stated blocker, a line of `last_assistant_message` that starts with
+  `needs input:` or `failed:` (any case, optionally behind a `-` or `*` bullet, a `>`
+  quote or `**`/`__` bold). A mention inside a sentence is not a blocker line.
+- **Push budget.** It blocks at most three times per episode; the fourth unmet `Stop`
+  returns no decision, and so does every later one until a new episode starts, so a
+  stuck session stops looping and waits for the owner. A new episode starts when a
+  `Stop` finds no unmet gate (the counter is deleted) or when the person sends a
+  prompt (see below). The count is kept per session in
+  `<provost dir>/cache/acceptance/<session_id>.pushes` (beside `cache/facts` and
+  `cache/notifications`; `<provost dir>` is the folder of `provost/config.json`, or of
+  `PROVOST_CONFIG`), replaced atomically on each push. A counter that cannot be read
+  or written, or a session id that cannot name it, ends the turn instead of blocking.
+- Otherwise, and on any internal error (an unreadable transcript, an unexpected
+  exception, invalid hook input), it returns no decision and the turn ends: a broken
+  check never traps a session. It needs no `provost/config.json` and works with
+  handoff off.
+
+The person-prompt reset runs in `hooks/native-facts`' synchronous `UserPromptSubmit`
+registration (which `install.py setup` adds), with bash builtins only: when the
+session's `.pushes` file holds a count, it empties it, which the gate reads as zero.
+This works with handoff off. Limits: without that `UserPromptSubmit` registration
+only a clean `Stop` resets the count. A prompt that starts as a `<task-notification>`
+or an agent message (a subagent's hand-back, optionally behind the "Another Claude
+session sent a message:" wrapper) is not the person's and does not reset it; every
+other submitted prompt does, including any a tool or hook submits on the person's
+behalf, because a hook cannot tell those apart. With the `cache/acceptance` folder
+present (after the first push), `native-facts` also reads every `PostToolUse` event
+with handoff off, only to find that it has nothing to do.
+
+A `machine`, `live` or `visual` gate with status `pass` goes **stale** when the main
+session edits a file after it: its `ranAt` is before the session's last edit, or it
+has no `ranAt`, or a `ranAt` without a time zone (it cannot be compared with the
+transcript's UTC), and the session has edited anything. A stale gate holds the turn like
+a pending one; the reason shows both times (local clock) and the gate must be re-run
+with a fresh `ranAt`. The block reason states the current time in UTC (`now ...Z`):
+`ranAt` must be the clock with a zone, never a guessed or local time without one. `review` and `human` gates never go stale. The last edit is
+read from the session transcript (the newest 8 MB): main-session Edit, Write and
+NotebookEdit calls that did not fail. Edits under `.claude/acceptance/` and the
+runtime's usual outside paths (temp dirs, `.claude/projects/`, `.claude/jobs/`) do
+not count, and neither do subagent edits, which are recorded in their own
+transcripts. If the edit history cannot be read, only pending and failed gates hold
+the turn.
+
+`python install.py setup` registers it; by hand, add it as its own `Stop` entry
+without `"async"`:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {"hooks": [
+        {"type": "command", "command": "bash \"<runtime>/hooks/native-event\"", "async": true, "timeout": 20}
+      ]},
+      {"hooks": [
+        {"type": "command", "command": "bash \"<runtime>/hooks/acceptance-gate\"", "timeout": 30}
+      ]}
+    ]
+  }
+}
+```
+
+`python install.py check` reports `settings: not-registered` while the synchronous
+registration is missing; an `acceptance-gate` entry marked `"async": true` does not
+count, because an async hook cannot block. Do not register it for `SubagentStop`.
+
+### Dispatch reminder
+
+The same script, registered for `PreToolUse` with matcher `Agent` (also synchronous),
+reminds the main session to cite the acceptance file in an implementation brief. It
+adds context at dispatch time and never denies, asks or blocks one:
+
+- It speaks only when `tool_input.subagent_type` is `implementer`,
+  `implementer-sonnet` or `mech-executor`, the session has an acceptance file (the
+  same files and session start as the `Stop` check; a malformed file still counts),
+  and `tool_input.prompt` cites none of them.
+- **Citing** means the prompt contains a session file's name, for example
+  `feature.json`. That also matches `.claude/acceptance/feature.json` and an absolute
+  path, since both end in the name; backslashes and case are ignored. A longer name
+  (`myfeature.json`, `feature.json.bak`) is not a citation. Mentioning any one of the
+  session's files is enough.
+- The reply is `{"hookSpecificOutput": {"hookEventName": "PreToolUse",
+  "additionalContext": "..."}}`: one or two sentences naming the file path(s) to cite
+  and, when a file has `visual` gates, asking for the fixture data each screenshot
+  needs and the screenshot output directory.
+- It returns `{}` for any other role, a cited file, no acceptance directory or session
+  file, a dispatch made by a subagent (`agent_id`), a missing prompt, and on any
+  internal error.
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "Agent", "hooks": [
+        {"type": "command", "command": "bash \"<runtime>/hooks/acceptance-gate\"", "timeout": 30}
+      ]}
+    ]
+  }
+}
+```
+
+`python install.py setup` registers it, and `check` reports `settings: not-registered`
+while it is missing or marked `"async": true`.
