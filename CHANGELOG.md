@@ -100,6 +100,13 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- Policy follow-ups from a prompt audit: the Claudex bridge session scope and the
+  `claudex-foreman` suggestion are gone, since the bridge is no longer used; the
+  §6 mockup step applies before any spec, including a moderate task's Completion
+  Contract; discussion uses `/grill-with-docs` in a repo and `/grill-me` outside
+  one; §7 states what `/implement-spec` authorizes (its integration branch,
+  worktrees and draft PR, not a merge into the default branch); §10 drops
+  "pilot" from its heading.
 - Policy §6 covers UI work without a design mockup: each state becomes a `live`
   gate judged against the spec or issue, never a `visual` gate with nothing to
   compare against. When the look matters, a mockup is settled after `grilling`
