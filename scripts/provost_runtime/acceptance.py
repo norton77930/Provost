@@ -1,7 +1,7 @@
 """Acceptance gates: the synchronous Stop check behind hooks/acceptance-gate.
 
 A main session that wrote an acceptance file for its task (<cwd>/.claude/acceptance/*.json, schema in
-docs/native-handoff.md, "Acceptance gates") cannot end its turn while a non-human gate is pending,
+<runtime root>/docs/native-handoff.md, "Acceptance gates") cannot end its turn while a non-human gate is pending,
 failed or stale (a machine, live or visual pass older than the last main-session edit): check() returns a block decision naming every unmet gate id and its file. Without a session
 acceptance file, or with only human gates unmet, it returns {}. A malformed file is named in the block
 reason, so a typo cannot switch enforcement off unnoticed. A subagent's Stop, running background work
@@ -10,7 +10,7 @@ Any internal error returns {}: a broken check must never trap a session.
 """
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DIRECTORY = (".claude", "acceptance")
@@ -28,9 +28,11 @@ FILE_LIMIT = 1024 * 1024           # an acceptance file larger than this is repo
 START_SCAN_BYTES = 8 * 1024 * 1024  # most transcript bytes read to find the session start
 EDIT_SCAN_BYTES = START_SCAN_BYTES  # most transcript bytes (the newest) read to find the last edit
 STALE_KINDS = ("machine", "live", "visual")  # a pass of these goes stale after an edit
+FUTURE_SLACK = timedelta(minutes=5)  # a zoned ranAt further ahead of now than this is a mislabelled local time
 # Cheap byte filter before parsing a line for last_edit(): an edit tool call or a failed tool result.
 EDIT_TOKENS = (b'"Edit"', b'"Write"', b'"NotebookEdit"', b'"is_error"')
-GUIDE = "docs/native-handoff.md, section Acceptance gates"
+# The runtime root is the parent of scripts/, in the repo checkout and in the installed runtime alike.
+GUIDE = "%s, section Acceptance gates" % (Path(__file__).resolve().parents[2] / "docs" / "native-handoff.md")
 
 
 class Malformed(ValueError):
@@ -142,7 +144,9 @@ def unmet_state(gate, edited=None):
     edited is the session's last main-session edit (an aware datetime, see last_edit()), or a callable
     returning it, called only for a gate that could be stale. A machine, live or visual gate with status
     pass is stale when its ranAt is before edited, or when it has no usable ranAt (missing, or without a
-    time zone, which cannot be compared with the transcript's UTC) and edited is not None.
+    time zone, which cannot be compared with the transcript's UTC) and edited is not None. Independent of
+    any edit, a zoned ranAt more than FUTURE_SLACK after the current UTC time is stale too: it is local time
+    labelled UTC (Windows PowerShell's `date -u`), which would always look later than the last edit.
     Review and human gates are never stale."""
     if gate["kind"] == "human":
         return None
@@ -150,11 +154,13 @@ def unmet_state(gate, edited=None):
         return gate["status"]
     if gate["kind"] not in STALE_KINDS:
         return None
+    ran = _when(gate.get("ranAt"))
+    if ran is not None and _zoned(gate["ranAt"]) and ran > datetime.now(timezone.utc) + FUTURE_SLACK:
+        return "stale: ranAt %s is later than now, likely local time labelled UTC" % _clock(ran)
     if callable(edited):
         edited = edited()
     if edited is None:
         return None
-    ran = _when(gate.get("ranAt"))
     if ran is None:
         return "stale: no ranAt, last edit at %s" % _clock(edited)
     if not _zoned(gate["ranAt"]):
@@ -343,9 +349,11 @@ def _reason(unmet, malformed, push):
              "If you are blocked, say so on its own line starting with `needs input:` or `failed:`."]
     if unmet:
         lines.append("Run each unmet gate's check and update its status, evidence and ranAt in the file; a "
-                     "stale gate passed before the last edit, or has a ranAt without a time zone, and must be "
+                     "stale gate passed before the last edit, has a ranAt without a time zone, or has a ranAt later than now, and must be "
                      "re-run (human gates are the owner's decision and never hold the turn). ranAt must be "
-                     "the clock with a zone, in UTC: now %s, e.g. `date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ`:" % now)
+                     "the clock read from a command, in UTC: now %s; Bash `date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ`, "
+                     "PowerShell `(Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')` (its `date -u` "
+                     "prints local time labelled Z, which is stale). Guide: %s. Unmet gates:" % (now, GUIDE))
         lines += ["- %s: %s" % (path, ", ".join("%s (%s)" % held for held in gates)) for path, gates in unmet]
     if malformed:
         lines.append("Malformed acceptance files; fix each to the schema (%s):" % GUIDE)
