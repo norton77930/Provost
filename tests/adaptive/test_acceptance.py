@@ -5,6 +5,7 @@ import os
 import re
 import time
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest import mock
 
 from _support import REPO, FixtureCase
@@ -364,3 +365,32 @@ class AcceptanceStaleTests(AcceptanceCase):
         stamp = calendar.timegm(time.strptime(match.group(1), "%Y-%m-%dT%H:%M:%SZ"))
         self.assertLess(abs(stamp - time.time()), 120)
         self.assertIn("ranAt", reason)
+
+    def test_future_ran_at_is_stale_even_without_an_edit(self):
+        self.acceptance("feature.json", [gate("ui", "pass", kind="visual", ranAt=iso(self.now + 8 * HOUR))])
+        result = self.stop()
+        self.assertEqual(result.get("decision"), "block", result)
+        self.assertIn("ui (stale", result["reason"])
+        self.assertIn("later than now", result["reason"])
+        self.assertIn("local time", result["reason"])
+
+    def test_ran_at_one_minute_ahead_is_not_stale(self):
+        self.acceptance("feature.json", [gate("ui", "pass", kind="visual", ranAt=iso(self.now + 60))])
+        self.assertEqual(self.stop(), {})
+
+    def test_block_reason_gives_the_bash_and_powershell_clock_commands(self):
+        self.acceptance("feature.json", [gate("unit-tests")])
+        reason = self.stop()["reason"]
+        self.assertIn("date -u +%Y-%m-%dT%H:%M:%SZ", reason)
+        self.assertIn("(Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')", reason)
+
+    def test_block_reason_guide_path_is_absolute_and_exists(self):
+        self.acceptance("feature.json", [gate("unit-tests")])
+        self.acceptance("broken.json", None, raw="{")
+        reason = self.stop()["reason"]
+        match = re.search(r"Guide: (.+?docs[/\\]native-handoff\.md)", reason)
+        self.assertIsNotNone(match, reason)
+        guide = Path(match.group(1))
+        self.assertTrue(guide.is_absolute(), guide)
+        self.assertTrue(guide.exists(), guide)
+        self.assertEqual(guide.resolve(), (REPO / "docs" / "native-handoff.md").resolve())

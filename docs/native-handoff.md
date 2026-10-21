@@ -1095,7 +1095,7 @@ tree is the `cwd` Claude Code sends with the `Stop` event.
 | `gates[].kind` | yes | `machine`, `live`, `visual`, `review` or `human` |
 | `gates[].check` | yes | string: what closes the gate (command, steps, state and fixture data) |
 | `gates[].status` | yes | `pass`, `fail` or `pending` |
-| `gates[].ranAt` | no | ISO 8601 time the check last ran, read from the clock in UTC with a zone (`date -u +%Y-%m-%dT%H:%M:%SZ`); a time without a zone makes a passed gate stale once the session has edited |
+| `gates[].ranAt` | no | ISO 8601 time the check last ran, read from the clock in UTC with a zone: `date -u +%Y-%m-%dT%H:%M:%SZ` in Bash, `(Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')` in PowerShell (where `date -u` prints local time labelled `Z`); a time without a zone makes a passed gate stale once the session has edited, and a zoned time more than 5 minutes ahead of now is stale too |
 | `gates[].evidence` | no | string: result summary, observed output, screenshot path or verdict |
 | `gates[].source` | no | string: path or URL of the mockup, spec or issue the gate is judged against |
 
@@ -1160,7 +1160,7 @@ has no `ranAt`, or a `ranAt` without a time zone (it cannot be compared with the
 transcript's UTC), and the session has edited anything. A stale gate holds the turn like
 a pending one; the reason shows both times (local clock) and the gate must be re-run
 with a fresh `ranAt`. The block reason states the current time in UTC (`now ...Z`):
-`ranAt` must be the clock with a zone, never a guessed or local time without one. `review` and `human` gates never go stale. The last edit is
+`ranAt` must be the clock with a zone, never a guessed or local time without one. A zoned `ranAt` more than 5 minutes ahead of now is stale whether or not the session edited: it is local time labelled UTC (Windows PowerShell's `date -u` prints local time with a literal `Z`), and the reason says it is later than now; use the PowerShell command in the field table instead. `review` and `human` gates never go stale. The last edit is
 read from the session transcript (the newest 8 MB): main-session Edit, Write and
 NotebookEdit calls that did not fail. Edits under `.claude/acceptance/` and the
 runtime's usual outside paths (temp dirs, `.claude/projects/`, `.claude/jobs/`) do

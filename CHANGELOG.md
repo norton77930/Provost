@@ -49,6 +49,15 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   zone is stale once the session has edited; an unreadable edit history no longer
   drops the check, so pending and failed gates still hold the turn; the policy
   says a `needs input:` or `failed:` line must be on its own line.
+- Acceptance gates clock and guide path: a passed `machine`, `live` or `visual`
+  gate whose zoned `ranAt` is more than 5 minutes after the current UTC time is
+  stale even without an edit (Windows PowerShell's `date -u` prints local time
+  labelled `Z`); the block reason gives both the Bash and the PowerShell clock
+  commands and the absolute path of the operations guide, computed from the
+  runtime root so it resolves in the installed runtime. The policy and
+  `acceptance-verifier` point at `~/.claude/provost/runtime/native-pilot-v1/docs/native-handoff.md`,
+  and the policy sends the judging of captured `visual`, `live` and threshold
+  evidence, not its capture, to `acceptance-verifier`.
 - `python install.py setup`: a one-step install that also appends the
   `claudex-native` markers to `CLAUDE.md` when there are none, adds the missing
   hook registrations to `settings.json` (other values kept, invalid JSON
