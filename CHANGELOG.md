@@ -100,6 +100,11 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- Policy §6 covers UI work without a design mockup: each state becomes a `live`
+  gate judged against the spec or issue, never a `visual` gate with nothing to
+  compare against. When the look matters, a mockup is settled after `grilling`
+  and before `/to-spec` with `prototype`, and a screenshot per state is saved as
+  the gate `source`.
 - Handoff records are state cards per (session, work_id) (#18): `record` checks
   `--expected` against, appends to and trims (newest 5) only the chain of the
   payload's work_id, so recording one work no longer overwrites another's. The
