@@ -98,7 +98,7 @@ not this writer budget. Project restrictions remain binding.
 Mid-task discovery that difficulty or risk exceeds the classification:
 
 - **Difficulty escalation.** A worker reports unresolved design or implementation blockers to main. Main clarifies the brief, re-dispatches to a stronger implementer role (§10), or takes over with a concrete reason; it does not expand scope or bypass risk gates. Moving to a stronger role alone does not require another user approval.
-- **Risk ↑ = governance question.** Always stop, regardless of authorization. Re-declare the classification with the matched R1/R2 trigger and follow §3.
+- **Risk escalation.** Re-declare the classification with the matched trigger. R1 found mid-task: finish the work, then dispatch the matching reviewer, as §3 does for R1 declared up front. R2 found mid-task: stop regardless of earlier authorization and follow §3, because R2 is a governance question for the user.
 
 ## 6. Completion Contract (non-simple tasks)
 

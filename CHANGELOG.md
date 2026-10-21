@@ -100,6 +100,9 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- Policy §5 risk escalation agrees with §3: R1 found mid-task is finished and
+  then reviewed, as when declared up front; only R2 found mid-task stops for the
+  user. The old rule stopped on any risk increase, which contradicted §3's R1.
 - Policy follow-ups from a prompt audit: the Claudex bridge session scope and the
   `claudex-foreman` suggestion are gone, since the bridge is no longer used; the
   §6 mockup step applies before any spec, including a moderate task's Completion
