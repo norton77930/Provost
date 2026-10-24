@@ -8,13 +8,13 @@ disable-model-invocation: true
 # Provost handoff
 
 Use the runtime path, workspace root and session ID supplied by the active
-adaptive SessionStart context. If unavailable, run the documented doctor or ask
+SessionStart context (its `Runtime:`, `Workspace:` and `Session:` lines). If unavailable, run the documented doctor or ask
 for the missing session context; do not invent an ID. This skill does not enable
 Provost, change personal settings, or authorize project-rule changes.
 
 Invoke the runtime using Bash with separately quoted arguments:
-`bash "<plugin-root>/hooks/runtime" <command> ...`.
-A Python invocation is also documented in the pilot guide.
+`bash "<runtime>" <command> ...`, where `<runtime>` is the SessionStart `Runtime:` path.
+A Python invocation is also documented in the operations guide (the SessionStart `Operations guide:` path).
 
 ## Save
 

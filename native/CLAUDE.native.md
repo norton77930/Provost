@@ -14,7 +14,7 @@ Examples: `分類:簡單/無風險/證據:測試 → 直接做,不派角色` · 
 
 The user may correct the classification at any time; adopt the correction immediately and proceed on it. Purely conversational turns (a question, a single-fact lookup) need no declaration — just answer.
 
-**Communication cadence.** Before your first tool call, say in one sentence what you're about to do. While working, give a brief update when you find something important, dispatch a role, or change direction — name the role and why. When you finish, lead with the outcome: the first sentence answers "what happened", supporting detail after it.
+**Communication cadence.** Before your first tool call other than `PushNotification`, say in one sentence what you're about to do. While working, give a brief update when you find something important, dispatch a role, or change direction — name the role and why. When you finish, lead with the outcome: the first sentence answers "what happened", supporting detail after it.
 
 ## 2. Difficulty axis — who implements, with how much effort
 
