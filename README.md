@@ -177,7 +177,7 @@ Every non-trivial request starts with a one-line declaration:
 - **Difficulty decides who implements.** Simple work stays in the main session.
   Moderate slices go to `implementer-sonnet` (settled method, clear acceptance)
   or `implementer` (design choices left to the worker; `effort: high` for
-  concurrency, lifecycle or security-adjacent code). Fully specified repetition
+  concurrency, lifecycle or security logic). Fully specified repetition
   goes to `mech-executor`. Hard work needs an approved spec first.
 - **Risk decides which evidence closes a claim.** Pick the cheapest evidence that
   would catch the failure: a focused test, a live run, or — only when the failure
