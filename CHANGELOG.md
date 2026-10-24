@@ -100,6 +100,11 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- Prompt audit follow-ups: the handoff skill takes the runtime and operations
+  guide paths from the SessionStart `Runtime:` and `Operations guide:` lines
+  instead of a plugin-era `<plugin-root>` placeholder; policy §1 cadence lets
+  the turn-end `PushNotification` come before the one-sentence plan; the
+  implementer roles say "Add tests" where "Commit tests" read like a git commit.
 - `code-reviewer` tags each finding `Important`, `Nit` (at most three) or
   `Pre-existing`, opens its report with the count per tag, cites the file and
   line read for each defect, reads a root `REVIEW.md` when present, and on a
