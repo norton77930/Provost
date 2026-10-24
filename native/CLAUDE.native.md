@@ -135,18 +135,27 @@ Read-only roles (`Explore`, `code-reviewer`, `architecture-reviewer`, `acceptanc
 "implementer" elsewhere in this policy means the implementation family; pick one
 per task, up front, by what the slice needs:
 - `implementer-sonnet` — the default for bounded slices: settled method, bounded
-  scope, clear acceptance, and a RED test that exercises the behavior. Never for
-  concurrency, lifecycle/consistency, security-adjacent code, or a fix whose root
-  cause is still open; those go to `implementer` at `effort: high`.
+  scope, clear acceptance, and a RED test that exercises the behavior. Briefs
+  that already fix what to build belong here: UI slices with an exact spec or
+  mockup, review-fix rounds that list the findings, selector or harness
+  updates, docs whose content the brief supplies. Never for the `effort: high`
+  triggers below.
 - `implementer` — bounded slices whose brief leaves real design choices to the
   worker (interface or structure not settled, or a broad change where those
-  tradeoffs decide quality).
+  tradeoffs decide quality). Name the open choice in the dispatch announcement;
+  if you cannot name one, the slice is `implementer-sonnet`'s.
 - `implementer` dispatched with `effort: high` — complex cross-module reasoning,
-  concurrency, lifecycle/consistency, or significant implementation tradeoffs.
-  Choose it directly when the slice calls for it rather than after a failed
-  attempt, and name the trigger in the dispatch announcement.
-Review needs follow the risk axis for every implementer; a cheaper model is never
-a reason to skip them.
+  concurrency, lifecycle/consistency (state that must stay correct across
+  start, stop, retry or restart; error handling alone is not this), security
+  logic (the slice changes how authentication, authorization, approval,
+  secrets or crypto behave; a rename or text change near such code is not
+  this), or a fix whose root cause is still open (a known defect whose cause is
+  not yet established; a test that might uncover a bug is not this). Choose it
+  directly when the slice calls for it rather than after a failed attempt, and
+  name the trigger in the dispatch announcement.
+Dispatch the role your declaration named; if the choice changes, re-declare
+first. Review needs follow the risk axis for every implementer; a cheaper model
+is never a reason to skip them.
 
 If an `implementer-sonnet` slice causes a blocker or a serious escaped defect,
 say so in that report. If a defect escapes work that `code-reviewer` passed and

@@ -100,6 +100,15 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- Policy §10 routing: a plain `implementer` dispatch names the design choice it
+  leaves open, otherwise the slice is `implementer-sonnet`'s, and fixed-content
+  briefs (exact-spec UI, listed review fixes, selector or harness updates,
+  supplied docs) are named as Sonnet work. The `effort: high` triggers are
+  narrowed: lifecycle excludes plain error handling, security means changing how
+  auth, approval, secrets or crypto behave (not renames nearby), an open root
+  cause needs a known defect, and "significant implementation tradeoffs" is
+  dropped. The dispatched role must match the declaration. An audit of 135 Opus
+  dispatches found 34 of 57 plain `implementer` slices fit Sonnet.
 - Prompt audit follow-ups: the handoff skill takes the runtime and operations
   guide paths from the SessionStart `Runtime:` and `Operations guide:` lines
   instead of a plugin-era `<plugin-root>` placeholder; policy §1 cadence lets
