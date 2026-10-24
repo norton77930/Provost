@@ -100,6 +100,17 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- `code-reviewer` tags each finding `Important`, `Nit` (at most three) or
+  `Pre-existing`, opens its report with the count per tag, cites the file and
+  line read for each defect, reads a root `REVIEW.md` when present, and on a
+  re-review covers only the fix diff without repeating findings. Policy §3: only
+  `Important` findings reopen work, and after two fix-and-review rounds with
+  `Important` findings left, main reconsiders the approach and reports to the
+  user instead of a third round. Policy §10: a defect escaping work that
+  `code-reviewer` passed is reported with the reviewed commit, as a future
+  reviewer eval case. Added this repository's `REVIEW.md` and a "How to revert"
+  section in the PR template. Follows the Claude Code team's code review
+  write-up (review convergence, finding tags, `REVIEW.md`).
 - Policy §5 risk escalation agrees with §3: R1 found mid-task is finished and
   then reviewed, as when declared up front; only R2 found mid-task stops for the
   user. The old rule stopped on any risk increase, which contradicted §3's R1.

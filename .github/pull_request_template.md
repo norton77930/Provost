@@ -8,6 +8,12 @@ What changes for someone who runs `install.py install` after this? Does any hook
 record format, or installer guarantee (fail-soft hooks, record integrity,
 backups and rollback) become weaker? State explicitly if nothing changes.
 
+## How to revert
+
+How does someone undo this after installing it? For example `install.py` rollback
+from its backup, or reverting the merge and reinstalling. State it plainly when
+reverting the merge is enough.
+
 ## Verification
 
 List commands run and current results. Note checks that could not be run.

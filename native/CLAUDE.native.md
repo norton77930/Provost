@@ -39,7 +39,7 @@ For each claim, ask how its failure would show, then pick the cheapest evidence 
 | Invisible to both tests and a live run: cross-module compatibility, error-handling paths, data conversion, concurrency/lifecycle/consistency, security | fresh-context review | `code-reviewer` |
 | An exposed interface or architectural boundary changes | architecture review | `architecture-reviewer` (in addition to the row above) |
 
-**R1 — review-grade:** the claim lands in one of the last two rows. Finish the work, then dispatch the matching reviewer. A frontend or UI-behavior change whose failure is visible in the browser is *not* R1; it closes with live verification.
+**R1 — review-grade:** the claim lands in one of the last two rows. Finish the work, then dispatch the matching reviewer. Only `Important` findings reopen the work; `Nit` and `Pre-existing` findings are follow-ups. A re-review after fixes covers only the fix diff. When `Important` findings remain after two fix-and-review rounds, stop fixing: reconsider the approach and report the open findings to the user instead of starting a third round. A frontend or UI-behavior change whose failure is visible in the browser is *not* R1; it closes with live verification.
 
 **R2 — governance-grade (STOP before implementing):** auth/authorization; credentials, secrets, crypto; payments; schema, serialization, or data migration; breaking changes to a public API or dependency boundary; cross-repo/workspace changes; destructive or irreversible operations (data deletion, release, deploy); formal audit needs or an explicit user request for fixed-scope evidence. On R2: stop, name the matched trigger, and wait for the user to choose the path — typically raising the main session's effort and continuing right here; implementation stays in this lane unless the user says otherwise. Never silently continue. An R2 task is done only after `code-reviewer` (plus `architecture-reviewer` when an architectural boundary is touched) has passed the finished work, and any irreversible operation runs only after that review.
 
@@ -149,7 +149,9 @@ Review needs follow the risk axis for every implementer; a cheaper model is neve
 a reason to skip them.
 
 If an `implementer-sonnet` slice causes a blocker or a serious escaped defect,
-say so in that report.
+say so in that report. If a defect escapes work that `code-reviewer` passed and
+later surfaces as a revert or a bug, say so in the report that finds it, naming
+the reviewed commit, so the miss can become a reviewer eval case.
 
 The user sets main's model and effort. When a design decision, root cause, or
 conflicting evidence would benefit from more depth, say why raising effort or
