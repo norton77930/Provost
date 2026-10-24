@@ -1,8 +1,8 @@
 ---
 name: general-purpose
 description: Handles bounded multi-step tasks that do not fit a dedicated role or require tools unavailable to that role. Prefer existing specialist roles when their scope fits.
-model: opus
-effort: medium
+model: sonnet
+effort: high
 disallowedTools: Agent
 ---
 
