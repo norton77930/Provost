@@ -100,6 +100,12 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- Policy §6 task-type table names what counts as evidence for each type,
+  borrowing the per-type playbooks of pstack (MIT): a bug repro runs on the
+  surface where the bug was reported, a refactoring is pinned before it changes,
+  a performance number needs a baseline, matched builds, repeated runs and a
+  named limiter. A gate passes only on evidence from the surface it names, and
+  its `check`, `source`, baseline or fixture data is never edited to make it pass.
 - §3 review triggers, after an audit of 86 `code-reviewer` dispatches (92% had a
   real trigger; the misfires were live-verifiable windows, R2 labels on
   behavior-preserving work, and reviews dispatched under a stale declaration):
