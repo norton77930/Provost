@@ -204,6 +204,9 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Fixed
 
+- Session facts leave out merge commits, so a PR merged on GitHub and pulled in no
+  longer raises `UNREFERENCED_COMMITS` (2 of 4 false positives in a 10-day audit) or
+  counts as session activity.
 - Hooks run on macOS `/bin/bash` 3.2.
 - `facts.json` never exceeds its size cap when the omitted counters grow.
 - An interpreter inside the project directory is no longer cached when the

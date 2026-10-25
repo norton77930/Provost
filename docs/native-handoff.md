@@ -146,7 +146,9 @@ work_id (for example `{"error": "INCOMPLETE_CHAIN"}`), as before per-chain valid
 
 `facts` holds `path` (the facts.json file), `updated_at`, `last_change_at`, `repos`
 (at most 5: `root`, `branch`, `dirty` listed/`dirty_total` uncommitted entries,
-`commits` made during the session, `error`; in facts.json each commit keeps `hash`,
+`commits` made during the session (merge commits are left out: a merge done on the
+host and pulled in is not session work, and its branch's commits are listed), `error`;
+in facts.json each commit keeps `hash`,
 `subject` and its commit time `ts`), `repos_omitted`, `agents` (dispatch
 count by role), `agents_omitted`, `files`/`files_omitted` (edited repo files kept
 or dropped by the size cap), `outside_repo_count`, and collection health:
