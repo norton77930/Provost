@@ -100,6 +100,14 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- §3 review triggers, after an audit of 86 `code-reviewer` dispatches (92% had a
+  real trigger; the misfires were live-verifiable windows, R2 labels on
+  behavior-preserving work, and reviews dispatched under a stale declaration):
+  a UI change whose failure shows on any screen you can drive (browser, native
+  window, popup, CLI) closes with live verification; auth, secrets and crypto are
+  R2 only when the diff changes how they decide, persist or protect; every
+  reviewer dispatch names its row or R2 trigger; a code deletion that build,
+  typecheck and grep can verify joins the negative list.
 - `install.py` writes a managed file in place when replacing it is denied (seen
   on Windows for `~/.claude/agents/*.md`); the write is still backed up first and
   rolled back like any other.

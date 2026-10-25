@@ -55,9 +55,9 @@ You can. Plain Claude Code is a strong agent. What it does not do on its own is 
 | :--- | :--- | :--- |
 | a rename touches 12 files | the main model edits each file itself | `mech-executor` on Haiku does the batch; the tests close it |
 | a bounded feature is ready to build | the main model writes it at its own price | `implementer-sonnet` builds it: −53–66% build cost at equal review outcomes (34-slice trial) |
-| a change is visible in the UI | done when the code looks right | closes with a live browser check, not a reviewer |
+| a change is visible in the UI | done when the code looks right | closes with a live check (browser, window, popup or CLI), not a reviewer |
 | a change touches error handling, data conversion or concurrency | reviewed only if you ask | `code-reviewer` runs in a fresh context; file count and diff size never trigger review |
-| a change touches auth, secrets, payments or a migration | proceeds like any other | R2: the session stops and waits for your decision |
+| a change alters how auth, secrets or payments behave, or migrates data | proceeds like any other | R2: the session stops and waits for your decision |
 | the context grows past 400K | each call costs about ×2.3 more, and compaction can drop decisions | compact early: PreCompact saves the decisions, PostCompact restores them (44 compactions, no re-explaining) |
 
 Measured results and their limits are under [Evidence so far](#evidence-so-far).
