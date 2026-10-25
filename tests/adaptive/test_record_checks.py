@@ -197,6 +197,44 @@ class RecordChecksTests(FixtureCase):
                                        assignments=[assignment]), out["revision"], "r3")
         self.assertEqual(self.codes(out), [])
 
+    def test_a_read_only_exploration_dispatch_is_never_reported(self):
+        first = self.seeded()
+        self.activity(agents=[("Explore", "survey the lexer", self.later(first)),
+                              ("claude-code-guide", "how hooks work", self.later(first)),
+                              ("plan", "plan the cache", self.later(first)),
+                              ("statusline-setup", "set the line", self.later(first))])
+        out = self.record(self.request(decisions=[{"text": LONG + " after exploring"}]), first["revision"], "r2")
+        self.assertEqual(self.codes(out), [])
+
+    def test_a_role_mention_covers_one_dispatch_not_every_dispatch_of_the_role(self):
+        first = self.seeded()
+        self.activity(agents=[("implementer", "build parser", self.later(first)),
+                              ("implementer", "wire lexer cache", self.later(first, 700))])
+        out = self.record(self.request(decisions=[{"text": LONG + " implementer did build parser"}]),
+                          first["revision"], "r2")
+        self.assertEqual(self.codes(out), ["UNMENTIONED_DISPATCHES"])
+        message = out["warnings"][0]["message"]
+        self.assertIn("implementer: wire lexer cache", message)
+        self.assertNotIn("build parser", message)
+        self.assertIn("1 dispatch(es)", message)
+
+    def test_a_role_mention_does_not_match_inside_a_longer_role_name(self):
+        first = self.seeded()
+        self.activity(agents=[("implementer", "build parser", self.later(first))])
+        out = self.record(self.request(decisions=[{"text": LONG + " implementer-sonnet did it"}]),
+                          first["revision"], "r2")
+        self.assertEqual(self.codes(out), ["UNMENTIONED_DISPATCHES"])
+
+    def test_a_reworded_description_counts_as_mentioned(self):
+        first = self.seeded()
+        self.activity(agents=[("code-reviewer", "build parser", self.later(first))])
+        out = self.record(self.request(decisions=[{"text": LONG + " and the parser build is done"}]),
+                          first["revision"], "r2")
+        self.assertEqual(self.codes(out), [])
+        # One shared word is not enough.
+        out = self.record(self.request(decisions=[{"text": LONG + " and the parser stays"}]), out["revision"], "r3")
+        self.assertEqual(self.codes(out), ["UNMENTIONED_DISPATCHES"])
+
     def test_captured_activity_without_a_new_decision_warns(self):
         first = self.seeded()
         self.activity(files=[("parser.py", self.later(first))])
@@ -306,6 +344,7 @@ class RecordChecksTests(FixtureCase):
         out = self.seeded()
         for field in ("schema_version", "kind", "revision", "payload", "log_entries", "recorded_at"):
             self.assertIn(field, out)
+        self.assertEqual(list(out)[0], "warnings")  # first, so a truncated read still shows it
         self.assertEqual(out["warnings"], [])
         self.assertIsInstance(out["echo"], str)
 
