@@ -265,7 +265,7 @@ def _inspect(git, repo):
     try:
         since = "--since=@%d" % _epoch(repo["first_touched_at"])
         commits = []
-        for line in git(root, "log", since, "-n", str(MAX_COMMITS), "--format=%h%x1f%ct%x1f%s").splitlines():
+        for line in git(root, "log", since, "--no-merges", "-n", str(MAX_COMMITS), "--format=%h%x1f%ct%x1f%s").splitlines():
             parts = line.split("\x1f", 2)
             if len(parts) != 3:
                 continue

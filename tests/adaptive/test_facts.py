@@ -136,6 +136,20 @@ class FoldTests(FactsCase):
         self.assertEqual(entry["dirty"], [])
         self.assertEqual(data["last_change_at"], facts._iso(self.now - 50))
 
+    def test_merge_commits_are_not_listed(self):
+        repo = self.repo("a")
+        self.write(self.edit(repo / "x.py", self.now - 100, repo))
+        base = self.git("rev-parse", "--abbrev-ref", "HEAD", cwd=repo)
+        self.git("checkout", "-q", "-b", "side", cwd=repo)
+        self.commit(repo, "on side", self.now - 60, "y.py")
+        self.git("checkout", "-q", base, cwd=repo)
+        env = dict(os.environ, GIT_AUTHOR_DATE="@%d +0000" % (self.now - 50),
+                   GIT_COMMITTER_DATE="@%d +0000" % (self.now - 50))
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "merge", "-q", "--no-ff",
+                        "-m", "Merge pull request #1", "side"], cwd=repo, env=env, check=True, capture_output=True)
+        entry = self.repo_entry(self.fold(repo), repo)
+        self.assertEqual([c["subject"] for c in entry["commits"]], ["on side"])
+
     def test_restored_file_shows_no_dirty_entry_and_dirty_marks_its_mtime(self):
         repo = self.repo("a")
         self.commit(repo, "add x", self.now - 3000, "x.py")
