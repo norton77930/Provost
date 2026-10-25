@@ -109,8 +109,9 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   reviewer dispatch names its row or R2 trigger; a code deletion that build,
   typecheck and grep can verify joins the negative list.
 - `install.py` writes a managed file in place when replacing it is denied (seen
-  on Windows for `~/.claude/agents/*.md`); the write is still backed up first and
-  rolled back like any other.
+  on Windows for `~/.claude/agents/*.md`); the write still sets the file mode, is
+  backed up first and rolled back like any other, including a write that fails
+  partway.
 - `general-purpose` runs on Sonnet at high effort (was Opus at medium). Its
   work is research, spikes, document comparison and proofreading; output is
   about 7% of its cost, so the saving comes from the model price and high
