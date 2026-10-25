@@ -118,7 +118,7 @@ Provost 是一套每天實際在用的 Claude Code 設定的正本。主 session
 | `test-analyst` | haiku | medium | Read, Glob, Grep, Bash | 跑既有測試、回歸分析 |
 | `implementer-sonnet` | sonnet | high | + Write, Edit, Bash | 預設 implementer：方法已定的有界 slice（TDD） |
 | `implementer` | opus | medium | + Write, Edit, Bash | 有設計選擇的 slice；困難的以 `high` 派 |
-| `general-purpose` | opus | medium | Agent 以外全部 | 其他角色都不適合的有界非程式工作 |
+| `general-purpose` | sonnet | high | Agent 以外全部 | 其他角色都不適合的有界非程式工作 |
 | `code-reviewer` | fable | high | Read, Glob, Grep | 風險觸發的全新 context 審查 |
 | `acceptance-verifier` | sonnet | high | Read, Glob | 對照來源判定 visual、live 與門檻 gate，回報 PASS、ISSUES 或 BLOCKED |
 | `architecture-reviewer` | fable | high | Read, Glob, Grep | 對外介面或邊界改變時的審查 |

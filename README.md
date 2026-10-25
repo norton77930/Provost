@@ -204,7 +204,7 @@ The full text is [`native/CLAUDE.native.md`](native/CLAUDE.native.md).
 | `test-analyst` | haiku | medium | Read, Glob, Grep, Bash | Running existing tests, regression analysis |
 | `implementer-sonnet` | sonnet | high | + Write, Edit, Bash | Default implementer for settled, bounded slices (TDD) |
 | `implementer` | opus | medium | + Write, Edit, Bash | Slices with real design choices; dispatched at `high` for hard ones |
-| `general-purpose` | opus | medium | all but Agent | Bounded non-code work no other role fits |
+| `general-purpose` | sonnet | high | all but Agent | Bounded non-code work no other role fits |
 | `code-reviewer` | fable | high | Read, Glob, Grep | Risk-triggered fresh-context review of a declared claim |
 | `acceptance-verifier` | sonnet | high | Read, Glob | Judging visual, live and threshold gates against their source; reports PASS, ISSUES or BLOCKED |
 | `architecture-reviewer` | fable | high | Read, Glob, Grep | Review when an exposed interface or boundary changes |

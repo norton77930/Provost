@@ -100,6 +100,11 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- `general-purpose` runs on Sonnet at high effort (was Opus at medium). Its
+  work is research, spikes, document comparison and proofreading; output is
+  about 7% of its cost, so the saving comes from the model price and high
+  effort keeps the checking depth. It matches the `implementer-sonnet` setup
+  that passed its trial.
 - Policy §10 routing: a plain `implementer` dispatch names the design choice it
   leaves open, otherwise the slice is `implementer-sonnet`'s, and fixed-content
   briefs (exact-spec UI, listed review fixes, selector or harness updates,
