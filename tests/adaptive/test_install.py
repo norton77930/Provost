@@ -283,6 +283,62 @@ class InstallTests(InstallCase):
         self.assertEqual(after, before)
         self.assertFalse((self.config / RUNTIME).exists())
 
+    def pending(self):
+        return [p for p in self.config.rglob("*") if p.name.startswith(".pending-")]
+
+    def test_atomic_write_falls_back_in_place_when_replace_denied(self):
+        target = self.config / "agents/implementer.md"
+        write(target, "previous implementer, longer than the new one\n")
+
+        def denied(src, dst):
+            raise PermissionError(5, "Access denied")
+
+        with mock.patch.object(install.os, "replace", denied):
+            install.atomic_write(target, b"new\n")
+        self.assertEqual(target.read_bytes(), b"new\n")
+        self.assertEqual(self.pending(), [])
+
+    def test_atomic_write_denied_on_missing_target_propagates(self):
+        target = self.config / "agents/new-role.md"
+
+        def denied(src, dst):
+            raise PermissionError(5, "Access denied")
+
+        with mock.patch.object(install.os, "replace", denied):
+            with self.assertRaises(PermissionError):
+                install.atomic_write(target, b"new\n")
+        self.assertFalse(target.exists())
+        self.assertEqual(self.pending(), [])
+
+    def test_atomic_write_other_replace_error_propagates_and_keeps_target(self):
+        target = self.config / "agents/implementer.md"
+        write(target, "previous implementer\n")
+
+        def full(src, dst):
+            raise OSError("disk full")
+
+        with mock.patch.object(install.os, "replace", full):
+            with self.assertRaises(OSError) as caught:
+                install.atomic_write(target, b"new\n")
+        self.assertNotIsInstance(caught.exception, PermissionError)
+        self.assertEqual(target.read_bytes(), b"previous implementer\n")
+        self.assertEqual(self.pending(), [])
+
+    def test_install_writes_in_place_when_replace_denied_on_agents(self):
+        write(self.config / "agents/implementer.md", "previous implementer\n")
+        real_replace = os.replace
+
+        def denied_on_agents(src, dst):
+            if Path(dst).parent.name == "agents" and Path(dst).exists():
+                raise PermissionError(5, "Access denied")
+            return real_replace(src, dst)
+
+        with mock.patch.object(install.os, "replace", denied_on_agents):
+            code, _, err = self.run_cli("install")
+        self.assertEqual(code, 0, err)
+        self.assertEqual((self.config / "agents/implementer.md").read_bytes(), b"implementer\n")
+        self.assertEqual(self.pending(), [])
+
     def test_backup_phase_failure_says_nothing_changed(self):
         write(self.config / "agents/implementer.md", "previous implementer\n")
         before = self.snapshot()

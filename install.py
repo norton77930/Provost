@@ -327,7 +327,12 @@ def setup_targets(config):
 
 
 def atomic_write(path, data, mode=None):
-    """Replace path atomically: temp file in the same dir, fsync, os.replace."""
+    """Replace path atomically: temp file in the same dir, fsync, os.replace.
+
+    If os.replace is denied onto an existing file (seen on Windows for
+    ~/.claude/agents/*.md), write that file in place instead. That fallback is
+    not atomic; the caller's backup and rollback cover a failure partway.
+    """
     temp = None
     try:
         fd, name = tempfile.mkstemp(prefix=".pending-", dir=path.parent)
@@ -338,7 +343,16 @@ def atomic_write(path, data, mode=None):
             os.fsync(stream.fileno())
         if mode is not None and os.name != "nt":
             os.chmod(temp, mode)
-        os.replace(temp, path)
+        try:
+            os.replace(temp, path)
+        except PermissionError:
+            if not path.exists():
+                raise
+            with open(path, "r+b") as stream:
+                stream.write(data)
+                stream.truncate()
+                stream.flush()
+                os.fsync(stream.fileno())
     finally:
         if temp is not None:
             try:
