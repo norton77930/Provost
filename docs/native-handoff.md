@@ -286,10 +286,16 @@ Soft warnings come back with a successful write as `warnings`, a list of
   work whose hash shares no prefix of at least 7 characters with a hex token
   (7 to 40 characters, case-insensitive) in this record's entries: decision `text`
   and `refs`, evidence `claim` and `ref`.
-- `UNMENTIONED_DISPATCHES`: a subagent dispatch captured since that last record whose
-  role and description both appear nowhere (case-insensitive substring) in this
-  record's entries or card `assignments` (`task`, `agent_id`). This is best effort:
-  naming a role once covers every dispatch of that role.
+- `UNMENTIONED_DISPATCHES`: a subagent dispatch captured since that last record that
+  this record's entries and card `assignments` (`task`, `agent_id`) do not mention.
+  Read-only roles (`Explore`, `claude-code-guide`, `plan`, `statusline-setup`) are
+  never reported. Each dispatch is matched on its own: it counts as mentioned when its
+  description is a case-insensitive substring of those texts, or when at least 2 (and
+  at least half) of its significant description words (3+ characters, or holding a
+  digit) appear there as whole words in any order. Each whole-word mention of the role
+  name (hyphens are word characters, so `implementer` does not match inside
+  `implementer-sonnet`) then covers one more dispatch of that role, the ones matched
+  by description first and then the oldest unmatched ones. This is best effort.
 - `NO_NEW_DECISION`: edits, dispatches or commits were captured since that last record
   but the record appends no decision (skipped duplicates do not count).
 - `LOG_LARGE`: the work's log holds more than 300 entries; consider splitting the work.
@@ -311,6 +317,10 @@ the write, with no lock held, and is read-only; when it fails there are no such
 warnings. "Since the
 last record" is after the newest `recorded_at` of the session's cards of any work
 (all captured activity before the session's first record).
+
+Read the whole output of `record`; never pipe it through `head`, `grep` or `tail`.
+`warnings` is its first key so that a cut-off read still shows it, and a warning is
+meant to be acted on in the next record.
 
 Successful output keeps every earlier field and adds `echo`, a text of at most 1500
 characters: the work (its first 80 characters) and the ids just assigned (more than 8

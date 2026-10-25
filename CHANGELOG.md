@@ -220,6 +220,10 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 - `hooks/native-facts` handles a 500 KB Write in about 2 s instead of over
   60 s: it finds the end of `tool_input` by binary search over linear glob
   tests instead of a quadratic bash suffix strip.
+- `record` warns about unmentioned dispatches per dispatch instead of per role: read-only
+  roles (`Explore`, `claude-code-guide`, `plan`, `statusline-setup`) are skipped, a reworded
+  description counts, and one role mention covers one dispatch. `warnings` is now the first
+  key of the output, and the guidance says to read the output whole, not through `head`/`grep`.
 
 ### Removed
 

@@ -729,7 +729,7 @@ def handle_event(event, config_path, acceptance=False):
                            + "\nCorrect a decision with a new one whose supersedes names it (D3); record a changed claim state"
                            + " with new evidence whose updates names the earlier entry (E2). Old entries are never edited."
                            + "\nJOIN_REQUIRED: add --join only to continue another session's work. Read the returned warnings"
-                           + " and echo and fill the gaps in the next record. Phase done closes a work."
+                           + " and echo whole (never through head/grep/tail) and fill the gaps in the next record. Phase done closes a work."
                            + "\nsearch --query <terms> finds past decisions; search --show <ref> shows one with its chain."
                            + " Never run redact: it is maintainer-only (the user runs it with the ! prefix)."
                            + "\nAfter an install, migrate is a dry run for the user to review before migrate --apply;"

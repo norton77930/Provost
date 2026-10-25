@@ -24,6 +24,8 @@ ECHO_WORK = 80          # characters of the work_id in the echo head
 PASSED = "pass-observed"
 CONCURRENT_MINUTES = 120  # another session's card of the work this recent warns
 SHORT_SESSION = 8       # characters of a session id named in a detail or warning
+UNTRACKED_ROLES = {"explore", "claude-code-guide", "plan", "statusline-setup"}  # read-only: never reported
+WORDS = re.compile(r"\w+")
 HEX = re.compile(r"(?<![0-9a-z])[0-9a-f]{%d,40}(?![0-9a-z])" % HASH_PREFIX, re.IGNORECASE)
 
 
@@ -223,7 +225,7 @@ def record(root, session, payload, expected, request_id, *, config_path, cursor=
         warnings.append(_warning("LOG_LARGE", "the log of work %s has %d entries (over %d); consider splitting the "
                                               "work" % (work_id, len(log), LOG_LARGE)))
     warnings = search.redact(warnings)
-    return {**data, "warnings": warnings, "echo": echo(search.redact(data), log, warnings)}
+    return {"warnings": warnings, **data, "echo": echo(search.redact(data), log, warnings)}
 
 
 def _warning(code, message):
@@ -243,6 +245,43 @@ def _referenced(commit, tokens):
     full = commit.lower()
     return any(min(len(full), len(token)) >= HASH_PREFIX and full[:len(token)] == token[:len(full)]
                for token in tokens)
+
+
+def _significant(desc):
+    """Words of a dispatch description worth matching: 3+ characters, or holding a digit."""
+    return {w for w in WORDS.findall(desc.lower()) if len(w) >= 3 or any(c.isdigit() for c in w)}
+
+
+def _unmentioned(dispatches, haystack):
+    """The dispatches (oldest first) the record does not mention. Read-only roles are never reported. A dispatch
+    is mentioned when its description is a substring of the haystack, or at least 2 and half of its significant
+    words are whole words in it; each whole-word mention of a role (hyphens are word characters) then covers
+    one dispatch of that role: first the ones matched by description, then the oldest unmatched ones."""
+    words = set(WORDS.findall(haystack))
+    tracked = sorted((a for a in dispatches if a["role"].lower() not in UNTRACKED_ROLES),
+                     key=lambda a: a.get("ts") if type(a.get("ts")) is int else 0)
+    quiet = []
+    spare = {}  # role -> role mentions not used by a description match
+    for a in tracked:
+        role = a["role"].lower()
+        if role not in spare:
+            spare[role] = len(re.findall(r"(?<![\w-])%s(?![\w-])" % re.escape(role), haystack))
+    unmatched = []
+    for a in tracked:
+        desc = (a["desc"] or "").lower()
+        sig = _significant(desc)
+        hits = len(sig & words)
+        if desc and (desc in haystack or (len(sig) >= 2 and hits >= 2 and hits * 2 >= len(sig))):
+            spare[a["role"].lower()] = max(spare[a["role"].lower()] - 1, 0)
+        else:
+            unmatched.append(a)
+    for a in unmatched:
+        role = a["role"].lower()
+        if spare[role] > 0:
+            spare[role] -= 1
+        else:
+            quiet.append(a)
+    return quiet
 
 
 def _activity(config_path, root, session, after, payload, decided):
@@ -268,8 +307,7 @@ def _activity(config_path, root, session, after, payload, decided):
             warnings.append(_warning("UNREFERENCED_COMMITS", "%d commit(s) since the last record have no hash prefix "
                                      "(%d+ characters) in this record's entries (refs, text, evidence ref): %s"
                                      % (len(missing), HASH_PREFIX, ", ".join(h for _, h in missing))))
-        quiet = [a for a in found["dispatches"]
-                 if a["role"].lower() not in haystack and not (a["desc"] and a["desc"].lower() in haystack)]
+        quiet = _unmentioned(found["dispatches"], haystack)
         if quiet:
             warnings.append(_warning("UNMENTIONED_DISPATCHES", "%d dispatch(es) since the last record are mentioned "
                                      "by neither role nor description in this record's entries or assignments: %s"
