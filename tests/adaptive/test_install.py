@@ -298,6 +298,63 @@ class InstallTests(InstallCase):
         self.assertEqual(target.read_bytes(), b"new\n")
         self.assertEqual(self.pending(), [])
 
+    @unittest.skipIf(os.name == "nt", "file modes are not applied on Windows")
+    def test_atomic_write_in_place_applies_mode(self):
+        target = self.config / "hooks-runtime"
+        write(target, "old\n")
+        os.chmod(target, 0o644)
+
+        def denied(src, dst):
+            raise PermissionError(5, "Access denied")
+
+        with mock.patch.object(install.os, "replace", denied):
+            install.atomic_write(target, b"new\n", 0o755)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o755)
+
+    def test_install_rolls_back_a_partial_in_place_write(self):
+        write(self.config / "agents/implementer.md", "previous implementer, longer than the new one\n")
+        before = self.snapshot()
+        real_replace, real_open = os.replace, open
+        failed = []
+
+        def denied_on_agents(src, dst):
+            if Path(dst).parent.name == "agents" and Path(dst).exists():
+                raise PermissionError(5, "Access denied")
+            return real_replace(src, dst)
+
+        class HalfWrite:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.stream.close()
+
+            def write(self, data):
+                self.stream.write(data[:len(data) // 2])
+                self.stream.flush()
+                raise OSError("disk full")
+
+        def open_failing_once(path, mode="r", *args, **kwargs):
+            stream = real_open(path, mode, *args, **kwargs)
+            if mode == "r+b" and not failed:
+                failed.append(path)
+                return HalfWrite(stream)
+            return stream
+
+        err = io.StringIO()
+        with mock.patch.object(install.os, "replace", denied_on_agents), \
+                mock.patch.object(install, "open", open_failing_once, create=True), redirect_stderr(err):
+            code = install.main(["install", "--source", str(self.source), "--config-dir", str(self.config)])
+        self.assertEqual(code, 2, err.getvalue())
+        self.assertTrue(failed)
+        self.assertIn("all changes rolled back", err.getvalue())
+        after = {k: v for k, v in self.snapshot().items() if not k.startswith("provost/backups/")}
+        self.assertEqual(after, before)
+        self.assertEqual(self.pending(), [])
+
     def test_atomic_write_denied_on_missing_target_propagates(self):
         target = self.config / "agents/new-role.md"
 

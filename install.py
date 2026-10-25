@@ -353,6 +353,8 @@ def atomic_write(path, data, mode=None):
                 stream.truncate()
                 stream.flush()
                 os.fsync(stream.fileno())
+            if mode is not None and os.name != "nt":
+                os.chmod(path, mode)
     finally:
         if temp is not None:
             try:
