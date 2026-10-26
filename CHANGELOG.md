@@ -100,6 +100,9 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- Policy §6 names `acceptance-verifier` as the judge of a performance gate, a
+  threshold gate, so the "machine-only acceptance gets no verifier" rule in §4
+  no longer leaves the verifier's threshold evidence check unused.
 - Evidence rules beyond the UI, from pstack's `benchmark-checklist`, `tdd` and
   verification guide: a bug repro's failing run must fail for the reported
   reason; a performance number carries its range and error count; a new §6 row
