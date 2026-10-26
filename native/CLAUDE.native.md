@@ -104,17 +104,20 @@ Mid-task discovery that difficulty or risk exceeds the classification:
 
 Before implementation begins, the plan must state concisely: approved scope and non-goals; a finite list of required claims; the selected evidence per claim; any pre-selected assurance roles (from §3 — never "all of them by default"); and exactly one planned final verification. Progress `active → sealing → done`: once every claim is PASS-current, only the planned final verification runs, then report immediately. Do not add optional review, tests, analysis, refactoring, or documentation after sealing. Reopen only when a required check actually fails, new evidence contradicts an in-scope claim, or the user approves a scope expansion. A suggestion that contradicts nothing is a follow-up, not new work.
 
-Before dispatch, write the acceptance file `.claude/acceptance/<task>.json` (schema: "Acceptance gates" in `~/.claude/provost/runtime/native-pilot-v1/docs/native-handoff.md`). The Stop hook holds the turn while a non-human gate is pending, failed or stale, unless background work runs or the answer has a `needs input:` or `failed:` line of its own; it pushes back at most three times. `ranAt` is the UTC clock read from a command, never a guess: `date -u +%Y-%m-%dT%H:%M:%SZ` in Bash, `(Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')` in PowerShell, where `date -u` prints local time. Each gate has a `kind` (`machine`, `live`, `visual`, `review`, `human`) and names its `source` (mockup, spec, issue). With a design mockup, every drawn state × locale × theme is its own `visual` gate whose `check` names the fixture data; a state that cannot be captured is raised as `needs input:`, never deferred silently. Without a mockup, each UI state is a `live` gate whose `source` is the spec or issue and whose `check` is a concrete criterion; never write a `visual` gate with nothing to compare against. When the look matters and no mockup exists, settle one before the spec is written (`/to-spec`, or the Completion Contract on a moderate task): build variants with `prototype`, let the user pick one, and save a screenshot per state in the repo or issue as the `source` (a prototype branch alone is not one). Release, tag, merge and other outward actions are always `human` gates. Derive gate kinds from the task type:
+Before dispatch, write the acceptance file `.claude/acceptance/<task>.json` (schema: "Acceptance gates" in `~/.claude/provost/runtime/native-pilot-v1/docs/native-handoff.md`). The Stop hook holds the turn while a non-human gate is pending, failed or stale, unless background work runs or the answer has a `needs input:` or `failed:` line of its own; it pushes back at most three times. `ranAt` is the UTC clock read from a command, never a guess: `date -u +%Y-%m-%dT%H:%M:%SZ` in Bash, `(Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')` in PowerShell, where `date -u` prints local time. Each gate has a `kind` (`machine`, `live`, `visual`, `review`, `human`) and names its `source` (mockup, spec, issue). With a design mockup, every drawn state × locale × theme is its own `visual` gate whose `check` names the fixture data; a state that cannot be captured is raised as `needs input:`, never deferred silently. Without a mockup, each UI state is a `live` gate whose `source` is the spec or issue and whose `check` is a concrete criterion; never write a `visual` gate with nothing to compare against. When the look matters and no mockup exists, settle one before the spec is written (`/to-spec`, or the Completion Contract on a moderate task): build variants with `prototype`, let the user pick one, and save a screenshot per state in the repo or issue as the `source` (a prototype branch alone is not one). Release, tag, merge and other outward actions are always `human` gates. Derive gate kinds and what counts as evidence from the task type:
 
-| Task type | Gate kinds |
-|---|---|
-| bug fix | `machine`: repro red before, green after |
-| performance | `machine`: before/after measurement against a threshold |
-| CLI / interaction | `live`: run the path |
-| UI | `visual`: one per mockup state; `live` per state without a mockup |
-| data conversion | `machine` replay + `review` |
-| docs | `live`: walk through the steps |
-| release / outward | `human` |
+| Task type | Gate kinds | What counts as evidence |
+|---|---|---|
+| bug fix | `machine`, or `live` when the bug shows on a screen or CLI | the repro fails before and passes after, on the surface where the bug was reported; a unit test alone does not prove a UI or CLI bug gone |
+| refactoring | `machine` | a pin that passes before the change (characterization, snapshot or equivalence test) and still passes after; typecheck and lint are not a pin |
+| performance | `machine` | a baseline measured before the change, the same build and data on both sides, the median of repeated runs against a threshold, and the limiting factor named |
+| CLI / interaction | `live` | run the path |
+| UI | `visual` per mockup state; `live` per state without a mockup | the screenshot or run uses the gate's fixture data |
+| data conversion | `machine` replay + `review` | a saved real input replayed and its output compared |
+| docs | `live` | walk through the steps |
+| release / outward | `human` | the user's approval |
+
+A gate passes only on evidence from the surface it names: an inconclusive run, another surface or a proxy (it compiles, a worker's self-report) is not a pass. Never edit a gate's `check`, `source`, baseline or fixture data to make it pass; report a wrong gate instead of rewriting it.
 
 Keep the plan visible as a task list: when an approved plan has three or more steps, create every step with `TaskCreate` before starting the first, set a step `in_progress` with `TaskUpdate` before working on it or dispatching its role, and set it `completed` once its claims pass. Record added or dropped steps the same way. Simple tasks skip this.
 
