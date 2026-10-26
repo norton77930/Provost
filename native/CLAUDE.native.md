@@ -110,7 +110,7 @@ Before dispatch, write the acceptance file `.claude/acceptance/<task>.json` (sch
 |---|---|---|
 | bug fix | `machine`, or `live` when the bug shows on a screen or CLI | the repro fails before and passes after, on the surface where the bug was reported, and the failing run fails for the reported reason, not a setup or import error; a unit test alone does not prove a UI or CLI bug gone |
 | refactoring | `machine` | a pin that passes before the change (characterization, snapshot or equivalence test) and still passes after; typecheck and lint are not a pin |
-| performance | `machine` | a baseline measured before the change, the same build and data on both sides, the median and range of repeated runs against a threshold, errors counted, and the limiting factor named |
+| performance | `machine`, judged as a threshold gate by `acceptance-verifier` | a baseline measured before the change, the same build and data on both sides, the median and range of repeated runs against a threshold, errors counted, and the limiting factor named |
 | CLI / interaction | `live` | run the path |
 | UI | `visual` per mockup state; `live` per state without a mockup | the screenshot or run uses the gate's fixture data |
 | data conversion | `machine` replay + `review` | a saved real input replayed and its output compared |
