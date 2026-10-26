@@ -100,6 +100,13 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- Evidence rules beyond the UI, from pstack's `benchmark-checklist`, `tdd` and
+  verification guide: a bug repro's failing run must fail for the reported
+  reason; a performance number carries its range and error count; a new §6 row
+  makes a storage or side-effect change read the written value back from where
+  it lands. `acceptance-verifier` marks a threshold gate BLOCKED when its
+  evidence lacks the run count, median and range, matched build and data, error
+  count or limiter.
 - Policy §6 task-type table names what counts as evidence for each type,
   borrowing the per-type playbooks of pstack (MIT): a bug repro runs on the
   surface where the bug was reported, a refactoring is pinned before it changes,
