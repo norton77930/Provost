@@ -14,6 +14,17 @@ What failure looks like in this repository, for `code-reviewer` and for people.
   file, `README.md`, `README.zh-TW.md` or the operations guide that contradicts
   another or describes behaviour the code does not have.
 
+## Always review
+
+A change touching one of these paths is at least the tier named, whatever the
+declaration would otherwise be.
+
+- `hooks/**`: R1. A hook that blocks or crashes where it should fail soft stops
+  every session, and tests run the hook in isolation.
+- `scripts/provost_runtime/**`: R1. Record writes and acceptance checks fail
+  across sessions and restarts, which a focused test rarely covers.
+- `install.py`: R1. A wrong backup or rollback changes the live Claude config.
+
 ## Limits
 
 - Report at most three `Nit` findings.
