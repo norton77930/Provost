@@ -19,13 +19,15 @@ def gate(gate_id, status="pending", kind="machine", **extra):
 
 
 class AcceptanceCase(FixtureCase):
-    """A session that began an hour ago, its transcript, and acceptance files under <cwd>/.claude/acceptance."""
+    """A session that began an hour ago, its transcript, and acceptance files under <cwd>/.claude/acceptance.
+    A file belongs to the session when the transcript holds a successful main-session Write or Edit of it."""
 
     def setUp(self):
         super().setUp()
         self.directory = self.root / ".claude" / "acceptance"
         self.transcript = self.root / "t.jsonl"
         self.start = time.time() - HOUR  # the session began an hour ago
+        self.owned_calls = 0
         self.write_transcript(self.start)
 
     def write_transcript(self, start):
@@ -35,8 +37,23 @@ class AcceptanceCase(FixtureCase):
                  {"type": "assistant", "timestamp": "2099-01-01T00:00:00.000Z", "message": {"content": []}}]
         self.transcript.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
 
-    def acceptance(self, name, gates, *, age=None, raw=None):
-        """Write <cwd>/.claude/acceptance/<name>; age (seconds before now) sets its mtime."""
+    def tool_call(self, target, *, tool="Write", error=False, sidechain=False):
+        """Append a tool_use of `tool` on `target` and its tool_result to the transcript."""
+        self.owned_calls += 1
+        call = "toolu_own_%d" % self.owned_calls
+        key = "notebook_path" if tool == "NotebookEdit" else "file_path"
+        at = iso(time.time() - HOUR / 2)
+        use = {"type": "assistant", "timestamp": at, "isSidechain": sidechain,
+               "message": {"content": [{"type": "tool_use", "id": call, "name": tool, "input": {key: target}}]}}
+        result = {"type": "user", "timestamp": at, "isSidechain": sidechain,
+                  "message": {"content": [{"type": "tool_result", "tool_use_id": call, "is_error": error,
+                                           "content": "ok"}]}}
+        with open(self.transcript, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(use) + "\n" + json.dumps(result) + "\n")
+
+    def acceptance(self, name, gates, *, age=None, raw=None, mine=True):
+        """Write <cwd>/.claude/acceptance/<name>; age (seconds before now) sets its mtime. With mine, this
+        session wrote it: the transcript gets the matching Write call. Without, another session did."""
         self.directory.mkdir(parents=True, exist_ok=True)
         path = self.directory / name
         if raw is not None:
@@ -46,6 +63,8 @@ class AcceptanceCase(FixtureCase):
         if age is not None:
             when = time.time() - age
             os.utime(path, (when, when))
+        if mine:
+            self.tool_call(str(path))
         return path
 
     def stop(self, acceptance=True, **extra):
@@ -77,24 +96,83 @@ class AcceptanceStopTests(AcceptanceCase):
             self.assertIn(gate_id, reason)
         self.assertNotIn("lint", reason)  # a passed gate is not listed
 
+    def test_directory_without_json_files_never_reads_the_transcript(self):
+        self.directory.mkdir(parents=True)
+        (self.directory / "notes.txt").write_text("not a gate file", encoding="utf-8")
+        with mock.patch("provost_runtime.hooks.resolve_transcript") as resolve,                 mock.patch("provost_runtime.acceptance.open", create=True) as opened:  # errors would end the turn too
+            self.assertEqual(self.stop(), {})
+            self.assertEqual(self.stop(transcript_path=str(self.root / "missing.jsonl")), {})
+        resolve.assert_not_called()
+        opened.assert_not_called()
+
     def test_only_human_gates_unmet_is_no_decision(self):
         self.acceptance("release.json", [gate("tests", "pass"), gate("merge", kind="human"),
                                          gate("tag", "fail", kind="human")])
         self.assertEqual(self.stop(), {})
 
-    def test_files_from_before_the_session_start_are_ignored(self):
-        self.acceptance("old.json", [gate("old-gate")], age=2 * HOUR)
+    def test_other_session_file_is_ignored(self):
+        # Two sessions in one cwd: the other one's file is newer than this session's start, yet not ours.
+        self.acceptance("manual-zh-tw-draft.json", [gate("draft")], mine=False)
         self.assertEqual(self.stop(), {})
-        self.acceptance("new.json", [gate("new-gate")], age=HOUR / 2)  # written during this session
+        self.acceptance("new.json", [gate("new-gate")])
         reason = self.stop()["reason"]
         self.assertIn("new-gate", reason)
-        self.assertNotIn("old-gate", reason)
+        self.assertNotIn("draft", reason)
 
     def test_resumed_session_keeps_its_own_files(self):
-        # A resume appends to the same transcript, so a file from before the resume still counts.
-        self.write_transcript(time.time() - 3 * HOUR)
+        # A resume appends to the same transcript, so a file written before the resume still counts.
         self.acceptance("feature.json", [gate("before-resume")], age=2 * HOUR)
-        self.assertIn("before-resume", self.stop()["reason"])
+        self.acceptance("other.json", [gate("other-session")], mine=False)
+        with open(self.transcript, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"type": "user", "timestamp": iso(time.time()),
+                                     "message": {"role": "user", "content": "resumed"}}) + "\n")
+        reason = self.stop()["reason"]
+        self.assertIn("before-resume", reason)
+        self.assertNotIn("other-session", reason)
+
+    def test_edit_only_of_a_pre_existing_file_is_owned(self):
+        path = self.acceptance("feature.json", [gate("pre-existing")], age=2 * HOUR, mine=False)
+        self.assertEqual(self.stop(), {})
+        self.tool_call(str(path), tool="Edit")  # the file pre-existed; the session only edited it
+        self.assertIn("pre-existing", self.stop()["reason"])
+
+    def test_calls_that_do_not_make_a_file_ours(self):
+        path = self.acceptance("feature.json", [gate("not-ours")], mine=False)
+        self.tool_call(str(path), error=True)  # the Write failed
+        self.tool_call(str(path), sidechain=True)  # a subagent's Write
+        self.tool_call(str(self.root / "elsewhere" / "feature.json"))  # same name, another directory
+        self.tool_call(str(self.directory / "feature.json.bak"))  # another file in the directory
+        self.assertEqual(self.stop(), {})
+
+    def test_a_failed_write_does_not_hide_a_later_successful_one(self):
+        path = self.acceptance("feature.json", [gate("retried")], mine=False)
+        self.tool_call(str(path), error=True)
+        self.assertEqual(self.stop(), {})
+        self.tool_call(str(path))
+        self.assertIn("retried", self.stop()["reason"])
+
+    def test_write_early_in_a_transcript_over_8_mb_still_owns(self):
+        self.acceptance("feature.json", [gate("early")])
+        filler = json.dumps({"type": "assistant", "timestamp": iso(time.time()),
+                             "message": {"content": [{"type": "text", "text": "x" * (1024 * 1024)}]}}) + "\n"
+        with open(self.transcript, "a", encoding="utf-8") as handle:
+            handle.write(filler * 9)
+        self.assertGreater(self.transcript.stat().st_size, 8 * 1024 * 1024)
+        self.assertIn("early", self.stop()["reason"])
+
+    def test_relative_and_absolute_paths_both_match(self):
+        spellings = {"rel": ".claude/acceptance/rel.json", "dot": "./.claude/acceptance/dot.json",
+                     "abs": (self.directory / "abs.json").as_posix()}
+        if os.name == "nt":  # backslashes and case are the same path on Windows
+            spellings["back"] = ".claude\\acceptance\\back.json"
+            spellings["absback"] = str(self.directory / "absback.json").replace("/", "\\")
+            spellings["upper"] = str(self.directory / "UPPER.JSON").upper()
+        for stem, target in spellings.items():
+            self.acceptance(stem + ".json", [gate(stem + "-gate")], mine=False)
+            self.tool_call(target)
+        reason = self.stop()["reason"]
+        for stem in spellings:
+            self.assertIn(stem + "-gate", reason)
 
     def test_every_session_file_is_checked(self):
         first = self.acceptance("a.json", [gate("a1"), gate("a2", "pass")])

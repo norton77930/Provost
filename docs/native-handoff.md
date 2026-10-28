@@ -1120,11 +1120,18 @@ answers at every main-turn end:
 
 - No `<cwd>/.claude/acceptance` directory: the bash part exits 0 with no output
   before any interpreter starts. This is the common case and costs no Python start.
-- Otherwise the runtime reads every `*.json` file in that directory whose
-  modification time is at or after the session start, which is the first timestamped
-  line of the session's transcript. A resume or compaction appends to the same
-  transcript, so a resumed session keeps its own files; files from earlier sessions
-  (and from before a `/clear`) are ignored.
+- Otherwise the runtime reads every `*.json` file in that directory that this session
+  wrote: its transcript holds a main-session Write, Edit or NotebookEdit call on that
+  file (a path as written, relative to `cwd` or absolute, case and slash direction
+  ignored on Windows) whose result was not an error. Calls by subagents (their own
+  transcripts) and writes through Bash or PowerShell do not count, which is why the
+  acceptance file is written with the Write tool. The whole transcript is searched, not
+  only its newest part. Ownership is not read from file modification times: two
+  sessions running at once in the same `cwd` share the directory, and the later one
+  would be blocked by the other's pending file, modified after it started. A resume or
+  compaction appends to the same transcript, so a resumed session keeps its own files;
+  files from other sessions and from before a `/clear` are ignored. With an unreadable
+  transcript it returns no decision.
 - While any such file has a non-`human` gate whose status is `pending` or `fail`, it
   returns `{"decision": "block", "reason": ...}`; the reason says which push this is
   (`push 1/3`) and lists every unmet gate id with its status, grouped under its file's
@@ -1210,7 +1217,8 @@ adds context at dispatch time and never denies, asks or blocks one:
 
 - It speaks only when `tool_input.subagent_type` is `implementer`,
   `implementer-sonnet` or `mech-executor`, the session has an acceptance file (the
-  same files and session start as the `Stop` check; a malformed file still counts),
+  same session-written files as the `Stop` check, another session's file in the same
+  directory does not count; a malformed file still counts),
   and `tool_input.prompt` cites none of them.
 - **Citing** means the prompt contains a session file's name, for example
   `feature.json`. That also matches `.claude/acceptance/feature.json` and an absolute
