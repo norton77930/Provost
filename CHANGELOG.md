@@ -100,6 +100,11 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- Reviewer noise is now measurable (#56): `code-reviewer` numbers each `Important`
+  finding `I1`, `I2`, …; policy §3 asks main to write a `Dispositions:` line
+  (`fixed`, `rejected`, `intentional` or `moot`, with a reason unless `fixed`)
+  after reading a report; `tools/dispatch-report.js --reviews` lists each review
+  with its counts and prints per-model precision (fixed over decided) on stderr.
 - Policy §6 names `acceptance-verifier` as the judge of a performance gate, a
   threshold gate, so the "machine-only acceptance gets no verifier" rule in §4
   no longer leaves the verifier's threshold evidence check unused.
