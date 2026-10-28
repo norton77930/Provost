@@ -81,7 +81,8 @@ class DispatchReminderTests(AcceptanceCase):
     def test_directory_without_json_files_never_reads_the_transcript(self):
         self.directory.mkdir(parents=True)
         (self.directory / "notes.txt").write_text("x", encoding="utf-8")
-        with mock.patch("provost_runtime.hooks.resolve_transcript") as resolve,                 mock.patch("provost_runtime.acceptance.open", create=True) as opened:  # errors would be swallowed
+        with mock.patch("provost_runtime.hooks.resolve_transcript") as resolve, \
+                mock.patch("provost_runtime.acceptance.open", create=True) as opened:  # errors would be swallowed
             self.assertEqual(self.dispatch(), {})
         resolve.assert_not_called()
         opened.assert_not_called()

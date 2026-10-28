@@ -99,7 +99,8 @@ class AcceptanceStopTests(AcceptanceCase):
     def test_directory_without_json_files_never_reads_the_transcript(self):
         self.directory.mkdir(parents=True)
         (self.directory / "notes.txt").write_text("not a gate file", encoding="utf-8")
-        with mock.patch("provost_runtime.hooks.resolve_transcript") as resolve,                 mock.patch("provost_runtime.acceptance.open", create=True) as opened:  # errors would end the turn too
+        with mock.patch("provost_runtime.hooks.resolve_transcript") as resolve, \
+                mock.patch("provost_runtime.acceptance.open", create=True) as opened:  # errors would end the turn too
             self.assertEqual(self.stop(), {})
             self.assertEqual(self.stop(transcript_path=str(self.root / "missing.jsonl")), {})
         resolve.assert_not_called()
@@ -135,6 +136,12 @@ class AcceptanceStopTests(AcceptanceCase):
         self.assertEqual(self.stop(), {})
         self.tool_call(str(path), tool="Edit")  # the file pre-existed; the session only edited it
         self.assertIn("pre-existing", self.stop()["reason"])
+
+    def test_notebook_edit_makes_a_file_ours(self):
+        path = self.acceptance("feature.json", [gate("notebook")], mine=False)
+        self.assertEqual(self.stop(), {})
+        self.tool_call(str(path), tool="NotebookEdit")  # notebook_path, not file_path
+        self.assertIn("notebook", self.stop()["reason"])
 
     def test_calls_that_do_not_make_a_file_ours(self):
         path = self.acceptance("feature.json", [gate("not-ours")], mine=False)
