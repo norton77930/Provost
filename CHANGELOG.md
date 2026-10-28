@@ -16,8 +16,8 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 - Acceptance gates, first slice (#44): `hooks/acceptance-gate`, registered for
   `Stop` as a synchronous hook, blocks the main turn end while an acceptance file
-  the session wrote (`<cwd>/.claude/acceptance/*.json`, modified at or after the
-  session's first transcript timestamp) has a non-`human` gate `pending` or `fail`,
+  the session wrote (`<cwd>/.claude/acceptance/*.json`, written by its main
+  transcript with Write, Edit or NotebookEdit) has a non-`human` gate `pending` or `fail`,
   or is malformed; the reason lists every unmet gate id and the file path. Without
   an acceptance directory it exits before starting Python; any internal error ends
   the turn. The schema and settings entry are in the operations guide;
@@ -221,6 +221,13 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Fixed
 
+- The acceptance `Stop` check and the dispatch reminder no longer treat another
+  session's acceptance file as the current session's: two sessions in one working
+  directory gated each other, because ownership was decided by file modification time
+  against the session start. A file now belongs to the session whose transcript holds a
+  successful main-session Write, Edit or NotebookEdit of it (the whole transcript is
+  searched, so a resume keeps its files); the acceptance file must be written with the
+  Write tool, as the guide already says.
 - Session facts leave out merge commits, so a PR merged on GitHub and pulled in no
   longer raises `UNREFERENCED_COMMITS` (2 of 4 false positives in a 10-day audit) or
   counts as session activity.

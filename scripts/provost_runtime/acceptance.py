@@ -1,7 +1,8 @@
 """Acceptance gates: the synchronous Stop check behind hooks/acceptance-gate.
 
 A main session that wrote an acceptance file for its task (<cwd>/.claude/acceptance/*.json, schema in
-<runtime root>/docs/native-handoff.md, "Acceptance gates") cannot end its turn while a non-human gate is pending,
+<runtime root>/docs/native-handoff.md, "Acceptance gates"; the file is the session's own when its transcript
+holds a successful Write, Edit or NotebookEdit of it, see session_files()) cannot end its turn while a non-human gate is pending,
 failed or stale (a machine, live or visual pass older than the last main-session edit): check() returns a block decision naming every unmet gate id and its file. Without a session
 acceptance file, or with only human gates unmet, it returns {}. A malformed file is named in the block
 reason, so a typo cannot switch enforcement off unnoticed. A subagent's Stop, running background work
@@ -9,6 +10,7 @@ and a stated blocker line end the turn, and it blocks at most three times per ep
 Any internal error returns {}: a broken check must never trap a session.
 """
 import json
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,8 +27,7 @@ KINDS = ("machine", "live", "visual", "review", "human")
 STATUSES = ("pass", "fail", "pending")
 OPTIONAL = ("ranAt", "evidence", "source")
 FILE_LIMIT = 1024 * 1024           # an acceptance file larger than this is reported as malformed
-START_SCAN_BYTES = 8 * 1024 * 1024  # most transcript bytes read to find the session start
-EDIT_SCAN_BYTES = START_SCAN_BYTES  # most transcript bytes (the newest) read to find the last edit
+EDIT_SCAN_BYTES = 8 * 1024 * 1024  # most transcript bytes (the newest) read to find the last edit
 STALE_KINDS = ("machine", "live", "visual")  # a pass of these goes stale after an edit
 FUTURE_SLACK = timedelta(minutes=5)  # a zoned ranAt further ahead of now than this is a mislabelled local time
 # Cheap byte filter before parsing a line for last_edit(): an edit tool call or a failed tool result.
@@ -55,8 +56,8 @@ def check(event, config_path=None):
         directory = _directory(event)
         if directory is None:
             return {}
-        start = session_start(event)
-        if start is None:  # unknown start: earlier sessions' files cannot be told apart, so no decision
+        files = session_files(event, directory)
+        if files is None:  # unknown transcript: whose files these are cannot be told, so no decision
             return {}
         unmet, malformed, memo = [], [], []
 
@@ -68,7 +69,7 @@ def check(event, config_path=None):
                     memo.append(None)
             return memo[0]
 
-        for path in session_files(directory, start):
+        for path in files:
             try:
                 gates = load(path)["gates"]
             except FileNotFoundError:  # deleted since the listing
@@ -238,16 +239,32 @@ def _directory(event):
     return directory if directory.is_dir() else None
 
 
-def session_start(event):
-    """When the session began (POSIX seconds), or None when unknown.
+def session_files(event, directory):
+    """The *.json files in directory that this session wrote, by name; None when the transcript is unknown.
+    A directory with no *.json file answers [] without opening the transcript, which is the common case.
 
-    Source: the first top-level "timestamp" in the session's transcript (Claude Code writes untimed
-    metadata lines before it). A resume or compaction keeps the session id and appends to the same
-    transcript, so a resumed session keeps its own acceptance files; /clear starts a new transcript.
-    Not the facts layer's <session>.enabled marker: every SessionStart (resume, compact) touches it again,
-    which would drop the files a session wrote before its last resume, and it exists only with handoff on.
-    """
-    from .hooks import resolve_transcript  # hooks imports this module
+    A file belongs to the session when its transcript holds a main-session (non-sidechain) Write, Edit or
+    NotebookEdit tool_use on that file whose tool_result did not come back as an error. Not the file's
+    modification time against the session start: two sessions running in one cwd share this directory, and
+    the later one would be gated by the other's pending file, modified after it started. The acceptance file
+    is written with the Write tool (see the guide), so a Bash or PowerShell write does not count.
+
+    The whole transcript is read, not only its tail: the file is usually written early in the task. A resume
+    or compaction keeps the session id and appends to the same transcript, so a resumed session keeps its
+    files; /clear starts a new transcript and drops them. Only lines that mention `acceptance` or carry an
+    `is_error` result are parsed, which keeps a large transcript cheap. A tool path is matched as written:
+    relative paths resolve against the event cwd, and Windows ignores case and slash direction. Only files
+    directly in `directory` count, so a worktree's acceptance directory stays apart from the checkout's."""
+    from .hooks import EDIT_TOOLS, resolve_transcript  # hooks imports this module
+    candidates = []
+    for candidate in sorted(directory.glob("*.json")):
+        try:
+            if candidate.is_file():
+                candidates.append(candidate)
+        except OSError:
+            continue
+    if not candidates:  # nothing to own: leave the (possibly huge) transcript unread
+        return []
     path = resolve_transcript(event.get("transcript_path"))
     if not isinstance(path, str) or not path:
         return None
@@ -255,35 +272,38 @@ def session_start(event):
         handle = open(path, "rb")
     except OSError:
         return None
+    cwd = event.get("cwd") if isinstance(event.get("cwd"), str) else ""
+    written, failed = {}, set()
     with handle:
-        read = 0
         for raw in handle:
-            read += len(raw)
-            if b'"timestamp"' in raw:
-                try:
-                    line = json.loads(raw)
-                except ValueError:
-                    line = None
-                stamp = line.get("timestamp") if isinstance(line, dict) else None
-                if isinstance(stamp, str):
-                    when = _when(stamp)
-                    if when is not None:
-                        return when.timestamp()
-            if read >= START_SCAN_BYTES:
-                return None
-    return None
+            if b"acceptance" not in raw.lower() and b'"is_error"' not in raw:
+                continue
+            try:
+                line = json.loads(raw)
+                content = line["message"]["content"]
+            except (ValueError, KeyError, TypeError):
+                continue
+            if line.get("isSidechain") or not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if line.get("type") == "assistant" and block.get("type") == "tool_use" and block.get("name") in EDIT_TOOLS:
+                    tool_input = block.get("input") if isinstance(block.get("input"), dict) else {}
+                    target = tool_input.get(EDIT_TOOLS[block["name"]])
+                    if isinstance(target, str) and target:
+                        written[block.get("id")] = _key(target, cwd)
+                elif line.get("type") == "user" and block.get("type") == "tool_result" and block.get("is_error"):
+                    failed.add(block.get("tool_use_id"))
+    owned = {key for call, key in written.items() if call not in failed}
+    return [candidate for candidate in candidates if _key(str(candidate), "") in owned]
 
 
-def session_files(directory, start):
-    """The *.json files in directory modified at or after start, by name; earlier files are ignored."""
-    found = []
-    for path in sorted(directory.glob("*.json")):
-        try:
-            if path.is_file() and path.stat().st_mtime >= start:
-                found.append(path)
-        except OSError:
-            continue
-    return found
+def _key(target, cwd):
+    """A path in comparable form: made absolute against cwd, normalised, case-folded on Windows."""
+    if cwd and not os.path.isabs(target):
+        target = os.path.join(cwd, target)
+    return os.path.normcase(os.path.normpath(target))
 
 
 def load(path):

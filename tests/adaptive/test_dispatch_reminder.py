@@ -63,10 +63,32 @@ class DispatchReminderTests(AcceptanceCase):
 
     def test_no_session_acceptance_file_is_silent(self):
         self.assertEqual(self.dispatch(), {})
-        self.acceptance("old.json", [gate("one")], age=3 * 3600)  # written before this session began
+        self.acceptance("old.json", [gate("one")], age=3 * 3600, mine=False)  # written before this session began
+        self.assertEqual(self.dispatch(), {})
+        self.acceptance("other.json", [gate("two")], mine=False)  # another session's, newer than our start
         self.assertEqual(self.dispatch(), {})
         (self.directory / "notes.txt").write_text("x", encoding="utf-8")
         self.assertEqual(self.dispatch(), {})
+
+    def test_other_session_file_is_not_listed_or_counted(self):
+        self.acceptance("mine.json", [gate("one")])
+        self.acceptance("other.json", [gate("two")], mine=False)
+        self.assert_reminder(self.dispatch(), "mine.json")
+        self.assertNotIn("other.json", self.dispatch()["hookSpecificOutput"]["additionalContext"])
+        self.assertEqual(self.dispatch("Follow mine.json."), {})
+        self.assert_reminder(self.dispatch("Follow other.json."), "mine.json")  # citing theirs is no citation
+
+    def test_directory_without_json_files_never_reads_the_transcript(self):
+        self.directory.mkdir(parents=True)
+        (self.directory / "notes.txt").write_text("x", encoding="utf-8")
+        with mock.patch("provost_runtime.hooks.resolve_transcript") as resolve,                 mock.patch("provost_runtime.acceptance.open", create=True) as opened:  # errors would be swallowed
+            self.assertEqual(self.dispatch(), {})
+        resolve.assert_not_called()
+        opened.assert_not_called()
+
+    def test_unreadable_transcript_is_silent(self):
+        self.acceptance("feature.json", [gate("one")])
+        self.assertEqual(self.dispatch(transcript_path=str(self.root / "missing.jsonl")), {})
 
     def test_subagent_dispatch_is_silent(self):
         self.acceptance("feature.json", [gate("one")])

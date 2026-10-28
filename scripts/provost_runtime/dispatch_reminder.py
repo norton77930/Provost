@@ -1,7 +1,8 @@
 """Dispatch reminder: the PreToolUse (Agent) branch of hooks/acceptance-gate.
 
 When the main session dispatches implementer, implementer-sonnet or mech-executor while it has an
-acceptance file (<cwd>/.claude/acceptance/*.json, found by acceptance.session_files) and the brief
+acceptance file (<cwd>/.claude/acceptance/*.json that its own transcript shows it wrote, found by
+acceptance.session_files; another session's file in the same directory does not count) and the brief
 (tool_input.prompt) cites none of the session's files, remind() returns additional context asking main to
 cite them. It is advisory: never a permission decision, and any error or doubt returns {}.
 
@@ -11,7 +12,7 @@ must not continue a longer one (myfeature.json, feature.json.bak do not count). 
 """
 import re
 
-from .acceptance import _directory, load, session_files, session_start, DIRECTORY, Malformed
+from .acceptance import _directory, load, session_files, DIRECTORY, Malformed
 
 ROLES = ("implementer", "implementer-sonnet", "mech-executor")
 
@@ -30,10 +31,7 @@ def remind(event):
         directory = _directory(event)
         if directory is None:
             return {}
-        start = session_start(event)
-        if start is None:  # unknown start: earlier sessions' files cannot be told apart
-            return {}
-        files = session_files(directory, start)
+        files = session_files(event, directory)
         if not files or any(_cites(prompt, path.name) for path in files):
             return {}
         return {"hookSpecificOutput": {"hookEventName": "PreToolUse",

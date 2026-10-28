@@ -78,11 +78,14 @@ class NativeWrapperTests(FixtureCase):
         self.assertIn("-m provost_runtime.cli acceptance-hook", log.read_text(encoding="utf-8"))
 
     def test_acceptance_gate_blocks_end_to_end(self):
-        transcript = self.root / "t.jsonl"
-        transcript.write_text(json.dumps({"type": "user", "timestamp": "2020-01-01T00:00:00Z"}) + "\n",
-                              encoding="utf-8")
         directory = self.root / ".claude" / "acceptance"
         directory.mkdir(parents=True)
+        transcript = self.root / "t.jsonl"  # the session wrote the acceptance file with the Write tool
+        write = {"type": "assistant", "timestamp": "2020-01-01T00:00:00Z", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "Write",
+             "input": {"file_path": str(directory / "task.json")}}]}}
+        transcript.write_text(json.dumps({"type": "user", "timestamp": "2020-01-01T00:00:00Z"}) + "\n"
+                              + json.dumps(write) + "\n", encoding="utf-8")
         (directory / "task.json").write_text(json.dumps({"task": "t", "gates": [
             {"id": "unit-tests", "kind": "machine", "check": "pytest", "status": "pending"}]}), encoding="utf-8")
         stop = json.dumps({"session_id": "s1", "transcript_path": str(transcript), "cwd": str(self.root),
