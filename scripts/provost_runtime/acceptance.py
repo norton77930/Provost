@@ -3,12 +3,15 @@
 A main session that wrote an acceptance file for its task (<cwd>/.claude/acceptance/*.json, schema in
 <runtime root>/docs/native-handoff.md, "Acceptance gates"; the file is the session's own when its transcript
 holds a successful Write, Edit or NotebookEdit of it, see session_files()) cannot end its turn while a non-human gate is pending,
-failed or stale (a machine, live or visual pass older than the last main-session edit): check() returns a block decision naming every unmet gate id and its file. Without a session
+failed or stale (a machine, live or visual pass older than the last main-session edit; a review pass whose
+reviewed files no longer match its digest, or, without files/digest, any main-session edit; see unmet_state()):
+check() returns a block decision naming every unmet gate id and its file. Without a session
 acceptance file, or with only human gates unmet, it returns {}. A malformed file is named in the block
 reason, so a typo cannot switch enforcement off unnoticed. A subagent's Stop, running background work
 and a stated blocker line end the turn, and it blocks at most three times per episode (see check()).
 Any internal error returns {}: a broken check must never trap a session.
 """
+import hashlib
 import json
 import os
 import re
@@ -77,7 +80,8 @@ def check(event, config_path=None):
             except Malformed as exc:
                 malformed.append((path, str(exc)))
                 continue
-            held = [(item["id"], state) for item in gates for state in (unmet_state(item, edited),) if state]
+            held = [(item["id"], state) for item in gates
+                    for state in (unmet_state(item, edited, event["cwd"]),) if state]
             if held:
                 unmet.append((path, held))
         counter = _counter(event, config_path)
@@ -138,7 +142,7 @@ def _spend(counter):
     return pushes + 1
 
 
-def unmet_state(gate, edited=None):
+def unmet_state(gate, edited=None, cwd=None):
     """Why a gate holds the turn ("pending", "fail" or "stale: ..."), or None when it does not; human gates
     never do.
 
@@ -148,11 +152,21 @@ def unmet_state(gate, edited=None):
     time zone, which cannot be compared with the transcript's UTC) and edited is not None. Independent of
     any edit, a zoned ranAt more than FUTURE_SLACK after the current UTC time is stale too: it is local time
     labelled UTC (Windows PowerShell's `date -u`), which would always look later than the last edit.
-    Review and human gates are never stale."""
+
+    A passed review gate with files and digest is stale when digest() of its files (relative ones read
+    from cwd, the event cwd) no longer matches, whoever changed them: a subagent, Bash or the main session;
+    an unreadable or deleted file counts as changed. Without them it is stale whenever edited is not None,
+    like a machine gate without ranAt (its ranAt is not used). Human gates are never stale."""
     if gate["kind"] == "human":
         return None
     if gate["status"] in ("pending", "fail"):
         return gate["status"]
+    if gate["kind"] == "review":
+        if "files" in gate:  # load() guarantees digest beside it
+            return _review_changed(gate, cwd)
+        if callable(edited):
+            edited = edited()
+        return None if edited is None else "stale: review gate has no files/digest, last edit at %s" % _clock(edited)
     if gate["kind"] not in STALE_KINDS:
         return None
     ran = _when(gate.get("ranAt"))
@@ -169,6 +183,20 @@ def unmet_state(gate, edited=None):
     if ran < edited:
         return "stale: ranAt %s is before the last edit at %s" % (_clock(ran), _clock(edited))
     return None
+
+
+def _review_changed(gate, cwd):
+    """The stale reason of a passed review gate whose files no longer match its digest, else None."""
+    reason = "stale: reviewed files changed since the review"
+    try:
+        current = digest(gate["files"], cwd)
+    except OSError as exc:  # deleted or unreadable: changed, and named
+        return "%s (%s unreadable)" % (reason, exc.filename or "a file")
+    except Exception:
+        # Fail-open, as for an unreadable edit history: a digest that cannot be computed for any other
+        # reason is an unknown state, and an unknown state never holds the turn.
+        return None
+    return None if current == gate["digest"] else reason
 
 
 def last_edit(event):
@@ -220,6 +248,26 @@ def last_edit(event):
                 failed.add(block.get("tool_use_id"))
     times = [when for call, when in edits.items() if call not in failed]
     return max(times) if times else None
+
+
+def digest(files, cwd=None):
+    """The digest of a review gate's files (64 hex characters); OSError when one cannot be read.
+
+    sha256 over the JSON list of [name, sha256 of the file's bytes with CRLF read as LF] in the given order,
+    each name exactly as written (a relative one is read from cwd). Line endings are ignored so a CRLF
+    checkout of the same text does not count as a change; the names and their order are hashed so that
+    editing the gate's files list without a new digest is a change too."""
+    entries = []
+    for name in files:
+        with open(_reviewed_path(name, cwd), "rb") as handle:
+            body = handle.read().replace(b"\r\n", b"\n")
+        entries.append([name, hashlib.sha256(body).hexdigest()])
+    return hashlib.sha256(json.dumps(entries, ensure_ascii=True, separators=(",", ":")).encode("ascii")).hexdigest()
+
+
+def _reviewed_path(name, cwd):
+    """A gate's file name as a path to open: relative ones against cwd, as session_files() resolves them."""
+    return os.path.join(cwd, name) if cwd and not os.path.isabs(name) else name
 
 
 def _acceptance_path(path):
@@ -345,6 +393,14 @@ def load(path):
                 raise Malformed("%s.%s must be a string" % (where, key))
         if "ranAt" in item and _when(item["ranAt"]) is None:
             raise Malformed(where + ".ranAt must be an ISO 8601 time")
+        if item["kind"] == "review" and ("files" in item or "digest" in item):
+            if "files" not in item or "digest" not in item:
+                raise Malformed(where + ".files and .digest go together (runtime digest prints both)")
+            files = item["files"]
+            if not isinstance(files, list) or not files or not all(isinstance(name, str) and name for name in files):
+                raise Malformed(where + ".files must be a non-empty list of paths")
+            if not isinstance(item["digest"], str):
+                raise Malformed(where + ".digest must be a string")
     return data
 
 
@@ -370,7 +426,9 @@ def _reason(unmet, malformed, push):
     if unmet:
         lines.append("Run each unmet gate's check and update its status, evidence and ranAt in the file; a "
                      "stale gate passed before the last edit, has a ranAt without a time zone, or has a ranAt later than now, and must be "
-                     "re-run (human gates are the owner's decision and never hold the turn). ranAt must be "
+                     "re-run; a stale review gate needs a re-review of the changed files and fresh files and "
+                     "digest from the runtime `digest` command (human gates are the owner's decision and never "
+                     "hold the turn). ranAt must be "
                      "the clock read from a command, in UTC: now %s; Bash `date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ`, "
                      "PowerShell `(Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')` (its `date -u` "
                      "prints local time labelled Z, which is stale). Guide: %s. Unmet gates:" % (now, GUIDE))

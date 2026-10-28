@@ -108,6 +108,16 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- Reviewer noise is now measurable (#56): `code-reviewer` numbers each `Important`
+  finding `I1`, `I2`, …; policy §3 asks main to write a `Dispositions:` line
+  (`fixed`, `rejected`, `intentional` or `moot`, with a reason unless `fixed`)
+  after reading a report; `tools/dispatch-report.js --reviews` lists each review
+  with its counts and prints per-model precision (fixed over decided) on stderr.
+- Repository review floor (#72): policy §3 reads an `## Always review` section
+  in the repository's root `REVIEW.md` while classifying; a change touching a
+  listed path takes at least the listed tier (R1 or R2), the declaration names
+  the path, and the negative list cannot lower it. This repository lists
+  `hooks/**`, `scripts/provost_runtime/**` and `install.py` at R1.
 - Policy §6 names `acceptance-verifier` as the judge of a performance gate, a
   threshold gate, so the "machine-only acceptance gets no verifier" rule in §4
   no longer leaves the verifier's threshold evidence check unused.
@@ -229,6 +239,13 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Fixed
 
+- Acceptance `review` gates go stale (#71): code changed after `code-reviewer` passed
+  no longer ships as reviewed. A review gate can record `files` and `digest` (both or
+  neither) from the new `runtime digest [--cwd <dir>] <path>...` command; a passed gate
+  whose files no longer match, changed by any process (a subagent or Bash too) or
+  deleted, holds the turn as stale. A review gate without them goes stale after any
+  main-session edit, like a `machine` gate without `ranAt`. A digest that cannot be
+  computed for any other reason does not hold the turn.
 - The acceptance `Stop` check and the dispatch reminder no longer treat another
   session's acceptance file as the current session's: two sessions in one working
   directory gated each other, because ownership was decided by file modification time

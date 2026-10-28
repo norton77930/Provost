@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Lists implementer-family subagent dispatches from Claude Code transcripts.
-// Usage: node dispatch-report.js [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--project substr] [--roles a,b] [--tsv]
+// Usage: node dispatch-report.js [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--project substr] [--roles a,b] [--tsv] [--reviews]
 // Reads ~/.claude/projects/*/<session>.jsonl and <session>/subagents/*. Read-only.
+// --reviews lists code-reviewer dispatches instead: Important findings (I<n> ids in the report) and the
+// "Dispositions: I1 fixed; I2 rejected — why" line main writes after it; per-model precision on stderr.
 // Quality columns (review findings, takeovers) are not derivable here; fill them in the trial log.
 const fs = require("fs"), path = require("path"), os = require("os"), readline = require("readline");
 
@@ -13,6 +15,7 @@ const until = untilArg ? new Date(Date.parse(untilArg + "T00:00:00Z") + 86400000
 const projectFilter = opt("--project", "");
 const roles = new Set(opt("--roles", "implementer,implementer-high,implementer-sonnet").split(","));
 const tsv = args.includes("--tsv");
+const reviews = args.includes("--reviews");
 const root = path.join(os.homedir(), ".claude", "projects");
 
 // USD per million tokens from the official pricing page (checked 2026-10-11):
@@ -115,6 +118,56 @@ async function scanSession(projectDir, file) {
   return rows.filter(r => !r.skip);
 }
 
+const OUTCOMES = ["fixed", "rejected", "intentional", "moot"];
+const resultText = c => typeof c.content === "string" ? c.content
+  : (Array.isArray(c.content) ? c.content.filter(b => b && b.type === "text").map(b => b.text).join("\n") : "");
+
+async function scanReviews(projectDir, file) {
+  const rows = [], byToolUse = {};
+  let last = null; // the latest review; a Dispositions line counts only until the next code-reviewer dispatch
+  await eachLine(file, o => {
+    const content = (o.message && o.message.content) || [];
+    if (o.type === "assistant") {
+      for (const c of content) {
+        if ((c.type === "tool_use" && (c.name === "Agent" || c.name === "Task")) && c.input.subagent_type === "code-reviewer") {
+          last = { ts: o.timestamp, override: c.input.model || "", desc: clip(c.input.description, 60), agentId: null, ids: new Set(), out: {}, done: false };
+          byToolUse[c.id] = last; rows.push(last);
+        } else if (c.type === "text" && last && last.done && !last.disp && /^\s*Dispositions:/m.test(c.text || "")) {
+          last.disp = true;
+          const line = c.text.split("\n").find(l => /^\s*Dispositions:/.test(l));
+          for (const e of line.replace(/^\s*Dispositions:/, "").split(";")) {
+            const m = /^\s*I(\d+)\s+(fixed|rejected|intentional|moot)\b/.exec(e);
+            if (m) last.out["I" + m[1]] = m[2];
+          }
+        }
+      }
+    }
+    if (o.type === "user" && Array.isArray(content)) {
+      for (const c of content) {
+        const row = c.type === "tool_result" && byToolUse[c.tool_use_id];
+        if (!row) continue;
+        row.agentId = (o.toolUseResult || {}).agentId || row.agentId;
+        row.done = true;
+        for (const m of resultText(c).matchAll(/\bI(\d+)\b/g)) row.ids.add("I" + m[1]);
+      }
+    }
+  });
+  const session = path.basename(file, ".jsonl");
+  const out = [];
+  for (const row of rows) {
+    if (!row.ts || new Date(row.ts) < since || (until && new Date(row.ts) >= until)) continue;
+    const sub = row.agentId && await subagentStats(path.join(projectDir, session, "subagents", `agent-${row.agentId}.jsonl`));
+    const n = Object.fromEntries(OUTCOMES.map(k => [k, Object.values(row.out).filter(v => v === k).length]));
+    const important = row.ids.size;
+    out.push({
+      ts: row.ts, project: path.basename(projectDir).replace(/^[A-Za-z]--/, ""), session: session.slice(0, 8),
+      model: (sub && sub.models.size ? [...sub.models].join("+").replace(/claude-/g, "") : row.override) || "?",
+      important, ...n, unrecorded: Math.max(0, important - Object.keys(row.out).filter(id => row.ids.has(id)).length), desc: row.desc,
+    });
+  }
+  return out;
+}
+
 (async () => {
   const all = [];
   for (const dir of fs.readdirSync(root)) {
@@ -125,16 +178,31 @@ async function scanSession(projectDir, file) {
     for (const fn of fs.readdirSync(projectDir).filter(f => f.endsWith(".jsonl"))) {
       const file = path.join(projectDir, fn);
       if (fs.statSync(file).mtime < since) continue;
-      all.push(...await scanSession(projectDir, file));
+      all.push(...await (reviews ? scanReviews : scanSession)(projectDir, file));
     }
   }
   all.sort((a, b) => a.ts.localeCompare(b.ts));
-  const cols = ["ts", "project", "session", "role", "override", "model", "status", "wallMin", "turns", "out", "cacheReadM", "input", "write5mM", "write1hM", "estCost", "apiErrors", "desc"];
+  const cols = reviews ? ["ts", "project", "session", "model", "important", ...OUTCOMES, "unrecorded", "desc"]
+    : ["ts", "project", "session", "role", "override", "model", "status", "wallMin", "turns", "out", "cacheReadM", "input", "write5mM", "write1hM", "estCost", "apiErrors", "desc"];
   const fmt = r => cols.map(c => c === "ts" ? r.ts.slice(0, 16).replace("T", " ") : r[c]);
   if (tsv) { console.log(cols.join("\t")); all.forEach(r => console.log(fmt(r).join("\t"))); }
   else {
     console.log("| " + cols.join(" | ") + " |"); console.log("|" + cols.map(() => "---").join("|") + "|");
     all.forEach(r => console.log("| " + fmt(r).join(" | ") + " |"));
+  }
+  if (reviews) {
+    const byModel = {};
+    for (const r of all) {
+      const m = byModel[r.model] = byModel[r.model] || { reviews: 0, important: 0, fixed: 0, rejected: 0, intentional: 0, moot: 0, unrecorded: 0 };
+      m.reviews++; for (const k of Object.keys(m)) if (k !== "reviews") m[k] += r[k];
+    }
+    console.error(`
+${all.length} reviews since ${since.toISOString().slice(0, 10)}` + (untilArg ? ` through ${untilArg}` : ""));
+    for (const [k, m] of Object.entries(byModel)) {
+      const dec = m.fixed + m.rejected + m.intentional + m.moot;
+      console.error(`${k}: ` + Object.entries(m).map(([a, v]) => `${a}=${v}`).join(" ") + ` precision=${dec ? Math.round(100 * m.fixed / dec) + "%" : "n/a"}`);
+    }
+    return;
   }
   const byRole = {};
   for (const r of all) (byRole[r.role] = byRole[r.role] || []).push(r);

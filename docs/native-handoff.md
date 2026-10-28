@@ -1110,6 +1110,8 @@ tree is the `cwd` Claude Code sends with the `Stop` event.
 | `gates[].ranAt` | no | ISO 8601 time the check last ran, read from the clock in UTC with a zone: `date -u +%Y-%m-%dT%H:%M:%SZ` in Bash, `(Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')` in PowerShell (where `date -u` prints local time labelled `Z`); a time without a zone makes a passed gate stale once the session has edited, and a zoned time more than 5 minutes ahead of now is stale too |
 | `gates[].evidence` | no | string: result summary, observed output, screenshot path or verdict |
 | `gates[].source` | no | string: path or URL of the mockup, spec or issue the gate is judged against |
+| `gates[].files` | no, `review` only | non-empty list of the paths the review covered (absolute, or relative to `cwd`); only together with `digest`, both printed by the `digest` command below |
+| `gates[].digest` | no, `review` only | string: the digest of `files` when the review passed; only together with `files` |
 
 Other keys are ignored. `human` gates (release, tag, merge and other outward
 actions) are the owner's decision and never hold the turn.
@@ -1138,7 +1140,8 @@ answers at every main-turn end:
   path. Claude Code shows the reason to the main session, which keeps working instead
   of ending the turn.
 - A file that does not match the schema (not UTF-8 JSON, larger than 1 MB, a missing
-  or mistyped field, an unknown `kind` or `status`, an unparsable `ranAt`) also
+  or mistyped field, an unknown `kind` or `status`, an unparsable `ranAt`, a `review`
+  gate with only one of `files` and `digest`) also
   blocks; the reason names the file and its first problem, so a typo cannot switch
   enforcement off unnoticed.
 - Legitimate pauses end the turn with no decision and spend no push: a `Stop` event
@@ -1179,13 +1182,36 @@ has no `ranAt`, or a `ranAt` without a time zone (it cannot be compared with the
 transcript's UTC), and the session has edited anything. A stale gate holds the turn like
 a pending one; the reason shows both times (local clock) and the gate must be re-run
 with a fresh `ranAt`. The block reason states the current time in UTC (`now ...Z`):
-`ranAt` must be the clock with a zone, never a guessed or local time without one. A zoned `ranAt` more than 5 minutes ahead of now is stale whether or not the session edited: it is local time labelled UTC (Windows PowerShell's `date -u` prints local time with a literal `Z`), and the reason says it is later than now; use the PowerShell command in the field table instead. `review` and `human` gates never go stale. The last edit is
+`ranAt` must be the clock with a zone, never a guessed or local time without one. A zoned `ranAt` more than 5 minutes ahead of now is stale whether or not the session edited: it is local time labelled UTC (Windows PowerShell's `date -u` prints local time with a literal `Z`), and the reason says it is later than now; use the PowerShell command in the field table instead. `human` gates never go stale. The last edit is
 read from the session transcript (the newest 8 MB): main-session Edit, Write and
 NotebookEdit calls that did not fail. Edits under `.claude/acceptance/` and the
 runtime's usual outside paths (temp dirs, `.claude/projects/`, `.claude/jobs/`) do
 not count, and neither do subagent edits, which are recorded in their own
 transcripts. If the edit history cannot be read, only pending and failed gates hold
 the turn.
+
+A `review` gate with status `pass` is checked against the files it reviewed, not
+against edit times. With `files` and `digest`, it goes **stale** when the digest of
+those files no longer matches, whoever changed them (the main session, a subagent, a
+Bash or PowerShell command); a deleted or unreadable file counts as changed and is
+named in the reason. Without them it goes stale like a `machine` gate without `ranAt`:
+as soon as the session has edited anything. A stale review gate needs a re-review of
+the changed files (after fixes, the fix diff) and a fresh `files` and `digest`. When
+the digest cannot be computed for any other reason, the gate does not hold the turn.
+When the review passes, print both from the files it covered:
+
+```bash
+bash "<runtime>/hooks/runtime" digest [--cwd "<dir>"] <path>...
+# {"files": ["<absolute path>", ...], "digest": "<64 hex characters>"}
+```
+
+Each path is made absolute against `--cwd` (default: the current directory),
+de-duplicated and sorted; paste both values into the gate. A path that cannot be read
+is an error (`{"error": "FILE_UNREADABLE", ...}`, exit 1). The command needs no
+`provost/config.json` and works with handoff off. The digest is SHA-256 over each
+file's bytes with CRLF read as LF, together with the file names as written in `files`
+and their order, so a line-ending-only checkout difference is not a change but an
+edited `files` list is.
 
 `python install.py setup` registers it; by hand, add it as its own `Stop` entry
 without `"async"`:
