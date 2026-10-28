@@ -97,6 +97,14 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   `TaskCreate` before the first step starts, and each step is set
   `in_progress` and `completed` with `TaskUpdate` as work moves, so the whole
   plan and its progress stay visible (a task-board mod reads this list).
+- Reviewer eval cases, first slice (#56): `tools/reviewer-cases.js candidates`
+  lists code-reviewer dispatches from transcripts whose cwd is in a repo, takes the
+  first commit within 3h as `head` (its parent as `base`), and classes each as
+  `defect` (a later fix or revert commit changed lines `head` introduced, found
+  with `git blame`), `clean` (no such fix after `--fix-days`, default 30),
+  `pending-age` or `skip`; `save` writes a confirmed case to
+  `~/.claude/provost/evals/reviewer/cases/<id>/case.json` and never overwrites.
+  Read-only over git; runs from a repo checkout, not installed.
 
 ### Changed
 
