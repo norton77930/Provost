@@ -9,6 +9,8 @@
 // ~/.claude/agents/code-reviewer.md. Hit = an Important finding (I<n>) cites an expected file within ±10 lines
 // of an expected line; fileHit = it cites the file at all; a clean case (expected []) with any Important is a
 // false alarm. Rows go to stdout and ~/.claude/provost/evals/reviewer/runs/<UTC>-<label>.tsv; summary on stderr.
+// The reviewer's report per case is saved in runs/<UTC>-<label>/<id>.md (CLI result text verbatim; <id>.err.txt
+// for an error without result text) and linked in the report column, so a score can be audited.
 // --max-cost stops after the case that takes the cumulative total_cost_usd above it. --claude PATH ending in
 // .js runs under this node (test doubles).
 const fs = require("fs"), path = require("path"), os = require("os");
@@ -86,10 +88,12 @@ function runClaude(cli, dir, c, role) {
   let out = null;
   try { out = JSON.parse(r.stdout); } catch { /* reported below */ }
   const cost = out && Number(out.total_cost_usd) || 0;
-  if (r.status !== 0) return { cost, error: `cli exit ${r.status}` };
-  if (!out || typeof out.result !== "string") return { cost, error: "cli output not json" };
-  if (out.is_error) return { cost, error: "cli is_error" };
-  return { cost, text: out.result };
+  const text = out && typeof out.result === "string" ? out.result : undefined;
+  const raw = { stdout: String(r.stdout || ""), stderr: String(r.stderr || "") };
+  if (r.status !== 0) return { cost, text, raw, error: `cli exit ${r.status}` };
+  if (text === undefined) return { cost, raw, error: "cli output not json" };
+  if (out.is_error) return { cost, text, raw, error: "cli is_error" };
+  return { cost, text, raw };
 }
 
 const normPath = (p, dir) => {
@@ -142,8 +146,22 @@ function score(found, expected, dir) {
   return r;
 }
 
-function runCase(id, file, cli, role) {
-  const row = { id, origin: "", kind: "", important: "", hit: "", fileHit: "", falseAlarm: "", cost: 0, status: "ok" };
+// Saves what the CLI said so a score can be audited: the result text verbatim as <id>.md, or for an error
+// without result text <id>.err.txt (reason plus the first 4000 chars of stdout and stderr). Nothing when the
+// CLI never produced output.
+function saveReport(rep, id, out) {
+  let name;
+  if (typeof out.text === "string") { name = `${id}.md`; fs.writeFileSync(path.join(rep.dir, name), out.text); }
+  else if (out.error && (out.raw.stdout || out.raw.stderr)) {
+    name = `${id}.err.txt`;
+    const clip = t => t.slice(0, 4000);
+    fs.writeFileSync(path.join(rep.dir, name), [out.error, "", "--- stdout ---", clip(out.raw.stdout), "", "--- stderr ---", clip(out.raw.stderr), ""].join("\n"));
+  }
+  return name ? `${rep.name}/${name}` : "";
+}
+
+function runCase(id, file, cli, role, rep) {
+  const row = { id, origin: "", kind: "", important: "", hit: "", fileHit: "", falseAlarm: "", cost: 0, status: "ok", report: "" };
   let c;
   try { c = JSON.parse(fs.readFileSync(file, "utf8")); } catch { row.status = "error:bad case.json"; return row; }
   row.origin = c.origin || "";
@@ -160,6 +178,7 @@ function runCase(id, file, cli, role) {
     let out;
     try { out = runClaude(cli, dir, c, role); } catch (e) { row.status = "error:" + e.message; return row; }
     row.cost = out.cost;
+    try { row.report = saveReport(rep, id, out); } catch (e) { console.error(`${id}: report not saved: ${e.message}`); }
     if (out.error) { row.status = "error:" + out.error; return row; }
     const s = score(findings(out.text, dir), expected, dir);
     const yn = v => v ? "yes" : "no";
@@ -190,9 +209,13 @@ function run() {
     ids = ids.filter(x => w.includes(x));
   }
   const role = roleConfig(), rows = [];
+  const runsDir = path.join(EVALS, "runs");
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
+  const rep = { name: `${stamp}-${label}`, dir: path.join(runsDir, `${stamp}-${label}`) };
+  fs.mkdirSync(rep.dir, { recursive: true });
   let total = 0, stoppedAfter = "";
   for (const id of ids) {
-    const row = runCase(id, path.join(casesDir, id, "case.json"), cli, role);
+    const row = runCase(id, path.join(casesDir, id, "case.json"), cli, role, rep);
     rows.push(row);
     total += row.cost;
     console.error(`${id}: ${row.status}`);
@@ -214,13 +237,10 @@ function run() {
     `role: code-reviewer model=${role.model || "default"} effort=${role.effort || "default"}`,
   ];
 
-  const cols = ["id", "origin", "kind", "important", "hit", "fileHit", "falseAlarm", "costUsd", "status"];
+  const cols = ["id", "origin", "kind", "important", "hit", "fileHit", "falseAlarm", "costUsd", "status", "report"];
   const cell = (r, c) => c === "costUsd" ? r.cost.toFixed(4) : String(r[c] ?? "");
   const tsv = [cols.join("\t"), ...rows.map(r => cols.map(c => cell(r, c).replace(/[\t\r\n]+/g, " ")).join("\t"))];
-  const runsDir = path.join(EVALS, "runs");
-  fs.mkdirSync(runsDir, { recursive: true });
-  const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
-  const out = path.join(runsDir, `${stamp}-${label}.tsv`);
+  const out = path.join(runsDir, `${rep.name}.tsv`);
   fs.writeFileSync(out, [...tsv, "# " + summary.join("; ")].join("\n") + "\n");
 
   if (args.includes("--tsv")) console.log(tsv.join("\n"));

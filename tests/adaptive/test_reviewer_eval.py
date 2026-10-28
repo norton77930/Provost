@@ -186,8 +186,24 @@ class ReviewerEvalTest(unittest.TestCase):
         self.assertEqual(len(runs), 1, runs)
         self.assertRegex(runs[0].name, r"^\d{8}T\d{6}-base\.tsv$")
         saved = runs[0].read_text(encoding="utf-8").splitlines()
-        self.assertTrue(saved[0].startswith("id\torigin\tkind\timportant\thit\tfileHit\tfalseAlarm\tcostUsd\tstatus"))
+        self.assertTrue(saved[0].startswith("id\torigin\tkind\timportant\thit\tfileHit\tfalseAlarm\tcostUsd\tstatus\treport"))
         self.assertEqual(len([ln for ln in saved[1:] if not ln.startswith("#")]), 7)
+
+        # Each reviewer report is saved verbatim next to the TSV, under the same stamp and label.
+        stem = runs[0].stem
+        rdir = runs[0].parent / stem
+        self.assertTrue(rdir.is_dir(), rdir)
+        for cid in ("a-hit", "b-file", "c-miss", "d-clean-alarm", "e-clean-ok"):
+            self.assertEqual(by[cid]["report"], f"{stem}/{cid}.md")
+            self.assertEqual((runs[0].parent / by[cid]["report"]).read_text(encoding="utf-8"), REPLIES[cid])
+        self.assertEqual(by["f-cli-error"]["report"], f"{stem}/f-cli-error.err.txt")
+        err_txt = (runs[0].parent / by["f-cli-error"]["report"]).read_text(encoding="utf-8")
+        self.assertIn("cli exit 3", err_txt)
+        self.assertIn("boom", err_txt)
+        self.assertEqual(by["g-bad-json"].get("report", ""), "")  # run_tool strips the trailing empty cell
+        self.assertEqual(sorted(p.name for p in rdir.iterdir()),
+                         ["a-hit.md", "b-file.md", "c-miss.md", "d-clean-alarm.md", "e-clean-ok.md",
+                          "f-cli-error.err.txt"])
 
     def test_ids_filter(self):
         self.build_cases()
@@ -210,7 +226,9 @@ class ReviewerEvalTest(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stderr)
         lines = out.stdout.strip().splitlines()
         self.assertTrue(lines[0].startswith("| id | origin | kind |"))
+        self.assertTrue(lines[0].endswith("| status | report |"), lines[0])
         self.assertIn("| a-hit |", lines[2])
+        self.assertRegex(lines[2], r"\| \d{8}T\d{6}-run/a-hit\.md \|$")
 
 
 if __name__ == "__main__":

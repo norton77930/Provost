@@ -113,7 +113,11 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   within ±10 lines), file-only hit, and false alarm on clean cases. Rows go to
   stdout and `~/.claude/provost/evals/reviewer/runs/<UTC>-<label>.tsv`; the
   summary gives recall, file-only recall, false-alarm rate, mean Important and
-  total cost; `--max-cost` stops after the case that crosses the ceiling.
+  total cost; `--max-cost` stops after the case that crosses the ceiling. Each
+  case's reviewer report is saved verbatim as
+  `runs/<UTC>-<label>/<id>.md` (`<id>.err.txt` with the reason and the first
+  4000 characters of stdout and stderr for an error without result text) and
+  linked in a `report` column, so a score can be audited.
 
 ### Changed
 
