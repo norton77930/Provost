@@ -221,6 +221,13 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Fixed
 
+- Acceptance `review` gates go stale (#71): code changed after `code-reviewer` passed
+  no longer ships as reviewed. A review gate can record `files` and `digest` (both or
+  neither) from the new `runtime digest [--cwd <dir>] <path>...` command; a passed gate
+  whose files no longer match, changed by any process (a subagent or Bash too) or
+  deleted, holds the turn as stale. A review gate without them goes stale after any
+  main-session edit, like a `machine` gate without `ranAt`. A digest that cannot be
+  computed for any other reason does not hold the turn.
 - The acceptance `Stop` check and the dispatch reminder no longer treat another
   session's acceptance file as the current session's: two sessions in one working
   directory gated each other, because ownership was decided by file modification time

@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -79,6 +80,32 @@ class Parser(argparse.ArgumentParser):
         raise StoreError("INVALID_ARGUMENTS")
 
 
+def digest_command(args):
+    """`digest [--cwd DIR] PATH...`: the files and digest of a passed review gate, as JSON to paste into it.
+
+    Needs no config or handoff: acceptance gates work without them. Each path is made absolute against --cwd
+    (default: the current directory) and normalised, so the gate does not depend on the cwd it is checked
+    from; the list is de-duplicated and sorted, and acceptance.digest() hashes it in that order. A path that
+    cannot be read is an error: a review of a file that is not there is a typo, not a digest."""
+    from . import acceptance
+    try:
+        parser = Parser(prog="digest")
+        parser.add_argument("--cwd", default=None)
+        parser.add_argument("paths", nargs="+")
+        options = parser.parse_args(args)
+        cwd = os.path.abspath(options.cwd or os.getcwd())
+        files = sorted({os.path.normpath(os.path.join(cwd, path)) for path in options.paths})
+        try:
+            value = acceptance.digest(files)
+        except OSError as exc:
+            raise StoreError("FILE_UNREADABLE", detail=str(exc.filename or "")) from None
+        print(json.dumps({"files": files, "digest": value}, ensure_ascii=True))
+        return 0
+    except StoreError as exc:
+        print(json.dumps({"error": str(exc), **({"detail": exc.detail} if exc.detail else {})}))
+        return 1
+
+
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     if args in (["native-hook"], ["acceptance-hook"]):
@@ -96,6 +123,8 @@ def main(argv=None):
             result = {} if gate else {"systemMessage": "Provost: invalid hook input; no handoff saved."}
         print(json.dumps(result, ensure_ascii=True))
         return 0
+    if args[:1] == ["digest"]:
+        return digest_command(args[1:])
     try:
         parser = Parser()
         parser.add_argument("command", choices=["doctor", "record", "snapshot", "list", "resume", "status", "changes",

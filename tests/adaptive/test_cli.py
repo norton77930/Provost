@@ -169,6 +169,30 @@ class CliTests(FixtureCase):
         (runtime / "hooks" / "_python.sh").unlink()
         self.assertNotEqual(self.doctor(runtime)["runtime_hash"], base)
 
+    def test_digest_prints_files_and_digest_the_stop_check_accepts(self):
+        from provost_runtime.acceptance import unmet_state
+        source = self.root / "src" / "app.py"
+        source.parent.mkdir()
+        source.write_bytes(b"print('reviewed')\n")
+        (self.root / "README.md").write_bytes(b"# r\n")
+        self.config_path.unlink()  # no config, no handoff: the digest still works
+        result = self.run_cli("digest", "--cwd", str(self.root), "src/app.py", "README.md", "src/app.py")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(set(data), {"files", "digest"})
+        self.assertEqual(data["files"], sorted({str(self.root / "src" / "app.py"), str(self.root / "README.md")}))
+        review = {"id": "code-review", "kind": "review", "check": "c", "status": "pass", **data}
+        self.assertIsNone(unmet_state(review, None, str(self.root)))
+        source.write_bytes(b"print('changed')\n")
+        self.assertIn("reviewed files changed", unmet_state(review, None, str(self.root)))
+
+    def test_digest_of_a_missing_file_or_no_file_is_an_error(self):
+        for args in (("--cwd", str(self.root), "missing.py"), ("--cwd", str(self.root))):
+            with self.subTest(args):
+                result = self.run_cli("digest", *args)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("error", json.loads(result.stdout))
+
     def test_record_after_transcript_moved_carries_a_cursor(self):
         bound = self.root / "projects" / "D--Repo" / "sess.jsonl"
         bind(self.root, "s1", {"transcript_path": str(bound)})

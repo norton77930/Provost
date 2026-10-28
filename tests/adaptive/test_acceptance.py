@@ -346,7 +346,8 @@ def clock(when):
 
 
 class AcceptanceStaleTests(AcceptanceCase):
-    """A machine, live or visual gate passed before the main session's last edit is stale (#46)."""
+    """A machine, live or visual gate passed before the main session's last edit is stale (#46); so is a
+    review gate without files/digest (#71)."""
 
     def setUp(self):
         super().setUp()
@@ -383,8 +384,8 @@ class AcceptanceStaleTests(AcceptanceCase):
             self.assertIn(gate_id + " (stale", reason)
         self.assertIn(clock(ran), reason)
         self.assertIn(clock(edited), reason)
-        self.assertNotIn("code-review", reason)  # review and human gates are never stale
-        self.assertNotIn("merge", reason)
+        self.assertIn("code-review (stale: review gate has no files/digest", reason)  # #71
+        self.assertNotIn("merge", reason)  # human gates are never stale
 
     def test_pass_after_the_last_edit_is_not_stale(self):
         self.edit(self.now - 30 * 60)
@@ -479,3 +480,105 @@ class AcceptanceStaleTests(AcceptanceCase):
         self.assertTrue(guide.is_absolute(), guide)
         self.assertTrue(guide.exists(), guide)
         self.assertEqual(guide.resolve(), (REPO / "docs" / "native-handoff.md").resolve())
+
+
+class AcceptanceReviewTests(AcceptanceCase):
+    """A passed review gate with files and digest goes stale when a reviewed file's content changes, by any
+    process; one without them goes stale after any main-session edit, like a machine gate without ranAt (#71)."""
+
+    edit = AcceptanceStaleTests.edit
+
+    def setUp(self):
+        super().setUp()
+        self.now = int(time.time())
+        self.calls = 0
+        self.source = self.root / "src" / "app.py"
+        self.source.parent.mkdir()
+        self.source.write_bytes(b"print('reviewed')\n")
+
+    def reviewed(self, *files, cwd=None):
+        from provost_runtime.acceptance import digest
+        names = list(files) or [str(self.source)]
+        return gate("code-review", "pass", kind="review", files=names, digest=digest(names, cwd or str(self.root)))
+
+    def test_digest_ignores_line_endings_and_tracks_content_names_and_order(self):
+        from provost_runtime.acceptance import digest
+        other = self.root / "src" / "other.py"
+        other.write_bytes(b"x = 1\n")
+        names = [str(self.source), str(other)]
+        first = digest(names, str(self.root))
+        self.assertRegex(first, r"^[0-9a-f]{64}$")
+        self.assertEqual(digest(names, str(self.root)), first)
+        self.source.write_bytes(b"print('reviewed')\r\n")  # a CRLF checkout of the same text
+        self.assertEqual(digest(names, str(self.root)), first)
+        self.assertRegex(digest(["src/app.py"], str(self.root)), r"^[0-9a-f]{64}$")  # read from cwd
+        self.assertNotEqual(digest(list(reversed(names)), str(self.root)), first)
+        self.source.write_bytes(b"print('changed')\n")
+        self.assertNotEqual(digest(names, str(self.root)), first)
+        with self.assertRaises(OSError):
+            digest([str(self.root / "missing.py")], str(self.root))
+
+    def test_unchanged_reviewed_files_pass_even_after_an_edit(self):
+        self.acceptance("feature.json", [self.reviewed()])
+        self.assertEqual(self.stop(), {})
+        self.edit(self.now - 30 * 60)  # an edit elsewhere: the reviewed bytes are what count
+        self.assertEqual(self.stop(), {})
+
+    def test_reviewed_file_changed_by_any_process_is_stale(self):
+        path = self.acceptance("feature.json", [self.reviewed(), gate("merge", "pass", kind="human")])
+        self.source.write_bytes(b"print('changed by a subagent or Bash')\n")  # no transcript edit at all
+        result = self.stop()
+        self.assertEqual(result.get("decision"), "block", result)
+        self.assertIn(str(path), result["reason"])
+        self.assertIn("code-review (stale: reviewed files changed since the review", result["reason"])
+        self.assertNotIn("merge", result["reason"])
+
+    def test_deleted_reviewed_file_is_stale_and_named(self):
+        self.acceptance("feature.json", [self.reviewed()])
+        self.source.unlink()
+        reason = self.stop()["reason"]
+        self.assertIn("code-review (stale: reviewed files changed since the review", reason)
+        self.assertIn(str(self.source), reason)
+
+    def test_relative_reviewed_files_resolve_against_the_event_cwd(self):
+        self.acceptance("feature.json", [self.reviewed("src/app.py")])
+        self.assertEqual(self.stop(), {})
+        self.source.write_bytes(b"print('changed')\n")
+        self.assertIn("code-review (stale: reviewed files changed", self.stop()["reason"])
+
+    def test_review_without_files_is_stale_only_after_an_edit(self):
+        self.acceptance("feature.json", [gate("code-review", "pass", kind="review", ranAt=iso(self.now))])
+        self.assertEqual(self.stop(), {})
+        edited = self.now - 30 * 60  # before ranAt: a legacy review gate ignores ranAt, like no ranAt at all
+        self.edit(edited)
+        reason = self.stop()["reason"]
+        self.assertIn("code-review (stale: review gate has no files/digest, last edit at %s" % clock(edited), reason)
+
+    def test_pending_review_with_files_stays_pending(self):
+        self.acceptance("feature.json", [dict(self.reviewed(), status="pending")])
+        self.assertIn("code-review (pending)", self.stop()["reason"])
+
+    def test_half_or_mistyped_files_digest_pair_is_malformed(self):
+        whole = self.reviewed()
+        broken = {
+            "files-only": {key: value for key, value in whole.items() if key != "digest"},
+            "digest-only": {key: value for key, value in whole.items() if key != "files"},
+            "files-not-list": dict(whole, files=str(self.source)),
+            "files-empty": dict(whole, files=[]),
+            "files-not-strings": dict(whole, files=[1]),
+            "digest-not-string": dict(whole, digest=7),
+        }
+        for index, (name, item) in enumerate(broken.items()):
+            with self.subTest(name):
+                for old in self.directory.glob("*.json") if self.directory.exists() else ():
+                    old.unlink()
+                path = self.acceptance(name + ".json", [item])
+                result = self.stop(session_id="pair-%d" % index)  # each case its own push budget
+                self.assertEqual(result.get("decision"), "block", result)
+                self.assertIn(str(path), result["reason"])
+                self.assertIn("malformed", result["reason"].lower())
+
+    def test_digest_errors_never_raise_and_do_not_hold_the_turn(self):
+        self.acceptance("feature.json", [self.reviewed()])
+        with mock.patch("provost_runtime.acceptance.digest", side_effect=RuntimeError("boom")):
+            self.assertEqual(self.stop(), {})
