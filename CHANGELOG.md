@@ -105,6 +105,19 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   `pending-age` or `skip`; `save` writes a confirmed case to
   `~/.claude/provost/evals/reviewer/cases/<id>/case.json` and never overwrites.
   Read-only over git; runs from a repo checkout, not installed.
+- Reviewer eval runner, second slice (#56): `tools/reviewer-eval.js run` unpacks
+  each case's `head` with `git archive` into a temp dir (the source repo is never
+  checked out), writes the `base..head` diff to `.review/diff.patch`, runs
+  `claude -p --agent code-reviewer` there with only Read, Glob and Grep and the
+  role's model and effort, and scores its `I<n>` findings: hit (expected file
+  within ±10 lines), file-only hit, and false alarm on clean cases. Rows go to
+  stdout and `~/.claude/provost/evals/reviewer/runs/<UTC>-<label>.tsv`; the
+  summary gives recall, file-only recall, false-alarm rate, mean Important and
+  total cost; `--max-cost` stops after the case that crosses the ceiling. Each
+  case's reviewer report is saved verbatim as
+  `runs/<UTC>-<label>/<id>.md` (`<id>.err.txt` with the reason and the first
+  4000 characters of stdout and stderr for an error without result text) and
+  linked in a `report` column, so a score can be audited.
 
 ### Changed
 
