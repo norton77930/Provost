@@ -252,6 +252,11 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Fixed
 
+- `tools/reviewer-cases.js candidates` (#56) takes the reviewed head from the first
+  commit hash in the dispatch claim that resolves in the repo (new `headFrom` column:
+  `claim`), and only falls back to the first commit within 3h after the dispatch
+  (`window`) when the claim names none; main usually commits before it dispatches the
+  review, so the window rule attributed defects to the next commit.
 - Acceptance `review` gates go stale (#71): code changed after `code-reviewer` passed
   no longer ships as reviewed. A review gate can record `files` and `digest` (both or
   neither) from the new `runtime digest [--cwd <dir>] <path>...` command; a passed gate

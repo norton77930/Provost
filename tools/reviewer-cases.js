@@ -4,7 +4,8 @@
 //        node reviewer-cases.js save --id <id> --repo <path> --base <sha> --head <sha> --claim <text>
 //             --origin escape|seeded|clean --confirmed-by <name> [--expected '<json array of {file,lines,summary}>']
 // candidates reads ~/.claude/projects/*/<session>.jsonl (code-reviewer dispatches whose cwd is in --repo) and
-// `git log --all`; head = first commit within 3h after the dispatch, base = head^. Read-only.
+// `git log --all`; head = the first commit named in the claim that resolves in the repo (headFrom=claim), else
+// the first commit within 3h after the dispatch (headFrom=window); base = head^ (first parent). Read-only.
 // save writes ~/.claude/provost/evals/reviewer/cases/<id>/case.json and refuses to overwrite.
 const fs = require("fs"), path = require("path"), os = require("os"), readline = require("readline");
 const { execFileSync } = require("child_process");
@@ -111,6 +112,23 @@ function blamedLines(repo, f) {
   return by;
 }
 
+// Commit named in the claim: the first 7-40 hex token that resolves to a known commit; null if none does.
+const commitCache = new Map();
+function resolveCommit(repo, tok) {
+  if (commitCache.has(tok)) return commitCache.get(tok);
+  let sha = null;
+  try { sha = git(repo, "rev-parse", "--verify", "--quiet", `${tok}^{commit}`).trim() || null; } catch { /* unknown token */ }
+  commitCache.set(tok, sha);
+  return sha;
+}
+function claimedCommit(repo, claim, bySha) {
+  for (const tok of String(claim).match(/\b[0-9a-f]{7,40}\b/gi) || []) {
+    const sha = resolveCommit(repo, tok);
+    if (sha && bySha.has(sha)) return bySha.get(sha);
+  }
+  return null;
+}
+
 const rangeText = ls => {
   const out = [];
   for (const n of ls) {
@@ -127,13 +145,14 @@ async function candidates() {
   const fixDays = Number(opt("--fix-days", "30"));
   if (!Number.isFinite(fixDays) || fixDays < 0) die("candidates: --fix-days must be a number >= 0");
   try { git(repo, "rev-parse", "--git-dir"); } catch { die(`candidates: not a git repository: ${repo}`); }
-  const all = commits(repo), now = Date.now(), rows = [];
+  const all = commits(repo), bySha = new Map(all.map(c => [c.sha, c])), now = Date.now(), rows = [];
   for (const r of await reviews(repo, since)) {
     const t = Date.parse(r.ts);
-    const base = { repo, ts: r.ts.slice(0, 16).replace("T", " "), session: r.session, claim: r.claim, base: "", head: "", fix: "", file: "", lines: "", note: "" };
-    const head = all.find(c => c.ct > t && c.ct <= t + WINDOW_MS);
+    const base = { repo, ts: r.ts.slice(0, 16).replace("T", " "), session: r.session, claim: r.claim, base: "", head: "", headFrom: "", fix: "", file: "", lines: "", note: "" };
+    let head = claimedCommit(repo, r.claim, bySha), headFrom = "claim";
+    if (!head) { head = all.find(c => c.ct > t && c.ct <= t + WINDOW_MS); headFrom = "window"; }
     if (!head) { rows.push({ ...base, kind: "skip", note: "no commit within 3h" }); continue; }
-    Object.assign(base, { base: head.parent.slice(0, 12), head: head.sha.slice(0, 12) });
+    Object.assign(base, { base: head.parent.slice(0, 12), head: head.sha.slice(0, 12), headFrom });
     let found = false;
     for (const f of all) {
       if (f.ct <= head.ct || !f.parent || !/\b(fix|fixes|fixed|revert)\b/i.test(f.subject)) continue;
@@ -144,7 +163,7 @@ async function candidates() {
     }
     if (!found) rows.push({ ...base, kind: now - head.ct >= fixDays * 86400000 ? "clean" : "pending-age" });
   }
-  const cols = ["kind", "repo", "ts", "session", "base", "head", "fix", "file", "lines", "note", "claim"];
+  const cols = ["kind", "repo", "ts", "session", "base", "head", "headFrom", "fix", "file", "lines", "note", "claim"];
   const cell = c => String(c ?? "");
   if (args.includes("--tsv")) {
     console.log(cols.join("\t"));

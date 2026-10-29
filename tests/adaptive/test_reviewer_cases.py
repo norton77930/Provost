@@ -101,6 +101,7 @@ class ReviewerCasesTest(unittest.TestCase):
         r1 = by["11111111"]
         self.assertEqual((r1["kind"], r1["base"], r1["head"], r1["fix"], r1["file"], r1["lines"]),
                          ("defect", a[:12], b[:12], c[:12], "f.txt", "4"))
+        self.assertEqual((r1["headFrom"], by["22222222"]["headFrom"]), ("window", "window"))
         self.assertEqual(r1["ts"], "2026-01-10 10:00")
         self.assertIn("claim one [REDACTED]", r1["claim"])
         r2 = by["22222222"]
@@ -110,6 +111,29 @@ class ReviewerCasesTest(unittest.TestCase):
         self.assertIn("defect=1", err)
         self.assertIn("clean=1", err)
         self.assertIn("skip=1", err)
+
+    def test_head_is_commit_named_in_claim(self):
+        a = self.commit(utc(2026, 1, 1), "init", {"f.txt": "a1\na2\n"})
+        b = self.commit(utc(2026, 1, 10, 9), "add b", {"f.txt": "a1\na2\nb1\n"})
+        self.commit(utc(2026, 1, 10, 11), "add g", {"g.txt": "g1\n"})  # within 3h after the dispatch
+        fix = self.commit(utc(2026, 1, 12), "fix b", {"f.txt": "a1\na2\nb1-fixed\n"})
+        self.review("11111111-aaaa", utc(2026, 1, 10, 10), self.repo, prompt=f"Review commit {b[:7]} for errors")
+        rows, _ = self.candidates()
+        self.assertEqual([(r["kind"], r["base"], r["head"], r["headFrom"], r["fix"], r["lines"]) for r in rows],
+                         [("defect", a[:12], b[:12], "claim", fix[:12], "3")])
+
+    def test_unresolvable_claim_hash_falls_back_to_window(self):
+        self.commit(utc(2026, 1, 1), "init", {"f.txt": "a1\n"})
+        b = self.commit(utc(2026, 1, 10, 11), "add b", {"f.txt": "a1\nb1\n"})
+        self.review("11111111-aaaa", utc(2026, 1, 10, 10), self.repo, prompt="Review commit deadbeef1 and cafe")
+        rows, _ = self.candidates()
+        self.assertEqual([(r["kind"], r["head"], r["headFrom"]) for r in rows], [("clean", b[:12], "window")])
+
+    def test_skip_row_has_empty_head_from(self):
+        self.commit(utc(2026, 1, 1), "init", {"f.txt": "a1\n"})
+        self.review("11111111-aaaa", utc(2026, 3, 1, 10), self.repo)
+        rows, _ = self.candidates()
+        self.assertEqual([(r["kind"], r["headFrom"]) for r in rows], [("skip", "")])
 
     def test_non_fix_commit_makes_no_candidate(self):
         self.build_history()
@@ -152,6 +176,7 @@ class ReviewerCasesTest(unittest.TestCase):
         self.review("11111111-aaaa", utc(2026, 1, 10, 10), self.repo)
         out = self.run_tool("candidates", "--repo", str(self.repo)).stdout.splitlines()
         self.assertTrue(out[0].startswith("| kind | repo | ts | session |"))
+        self.assertIn("| head | headFrom | fix |", out[0])
         self.assertTrue(out[1].startswith("|---|"))
         self.assertIn("| defect |", out[2])
 
