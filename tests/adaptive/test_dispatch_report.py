@@ -142,6 +142,28 @@ class DispatchReportTests(unittest.TestCase):
         out, _ = self.run_report("--reviews", "--tsv")
         self.assertEqual(out[1].split("\t")[4], "0")
 
+    def test_reviews_mode_prefers_subagent_handback_over_interim_text(self):
+        jl(self.proj / f"{SESSION}.jsonl", [
+            dispatch("r1", "2026-10-20T10:00:00Z", "code-reviewer", "Review handback"),
+            async_result("r1", "2026-10-20T10:00:02Z", "a1"),
+        ])
+        lines = sub_lines("claude-fable-5-1", "2026-10-20T10:00:05Z", "2026-10-20T10:04:05Z")
+        handback = {"type": "assistant", "timestamp": "2026-10-20T10:04:00Z", "message": {"content": [
+            {"type": "tool_use", "id": "h1", "name": "SubagentHandback",
+             "input": {"message": "Final report\nI1 a.py:1 bug\nI2 b.py:2 bug"}}]}}
+        delivered = {"type": "user", "timestamp": "2026-10-20T10:04:01Z", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "h1", "content": '{"success":true,"message":"Report delivered to your caller."}'}]}}
+        # Interim text before the handback, and a closing line after it: the handback message is the report.
+        jl(self.proj / SESSION / "subagents" / "agent-a1.jsonl",
+           [lines[0], say("2026-10-20T10:03:00Z", "One more check before I write up: I9"), handback, delivered,
+            say("2026-10-20T10:04:05Z", "Done.")])
+        dest = self.home / "reports"
+        out, _ = self.run_report("--reviews", "--tsv", "--reports", str(dest))
+        self.assertEqual(out[1].split("\t")[4], "2")
+        saved = (dest / out[1].split("\t")[-1]).read_text(encoding="utf-8")
+        self.assertIn("Final report", saved)
+        self.assertNotIn("One more check", saved)
+
     def test_reports_option_writes_redacted_reports(self):
         # r1: synchronous, planted token in the tool_result; r2: background, report only in the subagent transcript.
         important = "Report: 1 Important\nI1 a.py:1 bug\ntoken ghp_abcdefghijklmnop1234"

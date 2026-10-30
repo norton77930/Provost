@@ -128,16 +128,22 @@ const resultText = c => typeof c.content === "string" ? c.content
 
 const isAsyncLaunch = (r, text) => !!(r && r.isAsync) || /^\s*Async agent launched/.test(text);
 
-// Final report of a background subagent: the text of its latest-timestamped assistant line that has any.
+// Final report of a background subagent: the message of its latest SubagentHandback tool call, else the text of
+// its latest-timestamped assistant line that has any (interim chatter, used only when there is no handback).
 async function lastAssistantText(file) {
   if (!fs.existsSync(file)) return "";
-  let best = "", bestTs = "";
+  let text = "", textTs = "", hand = "", handTs = "";
   await eachLine(file, o => {
     if (o.type !== "assistant") return;
-    const text = resultText({ content: (o.message && o.message.content) || [] });
-    if (text.trim() && (o.timestamp || "") >= bestTs) { best = text; bestTs = o.timestamp || ""; }
+    const content = (o.message && o.message.content) || [], ts = o.timestamp || "";
+    const t = resultText({ content });
+    if (t.trim() && ts >= textTs) { text = t; textTs = ts; }
+    for (const c of content) {
+      const m = c && c.type === "tool_use" && c.name === "SubagentHandback" && c.input && c.input.message;
+      if (typeof m === "string" && m.trim() && ts >= handTs) { hand = m; handTs = ts; }
+    }
   });
-  return best;
+  return hand || text;
 }
 
 // Writes one redacted report file; returns its name, or "" when there is nothing to write or the file exists.
