@@ -1,9 +1,14 @@
 #!/usr/bin/env node
 // Lists implementer-family subagent dispatches from Claude Code transcripts.
-// Usage: node dispatch-report.js [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--project substr] [--roles a,b] [--tsv] [--reviews]
+// Usage: node dispatch-report.js [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--project substr] [--roles a,b] [--tsv] [--reviews] [--reports <dir>]
 // Reads ~/.claude/projects/*/<session>.jsonl and <session>/subagents/*. Read-only.
-// --reviews lists code-reviewer dispatches instead: Important findings (I<n> ids in the report) and the
-// "Dispositions: I1 fixed; I2 rejected — why" line main writes after it; per-model precision on stderr.
+// --reviews lists code-reviewer dispatches instead: Important findings (the number after "Important" in the report's
+// counts line, else the distinct I<n> ids) and the "Dispositions: I1 fixed; I2 rejected — why" line main writes after
+// it; per-model precision on stderr. tagged=no marks a report with neither (its important=0 means unknown), and
+// precision covers tagged reviews only.
+// A code-reviewer that ran in the background returns only "Async agent launched"; its report is then the message of
+// the subagent's last SubagentHandback call (else its last assistant text). --reviews --reports <dir> saves each report (redacted) as
+// <YYYYMMDD-HHMM>-<session8>-<agentId or toolUseId8>.md, skipping files that exist, and names it in the report column.
 // Quality columns (review findings, takeovers) are not derivable here; fill them in the trial log.
 const fs = require("fs"), path = require("path"), os = require("os"), readline = require("readline");
 
@@ -16,6 +21,7 @@ const projectFilter = opt("--project", "");
 const roles = new Set(opt("--roles", "implementer,implementer-high,implementer-sonnet").split(","));
 const tsv = args.includes("--tsv");
 const reviews = args.includes("--reviews");
+const reportsDir = reviews ? opt("--reports", "") : "";
 const root = path.join(os.homedir(), ".claude", "projects");
 
 // USD per million tokens from the official pricing page (checked 2026-10-11):
@@ -122,6 +128,41 @@ const OUTCOMES = ["fixed", "rejected", "intentional", "moot"];
 const resultText = c => typeof c.content === "string" ? c.content
   : (Array.isArray(c.content) ? c.content.filter(b => b && b.type === "text").map(b => b.text).join("\n") : "");
 
+const isAsyncLaunch = (r, text) => !!(r && r.isAsync) || /^\s*Async agent launched/.test(text);
+
+// Final report of a background subagent: the message of its latest SubagentHandback tool call, else the text of
+// its latest-timestamped assistant line that has any (interim chatter, used only when there is no handback).
+async function lastAssistantText(file) {
+  if (!fs.existsSync(file)) return "";
+  let text = "", textTs = "", hand = "", handTs = "";
+  await eachLine(file, o => {
+    if (o.type !== "assistant") return;
+    const content = (o.message && o.message.content) || [], ts = o.timestamp || "";
+    const t = resultText({ content });
+    if (t.trim() && ts >= textTs) { text = t; textTs = ts; }
+    for (const c of content) {
+      const m = c && c.type === "tool_use" && c.name === "SubagentHandback" && c.input && c.input.message;
+      if (typeof m === "string" && m.trim() && ts >= handTs) { hand = m; handTs = ts; }
+    }
+  });
+  return hand || text;
+}
+
+// Writes one redacted report file; returns its name, or "" when there is nothing to write or the file exists.
+function saveReport(row, session, text) {
+  if (!text.trim()) return "";
+  const stamp = row.ts.slice(0, 16).replace(/[-:]/g, "").replace("T", "-");
+  const name = `${stamp}-${session.slice(0, 8)}-${row.agentId || String(row.toolUseId).slice(0, 8)}.md`;
+  fs.mkdirSync(reportsDir, { recursive: true });
+  try { fs.writeFileSync(path.join(reportsDir, name), redact(text) + "\n", { flag: "wx" }); }
+  catch (e) {
+    if (e.code !== "EEXIST") throw e;
+    console.error(`skipped existing report ${name}`);
+    return "";
+  }
+  return name;
+}
+
 async function scanReviews(projectDir, file) {
   const rows = [], byToolUse = {};
   let last = null; // the latest review; a Dispositions line counts only until the next code-reviewer dispatch
@@ -130,7 +171,7 @@ async function scanReviews(projectDir, file) {
     if (o.type === "assistant") {
       for (const c of content) {
         if ((c.type === "tool_use" && (c.name === "Agent" || c.name === "Task")) && c.input.subagent_type === "code-reviewer") {
-          last = { ts: o.timestamp, override: c.input.model || "", desc: clip(c.input.description, 60), agentId: null, ids: new Set(), out: {}, done: false };
+          last = { ts: o.timestamp, override: c.input.model || "", desc: clip(c.input.description, 60), agentId: null, toolUseId: c.id, text: null, out: {}, done: false };
           byToolUse[c.id] = last; rows.push(last);
         } else if (c.type === "text" && last && last.done && !last.disp && /^\s*Dispositions:/m.test(c.text || "")) {
           last.disp = true;
@@ -148,7 +189,8 @@ async function scanReviews(projectDir, file) {
         if (!row) continue;
         row.agentId = (o.toolUseResult || {}).agentId || row.agentId;
         row.done = true;
-        for (const m of resultText(c).matchAll(/\bI(\d+)\b/g)) row.ids.add("I" + m[1]);
+        const text = resultText(c);
+        row.text = isAsyncLaunch(o.toolUseResult, text) ? null : text;
       }
     }
   });
@@ -156,13 +198,22 @@ async function scanReviews(projectDir, file) {
   const out = [];
   for (const row of rows) {
     if (!row.ts || new Date(row.ts) < since || (until && new Date(row.ts) >= until)) continue;
-    const sub = row.agentId && await subagentStats(path.join(projectDir, session, "subagents", `agent-${row.agentId}.jsonl`));
+    const subFile = row.agentId && path.join(projectDir, session, "subagents", `agent-${row.agentId}.jsonl`);
+    const sub = subFile && await subagentStats(subFile);
+    const reportText = row.text !== null ? row.text : (subFile ? await lastAssistantText(subFile) : "");
+    const ids = new Set([...reportText.matchAll(/\bI(\d+)\b/g)].map(m => "I" + m[1]));
     const n = Object.fromEntries(OUTCOMES.map(k => [k, Object.values(row.out).filter(v => v === k).length]));
-    const important = row.ids.size;
+    // Real reports open with a counts line ("Counts: Important 2 · Nit 1", "Important: 0, ...", full-width colon too);
+    // older ones number findings I1, I2. A report with neither is untagged: its zero is "unknown", not "no findings".
+    const counts = /Important\s*[:：]?\s*(\d+)/.exec(reportText);
+    const important = counts ? Number(counts[1]) : ids.size;
+    const recorded = Object.keys(row.out).filter(id => counts ? Number(id.slice(1)) <= important : ids.has(id)).length;
     out.push({
       ts: row.ts, project: path.basename(projectDir).replace(/^[A-Za-z]--/, ""), session: session.slice(0, 8),
       model: (sub && sub.models.size ? [...sub.models].join("+").replace(/claude-/g, "") : row.override) || "?",
-      important, ...n, unrecorded: Math.max(0, important - Object.keys(row.out).filter(id => row.ids.has(id)).length), desc: row.desc,
+      important, ...n, unrecorded: Math.max(0, important - recorded), desc: row.desc,
+      tagged: counts || ids.size ? "yes" : "no",
+      report: reportsDir ? saveReport(row, session, reportText) : "",
     });
   }
   return out;
@@ -182,7 +233,7 @@ async function scanReviews(projectDir, file) {
     }
   }
   all.sort((a, b) => a.ts.localeCompare(b.ts));
-  const cols = reviews ? ["ts", "project", "session", "model", "important", ...OUTCOMES, "unrecorded", "desc"]
+  const cols = reviews ? ["ts", "project", "session", "model", "important", ...OUTCOMES, "unrecorded", "desc", "tagged", "report"]
     : ["ts", "project", "session", "role", "override", "model", "status", "wallMin", "turns", "out", "cacheReadM", "input", "write5mM", "write1hM", "estCost", "apiErrors", "desc"];
   const fmt = r => cols.map(c => c === "ts" ? r.ts.slice(0, 16).replace("T", " ") : r[c]);
   if (tsv) { console.log(cols.join("\t")); all.forEach(r => console.log(fmt(r).join("\t"))); }
@@ -191,16 +242,19 @@ async function scanReviews(projectDir, file) {
     all.forEach(r => console.log("| " + fmt(r).join(" | ") + " |"));
   }
   if (reviews) {
-    const byModel = {};
+    const byModel = {}, prec = {}; // precision counts only tagged reviews
     for (const r of all) {
-      const m = byModel[r.model] = byModel[r.model] || { reviews: 0, important: 0, fixed: 0, rejected: 0, intentional: 0, moot: 0, unrecorded: 0 };
-      m.reviews++; for (const k of Object.keys(m)) if (k !== "reviews") m[k] += r[k];
+      const m = byModel[r.model] = byModel[r.model] || { reviews: 0, important: 0, fixed: 0, rejected: 0, intentional: 0, moot: 0, unrecorded: 0, tagged: 0 };
+      const p = prec[r.model] = prec[r.model] || { fixed: 0, dec: 0 };
+      m.reviews++;
+      for (const k of Object.keys(m)) if (k !== "reviews" && k !== "tagged") m[k] += r[k];
+      if (r.tagged === "yes") { m.tagged++; p.fixed += r.fixed; p.dec += r.fixed + r.rejected + r.intentional + r.moot; }
     }
     console.error(`
 ${all.length} reviews since ${since.toISOString().slice(0, 10)}` + (untilArg ? ` through ${untilArg}` : ""));
     for (const [k, m] of Object.entries(byModel)) {
-      const dec = m.fixed + m.rejected + m.intentional + m.moot;
-      console.error(`${k}: ` + Object.entries(m).map(([a, v]) => `${a}=${v}`).join(" ") + ` precision=${dec ? Math.round(100 * m.fixed / dec) + "%" : "n/a"}`);
+      const p = prec[k];
+      console.error(`${k}: ` + Object.entries(m).map(([a, v]) => `${a}=${v}`).join(" ") + ` precision=${p.dec ? Math.round(100 * p.fixed / p.dec) + "%" : "n/a"}`);
     }
     return;
   }
