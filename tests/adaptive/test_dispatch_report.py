@@ -30,6 +30,12 @@ def result(tid, ts, agent_id, text="done"):
                                      "content": [{"type": "text", "text": text}]}]}}
 
 
+def async_result(tid, ts, agent_id):
+    text = f"Async agent launched successfully.\nagentId: {agent_id} (internal ID)\nThe agent is working in the background."
+    return {"type": "user", "timestamp": ts, "toolUseResult": {"isAsync": True, "status": "async_launched", "agentId": agent_id},
+            "message": {"content": [{"type": "tool_result", "tool_use_id": tid, "content": [{"type": "text", "text": text}]}]}}
+
+
 def say(ts, text):
     return {"type": "assistant", "timestamp": ts, "message": {"content": [{"type": "text", "text": text}]}}
 
@@ -94,10 +100,10 @@ class DispatchReportTests(unittest.TestCase):
     def test_reviews_mode_counts_findings_and_dispositions(self):
         self.reviews_fixture()
         out, err = self.run_report("--reviews", "--tsv")
-        self.assertEqual(out[0], "ts\tproject\tsession\tmodel\timportant\tfixed\trejected\tintentional\tmoot\tunrecorded\tdesc")
+        self.assertEqual(out[0], "ts\tproject\tsession\tmodel\timportant\tfixed\trejected\tintentional\tmoot\tunrecorded\tdesc\treport")
         self.assertEqual(out[1:], [
-            "2026-10-20 10:00\tproj-x\tabcdef12\tfable-5-1\t4\t1\t1\t1\t1\t0\tReview one",
-            "2026-10-20 11:00\tproj-x\tabcdef12\topus-5-5\t2\t0\t0\t0\t0\t2\tReview two",
+            "2026-10-20 10:00\tproj-x\tabcdef12\tfable-5-1\t4\t1\t1\t1\t1\t0\tReview one\t",
+            "2026-10-20 11:00\tproj-x\tabcdef12\topus-5-5\t2\t0\t0\t0\t0\t2\tReview two\t",
         ])
         self.assertIn("fable-5-1: reviews=1 important=4 fixed=1 rejected=1 intentional=1 moot=1 unrecorded=0 precision=25%", err)
         self.assertIn("opus-5-5: reviews=1 important=2 fixed=0 rejected=0 intentional=0 moot=0 unrecorded=2 precision=n/a", err)
@@ -106,8 +112,65 @@ class DispatchReportTests(unittest.TestCase):
         self.reviews_fixture()
         out, _ = self.run_report("--reviews")
         self.assertTrue(out[0].startswith("| ts | project | session | model | important |"))
-        self.assertEqual(out[1], "|" + "|".join(["---"] * 11) + "|")
+        self.assertEqual(out[1], "|" + "|".join(["---"] * 12) + "|")
         self.assertEqual(len(out), 4)
+
+    def async_fixture(self):
+        report = "Review done\nI1 a.py:1 bug\nI2 b.py:2 bug"
+        jl(self.proj / f"{SESSION}.jsonl", [
+            dispatch("r1", "2026-10-20T10:00:00Z", "code-reviewer", "Review async"),
+            async_result("r1", "2026-10-20T10:00:02Z", "a1"),
+            say("2026-10-20T10:06:00Z", "Dispositions: I1 fixed; I2 rejected - nope"),
+        ])
+        lines = sub_lines("claude-fable-5-1", "2026-10-20T10:00:05Z", "2026-10-20T10:04:05Z")
+        draft = say("2026-10-20T10:03:00Z", "Draft: I7 and I8 and I9 maybe")
+        final = say("2026-10-20T10:04:05Z", report)
+        thinking = {"type": "assistant", "timestamp": "2026-10-20T10:04:06Z",
+                    "message": {"content": [{"type": "thinking", "thinking": "I5"}]}}
+        # The report is the text-bearing line with the latest timestamp, wherever it sits in the file.
+        jl(self.proj / SESSION / "subagents" / "agent-a1.jsonl", [lines[0], final, draft, thinking, lines[1]])
+
+    def test_reviews_mode_reads_report_of_background_dispatch(self):
+        self.async_fixture()
+        out, err = self.run_report("--reviews", "--tsv")
+        self.assertEqual(out[1:], ["2026-10-20 10:00\tproj-x\tabcdef12\tfable-5-1\t2\t1\t1\t0\t0\t0\tReview async\t"])
+        self.assertIn("fable-5-1: reviews=1 important=2 fixed=1 rejected=1 intentional=0 moot=0 unrecorded=0 precision=50%", err)
+
+    def test_reviews_mode_async_without_subagent_transcript_counts_zero(self):
+        self.async_fixture()
+        (self.proj / SESSION / "subagents" / "agent-a1.jsonl").unlink()
+        out, _ = self.run_report("--reviews", "--tsv")
+        self.assertEqual(out[1].split("\t")[4], "0")
+
+    def test_reports_option_writes_redacted_reports(self):
+        # r1: synchronous, planted token in the tool_result; r2: background, report only in the subagent transcript.
+        important = "Report: 1 Important\nI1 a.py:1 bug\ntoken ghp_abcdefghijklmnop1234"
+        jl(self.proj / f"{SESSION}.jsonl", [
+            dispatch("r1", "2026-10-20T10:00:00Z", "code-reviewer", "Review one"),
+            result("r1", "2026-10-20T10:05:00Z", "a1", important),
+            dispatch("r2", "2026-10-20T11:00:00Z", "code-reviewer", "Review two"),
+            async_result("r2", "2026-10-20T11:00:02Z", "a2"),
+        ])
+        self.agent("a1", "claude-fable-5-1", "2026-10-20T10:00:05Z", "2026-10-20T10:04:05Z")
+        a2 = sub_lines("claude-opus-5-5", "2026-10-20T11:00:05Z", "2026-10-20T11:04:05Z")
+        jl(self.proj / SESSION / "subagents" / "agent-a2.jsonl", [a2[0], say("2026-10-20T11:04:05Z", "Async report\nI1 x\nI2 y"), a2[1]])
+        dest = self.home / "out" / "reports"
+        out, err = self.run_report("--reviews", "--tsv", "--reports", str(dest))
+        names = sorted(f.name for f in dest.iterdir())
+        self.assertEqual(names, ["20261020-1000-abcdef12-a1.md", "20261020-1100-abcdef12-a2.md"])
+        self.assertEqual([l.split("\t")[-1] for l in out[1:]], names)
+        self.assertEqual([l.split("\t")[4] for l in out[1:]], ["1", "2"])
+        first = (dest / names[0]).read_text(encoding="utf-8")
+        self.assertIn("I1 a.py:1 bug", first)
+        self.assertIn("token [REDACTED]", first)
+        self.assertNotIn("ghp_", first)
+        self.assertIn("Async report", (dest / names[1]).read_text(encoding="utf-8"))
+        # A second run does not overwrite existing files: it warns and leaves the column empty.
+        (dest / names[0]).write_text("mine", encoding="utf-8")
+        out, err = self.run_report("--reviews", "--tsv", "--reports", str(dest))
+        self.assertEqual((dest / names[0]).read_text(encoding="utf-8"), "mine")
+        self.assertIn(names[0], err)
+        self.assertEqual([l.split("\t")[-1] for l in out[1:]], ["", ""])
 
 
 if __name__ == "__main__":
