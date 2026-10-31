@@ -1,9 +1,11 @@
 import { expect, mock, test } from 'claude-code/testing'
-import type { AgentInfo, FsEntry, On, PaneOpenArgs, ToolCallResult } from 'claude-code'
+import type { AgentInfo, On, PaneOpenArgs, ToolCallResult } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
 const MIN = 60_000
 const T0 = Date.UTC(2026, 9, 16, 1, 0, 0)
+// The session runs in C:/work.
+const ACCEPTANCE = 'C:/work/.claude/acceptance/'
 
 type AgentAnswer = ToolCallResult<'Agent'>
 
@@ -15,9 +17,9 @@ function world(on: On) {
   const closed: string[] = []
   const panes: { id: string; isPlaced: boolean }[] = []
   const agents: AgentInfo[] = []
-  const files: Record<string, { text: string; mtimeMs: number }> = {}
-  let hasAcceptanceDir = false
+  const files: Record<string, string> = {}
   let listCalls = 0
+  const reads: string[] = []
 
   on('ui.status', ($, e) => {
     statuses.push(e.text)
@@ -43,6 +45,7 @@ function world(on: On) {
     value: panes.map(p => ({ id: p.id, title: p.id, isShown: p.isPlaced, isFocused: false, isPlaced: p.isPlaced })),
   }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('session.end', ($, e) => ({ sessionId: e.sessionId }))
   on('session.usage', () => ({ value: { startedAt: T0, context: { tokens: 1000, window: 1_000_000 }, rateLimits: [] } }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
@@ -50,18 +53,12 @@ function world(on: On) {
     listCalls++
     return { value: agents.map(a => ({ ...a })) }
   })
-  on('fs.list', ($, e) => {
-    if (!hasAcceptanceDir || !/\.claude[\\/]acceptance$/.test(e.path)) return { deny: `ENOENT: ${e.path}` }
-    return {
-      value: Object.entries(files).map(
-        ([name, f]): FsEntry => ({ name, kind: 'file', size: f.text.length, mtimeMs: f.mtimeMs, isLink: false }),
-      ),
-    }
-  })
+  // The engine hands the hook the path in the machine's own spelling; the world keeps forward slashes.
   on('fs.read', ($, e) => {
-    const name = e.path.split(/[\\/]/).pop() ?? ''
-    const f = files[name]
-    return f ? { value: f.text } : { deny: `ENOENT: ${e.path}` }
+    const path = e.path.replace(/\\/g, '/')
+    reads.push(path)
+    const text = files[path]
+    return text === undefined ? { deny: `ENOENT: ${e.path}` } : { value: text }
   })
 
   return {
@@ -70,15 +67,13 @@ function world(on: On) {
     closed,
     panes,
     agents,
+    reads,
     listCalls: () => listCalls,
     status: () => statuses[statuses.length - 1],
     statusCount: () => statuses.length,
-    file(name: string, text: string, mtimeMs = T0 + MIN) {
-      hasAcceptanceDir = true
-      files[name] = { text, mtimeMs }
-    },
-    emptyDir() {
-      hasAcceptanceDir = true
+    // An acceptance file on disk, whoever wrote it.
+    file(name: string, text: string) {
+      files[ACCEPTANCE + name] = text
     },
   }
 }
@@ -138,6 +133,17 @@ function agentTool(on: On, w: ReturnType<typeof world>) {
     },
   }
 }
+
+// Write, Edit and NotebookEdit are answered ok, whoever calls.
+function writeTools(on: On) {
+  for (const tool of ['Write', 'Edit', 'NotebookEdit'] as const) {
+    on('tool.call', { tool }, () => ({ result: {}, text: 'ok' }) as never)
+  }
+}
+// The main loop (or, with an agentId, a subagent) writes a file.
+const writeFile = ($: Engine, path: string, agentId?: string) =>
+  $.tool.call({ tool: 'Write', file_path: path, content: '{}', agentId } as never)
+const writeAcceptance = ($: Engine, name: string, agentId?: string) => writeFile($, ACCEPTANCE + name, agentId)
 
 const dispatch = ($: Engine, d: Dispatch) => $.tool.call({ tool: 'Agent', ...d })
 
@@ -599,22 +605,26 @@ const GATES = JSON.stringify({
   ],
 })
 
-test('acceptance files of this session show as gates; malformed ones are noted; older ones are left out', async ($, on) => {
+test('acceptance files the main loop wrote show as gates; malformed ones are noted; others are left out', async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
+  writeTools(on)
   await start($)
   agent.background('bg-1')
   await dispatch($, { description: 'one', prompt: 'p' })
   w.file('ship.json', GATES)
   w.file('broken.json', '{ "task": "Half", "gates": [ { "id": 1 } ] }')
-  w.file('old.json', GATES.replace('Ship v2', 'Old task'), T0 - 10 * MIN)
+  w.file('old.json', GATES.replace('Ship v2', 'Old task'))
   w.file('notes.txt', 'not a gate file')
+  await writeAcceptance($, 'ship.json')
+  await writeAcceptance($, 'broken.json')
   await turnDone($)
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await mountPane($, surface)
     expect((await ui.find({ type: 'Text', text: /^Ship v2/ }))?.text).toBe('Ship v2  A1✓ A2✗ A3·')
-    // Human gates are dim; the others are not.
-    expect((await ui.find({ type: 'Text', text: /^A3·$/ }))?.props.dimColor).toBe(true)
+    // A human gate still pending is the one that waits for the person: warning color, not dim.
+    expect((await ui.find({ type: 'Text', text: /^A3·$/ }))?.props.color).toBe('warning')
+    expect((await ui.find({ type: 'Text', text: /^A3·$/ }))?.props.dimColor).toBeFalsy()
     expect((await ui.find({ type: 'Text', text: /^A1✓$/ }))?.props.dimColor).toBeFalsy()
     expect((await ui.find({ type: 'Text', text: 'broken.json  格式錯誤' }))?.props.dimColor).toBe(true)
     expect(await ui.find({ type: 'Text', text: /Old task/ })).toBeUndefined()
@@ -626,13 +636,97 @@ test('acceptance files of this session show as gates; malformed ones are noted; 
   }
 })
 
-test('acceptance files are read again on the 30 s tick', async ($, on) => {
+test('live and visual gates count; a gate of an unknown kind is skipped without spoiling the file', async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
+  writeTools(on)
   await start($)
   agent.background('bg-1')
   await dispatch($, { description: 'one', prompt: 'p' })
-  w.emptyDir()
+  w.file(
+    'kinds.json',
+    JSON.stringify({
+      task: 'Kinds',
+      gates: [
+        { id: 'L1', kind: 'live', check: 'c', status: 'pass' },
+        { id: 'V1', kind: 'visual', check: 'c', status: 'pending' },
+        { id: 'X1', kind: 'telepathy', check: 'c', status: 'pass' },
+        { id: 'M1', kind: 'machine', check: 'c', status: 'fail' },
+      ],
+    }),
+  )
+  w.file('bad.json', JSON.stringify({ task: 'Bad', gates: [{ id: 'B1', kind: 'live', check: 'c', status: 'maybe' }] }))
+  await writeAcceptance($, 'kinds.json')
+  await writeAcceptance($, 'bad.json')
+  await turnDone($)
+  const ui = await mountPane($, 'terminal')
+  expect((await ui.find({ type: 'Text', text: /^Kinds/ }))?.text).toBe('Kinds  L1✓ V1· M1✗')
+  expect(await ui.find({ type: 'Text', text: 'bad.json  格式錯誤' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('only the acceptance files the main loop wrote count, read by absolute path, sorted by name', async ($, on) => {
+  const w = world(on)
+  const agent = agentTool(on, w)
+  writeTools(on)
+  await start($)
+  agent.background('bg-1')
+  await dispatch($, { description: 'one', prompt: 'p' })
+  w.file('zeta.json', GATES.replace('Ship v2', 'Zeta'))
+  w.file('alpha.json', GATES.replace('Ship v2', 'Alpha'))
+  w.file('other-session.json', GATES.replace('Ship v2', 'Other'))
+  w.file('sub.json', GATES.replace('Ship v2', 'Sub'))
+  w.file('notes.json', GATES.replace('Ship v2', 'Notes'))
+  await writeAcceptance($, 'zeta.json')
+  // Windows spelling, and a second write of the same file.
+  await writeFile($, 'C:\\work\\.claude\\acceptance\\alpha.json')
+  await writeAcceptance($, 'zeta.json')
+  // Edit and NotebookEdit own a file as well (NotebookEdit names it notebook_path).
+  w.file('beta.json', GATES.replace('Ship v2', 'Beta'))
+  w.file('gamma.json', GATES.replace('Ship v2', 'Gamma'))
+  await $.tool.call({ tool: 'Edit', file_path: `${ACCEPTANCE}beta.json`, old_string: 'a', new_string: 'b' })
+  await $.tool.call({ tool: 'NotebookEdit', notebook_path: `${ACCEPTANCE}gamma.json`, new_source: 'x' })
+  // Written, but gone by the time it is read.
+  await writeAcceptance($, 'gone.json')
+  // Not owned: a subagent's write, another folder, another extension.
+  await writeAcceptance($, 'sub.json', 'agent-9')
+  await writeFile($, 'C:/work/notes/notes.json')
+  await writeAcceptance($, 'readme.md')
+  await turnDone($)
+  const ui = await mountPane($, 'terminal')
+  const shown = (await ui.findAll({ type: 'Text', text: /^(Alpha|Beta|Gamma|Zeta|Other|Sub|Notes)  / })).map(t => t.text.split(' ')[0])
+  expect(shown).toEqual(['Alpha', 'Beta', 'Gamma', 'Zeta'])
+  expect(await ui.find({ type: 'Text', text: /格式錯誤/ })).toBeUndefined()
+  expect([...new Set(w.reads)].sort()).toEqual(
+    ['alpha', 'beta', 'gamma', 'gone', 'zeta'].map(name => `${ACCEPTANCE}${name}.json`),
+  )
+  await ui.unmount()
+})
+
+test('a write the tool refused does not own the file', async ($, on) => {
+  const w = world(on)
+  const agent = agentTool(on, w)
+  on('tool.call', { tool: 'Write' }, () => ({ deny: 'no' }))
+  await start($)
+  agent.background('bg-1')
+  await dispatch($, { description: 'one', prompt: 'p' })
+  w.file('ship.json', GATES)
+  await writeAcceptance($, 'ship.json')
+  await turnDone($)
+  const ui = await mountPane($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /^Ship v2/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('acceptance files are read again on the 30 s tick', async ($, on) => {
+  const w = world(on)
+  const agent = agentTool(on, w)
+  writeTools(on)
+  await start($)
+  agent.background('bg-1')
+  await dispatch($, { description: 'one', prompt: 'p' })
+  // Written, but not on disk yet: left out until it can be read.
+  await writeAcceptance($, 'ship.json')
   await turnDone($)
   const ui = await mountPane($, 'terminal')
   expect(await ui.find({ type: 'Text', text: /^Ship v2/ })).toBeUndefined()
@@ -642,7 +736,7 @@ test('acceptance files are read again on the 30 s tick', async ($, on) => {
   await ui.unmount()
 })
 
-test('no acceptance directory: no gates and no note', async ($, on) => {
+test('no acceptance file written: no gates and no note', async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -891,16 +985,17 @@ const gateFile = (task: string, statuses: ('pass' | 'fail' | 'pending')[]) =>
 test('the plan headline adds a bar of passed gates over every acceptance file; none, no bar', async ($, on) => {
   const w = world(on)
   taskTools(on)
+  writeTools(on)
   await start($)
   await create($, 'A')
   await create($, 'B')
   await setStatus($, '1', 'completed')
-  w.emptyDir()
   await turnDone($)
   expect(w.status()).toBe('board  █████░░░░░ 1/2 步驟')
   w.file('a.json', gateFile('One', ['pass', 'pass', 'pass', 'fail', 'pending']))
   w.file('b.json', gateFile('Two', ['pass', 'pass', 'pending', 'pending', 'pending']))
   w.file('c.json', '{ "task": "Half", "gates": [ { "id": 1 } ] }')
+  for (const name of ['a.json', 'b.json', 'c.json']) await writeAcceptance($, name)
   await turnDone($)
   expect(w.status()).toBe('board  █████░░░░░ 1/2 步驟 · 驗收 ██▓░░ 5/10')
   const ui = await mountPane($, 'terminal')
@@ -911,6 +1006,94 @@ test('the plan headline adds a bar of passed gates over every acceptance file; n
   w.file('b.json', '[]')
   await turnDone($)
   expect(w.status()).toBe('board  █████░░░░░ 1/2 步驟')
+})
+
+const humanFile = (task: string, gates: [string, 'pass' | 'fail' | 'pending', 'human' | 'machine'][]) =>
+  JSON.stringify({ task, gates: gates.map(([id, status, kind]) => ({ id, kind, check: 'c', status })) })
+
+test('the plan headline names the pending human gate, and how many wait when several', async ($, on) => {
+  const w = world(on)
+  taskTools(on)
+  writeTools(on)
+  await start($)
+  await create($, 'A')
+  await create($, 'B')
+  w.file(
+    'h.json',
+    humanFile('H', [
+      ['H1', 'pending', 'human'],
+      ['H2', 'pending', 'human'],
+      ['H3', 'pass', 'human'],
+      ['M1', 'pending', 'machine'],
+    ]),
+  )
+  await writeAcceptance($, 'h.json')
+  await turnDone($)
+  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/2 步驟 · 驗收 █▓░░░ 1/4 · 等你：H1 等 2 項')
+  w.file('h.json', humanFile('H', [['H1', 'pass', 'human'], ['H2', 'pending', 'human']]))
+  await turnDone($)
+  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/2 步驟 · 驗收 ██▓░░ 1/2 · 等你：H2')
+  w.file('h.json', humanFile('H', [['H1', 'pass', 'human'], ['H2', 'fail', 'human'], ['M1', 'pending', 'machine']]))
+  await turnDone($)
+  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/2 步驟 · 驗收 █▓░░░ 1/3')
+})
+
+test('the headline without a plan names the pending human gate too', async ($, on) => {
+  const w = world(on)
+  const agent = agentTool(on, w)
+  writeTools(on)
+  await start($)
+  agent.background('bg-1')
+  await dispatch($, { description: 'one', prompt: 'p' })
+  w.file('h.json', humanFile('H', [['H1', 'pending', 'human'], ['H2', 'pending', 'human']]))
+  await writeAcceptance($, 'h.json')
+  await turnDone($)
+  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/1 完成 · 1 執行中 · 等你：H1 等 2 項')
+})
+
+test('gates alone: the status line and both pane summaries lead with the gates', async ($, on) => {
+  const w = world(on)
+  writeTools(on)
+  await start($)
+  expect(w.status()).toBeUndefined()
+  const empty = await mountPane($, 'terminal')
+  expect(await empty.find({ type: 'Text', text: 'board  尚無派工' })).toBeDefined()
+  await empty.unmount()
+  w.file('h.json', humanFile('H', [['H1', 'pending', 'human'], ['M1', 'pass', 'machine']]))
+  await writeAcceptance($, 'h.json')
+  await turnDone($)
+  const headline = 'board  驗收 ██▓░░ 1/2 · 等你：H1'
+  expect(w.status()).toBe(headline)
+  const ui = await mountPane($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: headline })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /尚無派工/ })).toBeUndefined()
+  await ui.press({ key: 'expand' })
+  expect(await ui.find({ type: 'Text', text: headline })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /尚無派工/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('in the pane a pending human gate is warning-colored; a settled human gate stays dim', async ($, on) => {
+  const w = world(on)
+  const agent = agentTool(on, w)
+  writeTools(on)
+  await start($)
+  agent.background('bg-1')
+  await dispatch($, { description: 'one', prompt: 'p' })
+  w.file('h.json', humanFile('H', [['H1', 'pending', 'human'], ['H2', 'pass', 'human'], ['M1', 'pending', 'machine']]))
+  await writeAcceptance($, 'h.json')
+  await turnDone($)
+  const ui = await mountPane($, 'terminal')
+  const pending = await ui.find({ type: 'Text', text: /^H1·$/ })
+  expect(pending?.props.color).toBe('warning')
+  expect(pending?.props.dimColor).toBeFalsy()
+  const settled = await ui.find({ type: 'Text', text: /^H2✓$/ })
+  expect(settled?.props.dimColor).toBe(true)
+  expect(settled?.props.color).toBeUndefined()
+  const machine = await ui.find({ type: 'Text', text: /^M1·$/ })
+  expect(machine?.props.color).toBeUndefined()
+  expect(machine?.props.dimColor).toBeFalsy()
+  await ui.unmount()
 })
 
 test('without a plan the bar counts the dispatches done', async ($, on) => {
@@ -1061,4 +1244,53 @@ test('state written by an older version (no new fields) is read as null, not a c
   expect(await checklistOf(ui)).toEqual(['✓ 1  Old step'])
   expect(await ui.find({ type: 'Button', text: /Old dispatch/ })).toBeDefined()
   await ui.unmount()
+})
+
+// ---------------------------------------------------------------- /clear
+
+const endSession = ($: Engine, reason: 'clear' | 'resume' | 'logout' | 'prompt_input_exit' | 'other') =>
+  $.session.end({ reason, sessionId: 's-1', resume: { id: 's-1' } })
+
+test('/clear empties the board, gates and status line, and lets the pane open again', { plugins: [READER] }, async ($, on) => {
+  const w = world(on)
+  const agent = agentTool(on, w)
+  taskTools(on)
+  writeTools(on)
+  await start($)
+  await create($, 'A')
+  await setStatus($, '1', 'in_progress')
+  agent.background('bg-1')
+  await dispatch($, { description: 'one', prompt: 'p' })
+  w.file('ship.json', GATES)
+  await writeAcceptance($, 'ship.json')
+  await w.clock.advance(30_000)
+  expect(w.opened).toHaveLength(1)
+  const listed = w.listCalls()
+  const before = await mountPane($, 'terminal')
+  expect(await before.find({ type: 'Text', text: /^Ship v2/ })).toBeDefined()
+  await before.unmount()
+  await endSession($, 'clear')
+  expect(w.status()).toBeUndefined()
+  expect(await peek($)).toMatchObject({ rows: [], todos: [], tick: 0, view: { isAutoOpened: false, isExpanded: false, selected: null } })
+  // The poll timer is gone.
+  await w.clock.advance(5 * MIN)
+  expect(w.listCalls()).toBe(listed)
+  // The file the old conversation wrote is no longer the board's, even though it is still on disk.
+  const after = await mountPane($, 'terminal')
+  expect(await after.find({ type: 'Text', text: /^Ship v2/ })).toBeUndefined()
+  await after.unmount()
+  // The next plan opens the pane again.
+  await create($, 'B')
+  expect(w.opened).toHaveLength(2)
+})
+
+test('other session end reasons change nothing', { plugins: [READER] }, async ($, on) => {
+  const w = world(on)
+  const agent = agentTool(on, w)
+  await start($)
+  agent.background('bg-1')
+  await dispatch($, { description: 'one', prompt: 'p' })
+  for (const reason of ['resume', 'logout', 'prompt_input_exit', 'other'] as const) await endSession($, reason)
+  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/1 完成 · 1 執行中')
+  expect((await peek($)).rows).toHaveLength(1)
 })

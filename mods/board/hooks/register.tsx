@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentStatus, EngineInterface, Register, Timer, ToolCallResult } from 'claude-code'
 
-import type { BoardGateFile, BoardRow, BoardStatus, BoardTodo, BoardView } from '../types'
+import type { BoardGate, BoardGateFile, BoardRow, BoardStatus, BoardTodo, BoardView } from '../types'
 
 const PANE = 'board'
 const MIN = 60_000
@@ -17,13 +17,15 @@ const BAR_HALF = '▓'
 const BAR_EMPTY = '░'
 const COLLAPSED_ROWS = 2
 const EXPANDED_ROWS = 20
-// Relative to the session's working directory, as $.fs resolves it.
-const ACCEPTANCE_DIR = '.claude/acceptance'
+// A path (spelled with forward slashes) in here, ending in .json, is an acceptance file.
+const ACCEPTANCE_MARK = '/.claude/acceptance/'
 
 // Everything the board shows lives in $.state: it survives a hot reload of this module.
 const rows = atom({ plugin: 'board', key: 'rows' } as const, [])
 const todos = atom({ plugin: 'board', key: 'todos' } as const, [])
 const gates = atom({ plugin: 'board', key: 'gates' } as const, [])
+// The acceptance files the main loop wrote, by absolute path: the only ones the board reads.
+const owned = atom({ plugin: 'board', key: 'owned' } as const, [])
 const tick = atom({ plugin: 'board', key: 'tick' } as const, 0)
 const INITIAL_VIEW: BoardView = { isExpanded: false, selected: null, isAutoOpened: false }
 const view = atom({ plugin: 'board', key: 'view' } as const, INITIAL_VIEW)
@@ -39,6 +41,7 @@ const normTodo = (t: BoardTodo): BoardTodo => ({
 })
 const loadRows = async ($: EngineInterface) => (await read($, rows)).map(normRow)
 const loadTodos = async ($: EngineInterface) => (await read($, todos)).map(normTodo)
+const loadOwned = async ($: EngineInterface) => (await read($, owned)).filter(f => typeof f === 'string')
 const changeRows = ($: EngineInterface, change: (list: BoardRow[]) => BoardRow[]) =>
   update($, rows, list => change(list.map(normRow)))
 const changeTodos = ($: EngineInterface, change: (list: BoardTodo[]) => BoardTodo[]) =>
@@ -102,7 +105,15 @@ function barOf(value: number, width: number) {
 
 const ratio = (part: number, whole: number) => (whole === 0 ? 0 : part / whole)
 
-function summaryOf(list: BoardRow[], now: number) {
+const isHumanPending = (g: BoardGate) => g.kind === 'human' && g.status === 'pending'
+
+// The human gates still pending, the first one named: what the person is being waited on for.
+function waitingTextOf(files: BoardGateFile[]) {
+  const waiting = files.flatMap(f => f.gates).filter(isHumanPending)
+  return waiting.length === 0 ? '' : ` · 等你：${waiting[0]?.id ?? ''}${waiting.length > 1 ? ` 等 ${waiting.length} 項` : ''}`
+}
+
+function summaryOf(list: BoardRow[], files: BoardGateFile[], now: number) {
   const done = list.filter(r => r.status === 'done').length
   const active = list.filter(isActive).length
   const failed = list.filter(r => r.status === 'failed').length
@@ -110,7 +121,8 @@ function summaryOf(list: BoardRow[], now: number) {
   return (
     `board  ${barOf(ratio(done, list.length), STEP_BAR_W)} ${done}/${list.length} 完成 · ${active} 執行中` +
     (failed > 0 ? ` · ${failed} 失敗` : '') +
-    (eta === undefined ? '' : ` · ~${minutes(eta)} 分`)
+    (eta === undefined ? '' : ` · ~${minutes(eta)} 分`) +
+    waitingTextOf(files)
   )
 }
 
@@ -165,13 +177,26 @@ function planSummaryOf(plan: BoardTodo[], list: BoardRow[], files: BoardGateFile
       ? ''
       : ` · 進行中：${oneLine(running[0]?.subject ?? '')}${running.length > 1 ? ` 等 ${running.length} 項` : ''}`) +
     (all.length === 0 ? '' : ` · 驗收 ${barOf(ratio(passed, all.length), GATE_BAR_W)} ${passed}/${all.length}`) +
-    (active > 0 ? ` · ${active} agent 執行中` : '')
+    (active > 0 ? ` · ${active} agent 執行中` : '') +
+    waitingTextOf(files)
   )
 }
 
-// The status line and the collapsed pane: the plan leads when there is one.
+// Only acceptance files and nothing else: the gates bar leads.
+function gatesSummaryOf(files: BoardGateFile[]) {
+  const all = files.flatMap(f => f.gates)
+  const passed = all.filter(g => g.status === 'pass').length
+  return `board  驗收 ${barOf(ratio(passed, all.length), GATE_BAR_W)} ${passed}/${all.length}` + waitingTextOf(files)
+}
+
+// The status line and both pane summaries: the plan leads when there is one, else the
+// dispatches; gates alone lead only when there is neither.
 const headlineOf = (list: BoardRow[], plan: BoardTodo[], files: BoardGateFile[], now: number) =>
-  plan.length > 0 ? planSummaryOf(plan, list, files) : summaryOf(list, now)
+  plan.length > 0
+    ? planSummaryOf(plan, list, files)
+    : list.length === 0 && files.length > 0
+      ? gatesSummaryOf(files)
+      : summaryOf(list, files, now)
 
 const pad2 = (n: number) => String(n).padStart(2, '0')
 const clockTime = (ms: number) => {
@@ -272,14 +297,13 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 const isOneOf = <T extends string>(v: unknown, values: readonly T[]): v is T =>
   typeof v === 'string' && (values as readonly string[]).includes(v)
 const isOptionalString = (v: unknown) => v === undefined || typeof v === 'string'
-const GATE_KINDS = ['machine', 'review', 'human'] as const
+const GATE_KINDS = ['machine', 'live', 'visual', 'review', 'human'] as const
 const GATE_STATUSES = ['pass', 'fail', 'pending'] as const
 const TODO_STATUSES = ['pending', 'in_progress', 'completed'] as const
 
 // One acceptance file read against its schema; `task: null` when it does not fit.
-function parseGates(file: string, text: string | undefined): BoardGateFile {
+function parseGates(file: string, text: string): BoardGateFile {
   const malformed: BoardGateFile = { file, task: null, gates: [] }
-  if (text === undefined) return malformed
   let data: unknown
   try {
     data = JSON.parse(text)
@@ -293,27 +317,40 @@ function parseGates(file: string, text: string | undefined): BoardGateFile {
       !isRecord(g) ||
       typeof g.id !== 'string' ||
       typeof g.check !== 'string' ||
-      !isOneOf(g.kind, GATE_KINDS) ||
+      typeof g.kind !== 'string' ||
       !isOneOf(g.status, GATE_STATUSES) ||
       !isOptionalString(g.ranAt) ||
       !isOptionalString(g.evidence)
     ) {
       return malformed
     }
-    list.push({ id: g.id, kind: g.kind, status: g.status })
+    // A kind this board does not know is left out; the rest of the file still counts.
+    if (isOneOf(g.kind, GATE_KINDS)) list.push({ id: g.id, kind: g.kind, status: g.status })
   }
   return { file, task: data.task, gates: list }
 }
 
 const isAnswered = (ran: ToolCallResult) => ran.deny === undefined && ran.isError !== true
 
+const slashed = (path: string) => path.replace(/\\/g, '/')
+const baseName = (path: string) => path.slice(path.lastIndexOf('/') + 1)
+const isAcceptancePath = (path: string) => path.includes(ACCEPTANCE_MARK) && path.endsWith('.json')
+
+// The board reads an acceptance file only once the main loop has written it.
+async function own($: EngineInterface, path: string | undefined) {
+  const at = path === undefined ? '' : slashed(path)
+  if (!isAcceptancePath(at)) return
+  await update($, owned, list => (list.includes(at) ? list : [...list, at]))
+}
+
 // ---------------------------------------------------------------- state and effects
 
 async function show($: EngineInterface) {
   const list = await loadRows($)
   const plan = await loadTodos($)
-  if (list.length === 0 && plan.length === 0) return
-  $.ui.status(headlineOf(list, plan, await read($, gates), await $.clock.now()))
+  const files = await read($, gates)
+  if (list.length === 0 && plan.length === 0 && files.length === 0) return
+  $.ui.status(headlineOf(list, plan, files, await $.clock.now()))
 }
 
 // One 30 s tick: the agent list for the rows that have an agent, then the clock,
@@ -340,23 +377,31 @@ async function pollOnce($: EngineInterface) {
   await sync($)
 }
 
-// The acceptance files modified since the session began, by name. No directory
-// (or one $.fs cannot list) shows nothing.
+// The acceptance files the main loop wrote, by name. One that can no longer be read
+// is left out; none written shows nothing.
 async function readGates($: EngineInterface) {
-  const entries = await $.fs.list(ACCEPTANCE_DIR).catch(() => undefined)
   const found: BoardGateFile[] = []
-  if (entries !== undefined) {
-    const since = (await $.session.usage().catch(() => undefined))?.startedAt ?? 0
-    const files = entries
-      .filter(f => f.kind === 'file' && f.name.endsWith('.json') && f.mtimeMs >= since)
-      .sort((a, b) => a.name.localeCompare(b.name))
-    for (const f of files) {
-      const text = await $.fs.read(`${ACCEPTANCE_DIR}/${f.name}`).catch(() => undefined)
-      found.push(parseGates(f.name, typeof text === 'string' ? text : undefined))
-    }
+  for (const path of await loadOwned($)) {
+    const text = await $.fs.read(path).catch(() => undefined)
+    if (typeof text === 'string') found.push(parseGates(baseName(path), text))
   }
+  found.sort((a, b) => a.file.localeCompare(b.file))
   const before = await read($, gates)
   if (JSON.stringify(before) !== JSON.stringify(found)) await update($, gates, () => found)
+}
+
+// A /clear starts a fresh conversation in the same process, and $.state outlives it:
+// the board starts over, status line included, and the pane may auto-open again.
+async function reset($: EngineInterface) {
+  poll?.cancel()
+  poll = undefined
+  await update($, rows, () => [])
+  await update($, todos, () => [])
+  await update($, gates, () => [])
+  await update($, owned, () => [])
+  await update($, tick, () => 0)
+  await update($, view, () => INITIAL_VIEW)
+  $.ui.status(undefined)
 }
 
 async function createTodo($: EngineInterface, id: string, subject: string) {
@@ -483,6 +528,12 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // No session.start follows a /clear, so this is the only moment to start over.
+  on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') await reset($).catch(() => undefined)
+    return next(e)
+  })
+
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
     const now = await $.clock.now()
     const loose = e as { run_in_background?: unknown }
@@ -558,6 +609,25 @@ export const register: Register = on => {
     return ran
   }).catch(($, e, next) => next(e))
 
+  // Which acceptance files are the session's: the main loop's own successful writes.
+  on('tool.call', { tool: 'Write' }, async ($, e, next) => {
+    const ran = await next(e)
+    if (e.agentId === undefined && isAnswered(ran)) await own($, e.file_path).catch(() => undefined)
+    return ran
+  }).catch(($, e, next) => next(e))
+
+  on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
+    const ran = await next(e)
+    if (e.agentId === undefined && isAnswered(ran)) await own($, e.file_path).catch(() => undefined)
+    return ran
+  }).catch(($, e, next) => next(e))
+
+  on('tool.call', { tool: 'NotebookEdit' }, async ($, e, next) => {
+    const ran = await next(e)
+    if (e.agentId === undefined && isAnswered(ran)) await own($, e.notebook_path).catch(() => undefined)
+    return ran
+  }).catch(($, e, next) => next(e))
+
   on('command.run', { command: 'board' }, async $ => {
     await toggle($)
     return {}
@@ -573,7 +643,8 @@ export const register: Register = on => {
     await read($, tick)
     const now = await $.clock.now()
     const columns = e.props.bodyColumns
-    const summary = list.length === 0 && plan.length === 0 ? 'board  尚無派工' : headlineOf(list, plan, files, now)
+    const summary =
+      list.length === 0 && plan.length === 0 && files.length === 0 ? 'board  尚無派工' : headlineOf(list, plan, files, now)
     // `s` with each run of bar cells in its color: done green, half yellow, left gray.
     const colored = (s: string) =>
       s
@@ -599,7 +670,10 @@ export const register: Register = on => {
           {`${file.task}  `}
           {file.gates.flatMap((g, i) => [
             ...(i > 0 ? [' '] : []),
-            <Text dimColor={g.kind === 'human'} color={g.status === 'fail' ? 'error' : undefined}>
+            <Text
+              dimColor={g.kind === 'human' && !isHumanPending(g)}
+              color={g.status === 'fail' ? 'error' : isHumanPending(g) ? 'warning' : undefined}
+            >
               {`${g.id}${GATE_MARK[g.status]}`}
             </Text>,
           ])}

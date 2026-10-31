@@ -38,11 +38,11 @@ export type BoardTodo = {
 
 export type BoardGate = {
   id: string
-  kind: 'machine' | 'review' | 'human'
+  kind: 'machine' | 'live' | 'visual' | 'review' | 'human'
   status: 'pass' | 'fail' | 'pending'
 }
 
-// One `.claude/acceptance/*.json` file modified during this session.
+// One `.claude/acceptance/*.json` file the main loop wrote during this session.
 export type BoardGateFile = {
   file: string
   // null when the file did not parse as the schema.
@@ -64,6 +64,8 @@ declare module 'claude-code' {
       rows: BoardRow[]
       todos: BoardTodo[]
       gates: BoardGateFile[]
+      // Absolute paths (forward slashes) of the acceptance files the main loop wrote.
+      owned: string[]
       view: BoardView
       // Clock reading of the last 30 s tick: redraws elapsed times and the bars.
       // It runs while a row is active or a plan step is in progress.
