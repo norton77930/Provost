@@ -11,6 +11,13 @@
   close it with evidence instead of "looks done", and keep its decisions through compaction.
 </p>
 
+<p align="center">
+  <img src="docs/demo/session-en.gif" width="100%"
+    alt="A real Claude Code session with Provost, sped up: the request is classified as moderate R1 (error handling), implementer-sonnet builds the 401 refresh-and-retry test-first, code-reviewer reviews the error handling, and the board on the right goes from 0/3 steps to 3/3 with both acceptance gates passed">
+</p>
+
+<p align="center"><sub>A real session, 8½ minutes sped up: classify, <code>implementer-sonnet</code> builds it test-first, <code>code-reviewer</code> checks the error handling, and the <a href="mods/board/">board</a> on the right ticks off each step and gate. This request names its route; normally the session picks it.</sub></p>
+
 <table align="center">
   <tr>
     <td align="center" width="220"><h2>−34%</h2>total spend<br><sub>10 days of real work</sub></td>
@@ -31,35 +38,25 @@
   <a href="#install"><b>Install</b></a> · <a href="#try-the-mods-first">Try the mods</a> · <a href="#how-it-works">How it works</a> · <a href="#evidence">Evidence</a> · <a href="README.zh-TW.md">繁體中文</a>
 </p>
 
+## Agents: every step goes to the cheapest model that can do it
+
 <p align="center">
-  <img src="mods/board/docs/board-pane.png" width="760"
-    alt="The board pane in a real session: 3 of 5 plan steps done, an implementer-sonnet dispatch under step 3, step 4 in progress, and the acceptance gates for 'board round 1' with tests and validate passed, a live check pending and the merge waiting for the user">
+  <img src="docs/demo/agents-en.gif" width="100%"
+    alt="Animated: five requests come in one at a time; the main session classifies each one and routes it: a 12-file rename to mech-executor on Haiku, a code search to Explore on Haiku, a signup form to implementer-sonnet with a live browser check, expired-token handling to implementer-sonnet and then code-reviewer on Fable, and a change to how login tokens are signed stops for the user. It ends on subagent cost −68% vs. running them all on Opus.">
 </p>
 
-<p align="center"><sub>A real session with Provost and the <a href="mods/board/">board</a> mod: the plan, who each step went to, and what still has to be proven before it counts as done.</sub></p>
+The main session classifies every request before it acts, by difficulty (who
+implements) and by risk (what evidence closes it). A 12-file rename goes to
+Haiku, a bounded feature to Sonnet, a one-line fix stays where it is, and a
+fresh-context reviewer runs only when a failure would be invisible to the tests
+and to a live run. Over two weeks the main session wrote about 3% of the changed
+code; cheaper roles wrote the rest across 270 dispatches.
 
-## Three things it does
+<details>
+<summary><b>What the declaration line says</b></summary>
 
-**1. Cheaper models do the typing.** The main session classifies every request
-before it acts. A 12-file rename goes to Haiku, a bounded feature to Sonnet, a
-one-line fix stays where it is. Over two weeks the main session wrote about 3%
-of the changed code; the rest came from cheaper roles across 270 dispatches.
-
-**2. "Done" needs proof.** Each claim is closed by the cheapest evidence that
-would actually catch it failing: a test, a live run in the browser or CLI, or a
-fresh-context reviewer when neither could. Acceptance gates are written before
-the work starts, and the turn cannot end while a gate is pending or failed.
-Changes to auth, secrets, payments or data migrations stop and wait for you.
-
-**3. Decisions survive compaction.** Hooks save decisions, dispatches and
-evidence before compaction and put them back after it, so early compaction is
-safe. Context stays small, and each call stays cheap.
-
-## What a request looks like
-
-Work the way you always do. Before it acts, the main session declares how it
-will handle the request (the line is written in your language; the notes on the
-right are added here for this README):
+The line is written in your language; the notes on the right are added for this
+README.
 
 ```text
 > Rename getUser to fetchUser in all 12 files
@@ -72,11 +69,21 @@ right are added here for this README):
 分類:困難/R2(migration)/證據:審查+架構 → 停,等你決定    # data migration: stops and asks you first
 ```
 
-Here is the whole idea in 46 seconds:
+</details>
 
-https://github.com/user-attachments/assets/6e564d31-55b6-4271-a65d-1d8c1cebe413
+## Hooks: decisions survive compaction, and "done" needs proof
 
-<p align="center"><sub>46 seconds, English captions, music only. The Chinese version is in <a href="README.zh-TW.md">README.zh-TW.md</a>.</sub></p>
+<p align="center">
+  <img src="docs/demo/hooks-en.gif" width="100%"
+    alt="Animated session timeline: SessionStart injects the latest checkpoint, PreToolUse checks a dispatch brief cites the acceptance file, PostToolUse records facts, the context fills toward its limit, PreCompact saves the decision log, compaction empties the context, PostCompact puts the decisions back, and Stop holds the turn while a live gate is pending, then lets it end once the gate passes. It ends on 44 compactions, 0 times re-explaining.">
+</p>
+
+Eight hook registrations run beside the session. They save decisions, dispatches
+and evidence before compaction and put them back after it, so compacting early
+is safe: the context stays small and each call stays cheap. They also hold the
+turn: acceptance gates are written before the work starts, and a Stop hook
+pushes back while a gate is pending, failed or stale. Changes to auth, secrets,
+payments or data migrations stop and wait for you.
 
 ## Why not plain Claude Code?
 
@@ -100,6 +107,12 @@ model, and review happens when you remember to ask.
 
 <p align="center"><sub>The build-cost bar compares <code>implementer-sonnet</code> with <code>implementer</code> on 34 trialled slices. Total spend fell 34% (see <a href="#evidence">Evidence</a>).</sub></p>
 
+The whole idea in 46 seconds:
+
+https://github.com/user-attachments/assets/6e564d31-55b6-4271-a65d-1d8c1cebe413
+
+<p align="center"><sub>46 seconds, English captions, music only. The Chinese version is in <a href="README.zh-TW.md">README.zh-TW.md</a>.</sub></p>
+
 ## Try the mods first
 
 Two mods from this repo work on their own, without the rest of Provost. They
@@ -107,7 +120,7 @@ are the fastest way to see what it is about.
 
 | Mod | What it does |
 |---|---|
-| [`board`](mods/board/) | A pane and status line for plan steps, subagent dispatches and acceptance gates (the screenshot above) |
+| [`board`](mods/board/) | A pane and status line for plan steps, subagent dispatches and acceptance gates (the right-hand pane in the session at the top) |
 | [`idle-guard`](mods/idle-guard/) | Compacts a large idle conversation before the one-hour prompt cache expires, so a late wake-up doesn't re-read the whole context |
 
 ```text

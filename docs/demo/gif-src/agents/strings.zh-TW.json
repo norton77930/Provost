@@ -1,0 +1,14 @@
+{
+ "title": "每個請求，都交給做得到的最便宜 agent。",
+ "node1": "main session", "node2": "classify",
+ "reqs": [
+  {"t": "把 12 個檔案裡的 getUser 改名", "g": ""},
+  {"t": "找出 token 在哪裡更新", "g": ""},
+  {"t": "替註冊表單加上驗證", "g": ""},
+  {"t": "處理過期的 token", "g": ""},
+  {"t": "修改登入 token 的簽署方式", "g": ""}
+ ],
+ "tests": "測試", "readonly": "唯讀", "live": "實機瀏覽器",
+ "stop": "停下來等你",
+ "strip_pre": "subagent 成本 ", "strip_num": "−68%", "strip_post": "（對比全部用 Opus）· 10 天真實工作"
+}

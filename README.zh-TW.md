@@ -11,6 +11,13 @@
   用證據而不是「看起來好了」來結案，並讓決策撐過 context 壓縮。
 </p>
 
+<p align="center">
+  <img src="docs/demo/session-zh-TW.gif" width="100%"
+    alt="一段加速播放的真實 Claude Code session：請求被分類為中等 R1（錯誤處理），implementer-sonnet 用 TDD 實作 401 刷新重試，code-reviewer 審查錯誤處理，右側的 board 從 0/3 步走到 3/3，9 個驗收 gate 過了 7 個；有一個 gate 沒過，session 沒有改寫它，而是停下來問使用者">
+</p>
+
+<p align="center"><sub>真實 session，8 分多鐘加速播放：分類、<code>implementer-sonnet</code> 用 TDD 實作、<code>code-reviewer</code> 審查錯誤處理，右側的 <a href="mods/board/">board</a> 逐一勾掉每個步驟和 gate。有一個 gate 沒過時，它不改條件硬過，而是停下來問你。這個請求有指定路線；平常由 session 自己判斷。</sub></p>
+
 <table align="center">
   <tr>
     <td align="center" width="220"><h2>−34%</h2>整體花費<br><sub>10 天的真實工作</sub></td>
@@ -31,29 +38,19 @@
   <a href="#安裝"><b>安裝</b></a> · <a href="#先試-mods">先試 mods</a> · <a href="#運作方式">運作方式</a> · <a href="#證據">證據</a> · <a href="README.md">English</a>
 </p>
 
+## Agent：每一步都交給做得到的最便宜模型
+
 <p align="center">
-  <img src="mods/board/docs/board-pane.png" width="760"
-    alt="真實 session 裡的 board 面板：5 個計畫步驟完成 3 個，第 3 步底下有一次 implementer-sonnet 派工，第 4 步進行中；下方是 board round 1 的驗收 gate，tests 和 validate 已通過，實機檢查待做，merge 等使用者核可">
+  <img src="docs/demo/agents-zh-TW.gif" width="100%"
+    alt="動畫：五個請求依序進來，主 session 為每個請求分類並分派：12 個檔案改名交給 Haiku 上的 mech-executor，程式碼查詢交給 Haiku 上的 Explore，註冊表單交給 implementer-sonnet 並用實機瀏覽器檢查，token 過期處理交給 implementer-sonnet 再由 Fable 上的 code-reviewer 審查，改登入 token 的簽章方式則停下來等使用者。結尾是 subagent 成本對比全部用 Opus 下降 68%。">
 </p>
 
-<p align="center"><sub>裝了 Provost 和 <a href="mods/board/">board</a> mod 的真實 session：計畫、每一步交給誰，以及還有什麼要證明才算做完。</sub></p>
+主 session 在動手前先為每個請求分類：難度決定誰來實作，風險決定用什麼證據結案。12 個檔案的改名交給
+Haiku，有界的功能交給 Sonnet，一行的修正留在原地；只有當失敗在測試和實機都看不出來時，才派全新
+context 的 reviewer。兩週內主 session 只寫了約 3% 的程式碼，其餘由比較便宜的角色透過 270 次派工完成。
 
-## 它做的三件事
-
-**1. 動手的是便宜的模型。** 主 session 在動手前先為每個請求分類。12 個檔案的改名交給
-Haiku，有界的功能交給 Sonnet，一行的修正留在原地。兩週內主 session 只寫了約 3% 的程式碼，
-其餘由比較便宜的角色透過 270 次派工完成。
-
-**2. 「做完」要有證據。** 每個主張都用「最便宜、但真的抓得到失敗」的證據結案：測試、在瀏覽器或
-CLI 實機跑一次，或在兩者都看不出來時派全新 context 的 reviewer。驗收 gate 在動工前就寫好，
-gate 還沒過或失敗時，這一輪不能結束。動到認證、密鑰、金流或資料遷移的改動，會停下來等你決定。
-
-**3. 決策撐過壓縮。** hook 在壓縮前存下決策、派工和證據，壓縮後再放回去，所以可以安心提早壓縮。
-context 保持小，每次呼叫就保持便宜。
-
-## 一個請求長什麼樣子
-
-照平常的方式工作。動手之前，主 session 會先宣告它打算怎麼處理：
+<details>
+<summary><b>宣告那一行在說什麼</b></summary>
 
 ```text
 > 把 12 個檔案的 getUser 改名成 fetchUser
@@ -66,11 +63,18 @@ context 保持小，每次呼叫就保持便宜。
 分類:困難/R2(migration)/證據:審查+架構 → 停,等你決定    # 資料遷移：先停下來問你
 ```
 
-整個想法，46 秒看完：
+</details>
 
-https://github.com/user-attachments/assets/bd4974d6-1f6c-481e-8c40-2c687c8536b4
+## Hook：決策撐過壓縮，「做完」要有證據
 
-<p align="center"><sub>46 秒，中文字幕，只有配樂。英文版在 <a href="README.md">README.md</a>。</sub></p>
+<p align="center">
+  <img src="docs/demo/hooks-zh-TW.gif" width="100%"
+    alt="動畫 session 時間軸：SessionStart 注入最新 checkpoint，PreToolUse 檢查派工說明有引用驗收檔，PostToolUse 記錄事實，context 漲到接近上限，PreCompact 存下決策紀錄，壓縮清空 context，PostCompact 把決策放回來；Stop 在實機 gate 還沒過時擋住這一輪，gate 通過後才放行。結尾是 44 次壓縮、0 次重講。">
+</p>
+
+session 旁邊跑著八個 hook 註冊。它們在壓縮前存下決策、派工和證據，壓縮後再放回去，所以可以安心提早
+壓縮：context 保持小，每次呼叫就保持便宜。它們也會擋住這一輪：驗收 gate 在動工前就寫好，gate 還沒過、
+失敗或過期時，Stop hook 會把這一輪推回去。動到認證、密鑰、金流或資料遷移的改動，會停下來等你決定。
 
 ## 為什麼不直接用 Claude Code
 
@@ -93,13 +97,19 @@ https://github.com/user-attachments/assets/bd4974d6-1f6c-481e-8c40-2c687c8536b4
 
 <p align="center"><sub>圖中的實作成本是 <code>implementer-sonnet</code> 對比 <code>implementer</code>，在 34 個試驗 slice 上的結果。整體花費下降 34%（見<a href="#證據">證據</a>）。</sub></p>
 
+整個想法，46 秒看完：
+
+https://github.com/user-attachments/assets/bd4974d6-1f6c-481e-8c40-2c687c8536b4
+
+<p align="center"><sub>46 秒，中文字幕，只有配樂。英文版在 <a href="README.md">README.md</a>。</sub></p>
+
 ## 先試 mods
 
 這個 repo 裡有兩個 mod，不用裝 Provost 的其他部分就能用，是最快感受它在做什麼的方式。
 
 | Mod | 用途 |
 |---|---|
-| [`board`](mods/board/) | 用面板和狀態列顯示計畫步驟、subagent 派工和驗收 gate（就是上面那張截圖） |
+| [`board`](mods/board/) | 用面板和狀態列顯示計畫步驟、subagent 派工和驗收 gate（就是最上面那段 session 右側的面板） |
 | [`idle-guard`](mods/idle-guard/) | 對話閒置、context 又很大時，在一小時的 prompt cache 過期前先壓縮，晚點回來就不用重讀整個 context |
 
 ```text

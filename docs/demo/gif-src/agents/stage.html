@@ -1,0 +1,176 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Provost agents GIF</title>
+<style>
+:root{--bg:#151311;--card:#1c1a17;--line:#35302b;--fg:#f3efe6;--muted:#8f8a80;--accent:#f08a5d;--ok:#4ade80;
+ --haiku:#79b8ff;--sonnet:#e6c34a;--opus:#f2704f;--fable:#a78bfa;--amber:#ff9f43}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);overflow:hidden;color:var(--fg);
+ font-family:"Segoe UI","Inter",Arial,"Microsoft JhengHei","Noto Sans TC",sans-serif}
+.mono{font-family:"Cascadia Mono",Consolas,"Microsoft JhengHei","Noto Sans TC",monospace}
+#stage{position:absolute;left:0;top:0;width:1600px;height:900px;background:var(--bg);overflow:hidden}
+#title{position:absolute;left:0;right:0;top:22px;text-align:center;font-size:48px;font-weight:800;letter-spacing:-.01em;white-space:nowrap}
+.req{position:absolute;left:40px;width:660px;height:128px;background:var(--card);border:2px solid var(--line);border-radius:18px;padding:10px 22px}
+.req .t{font-size:30px;font-weight:700;line-height:1.25}
+.req .d{margin-top:4px;font-size:22px;line-height:1.3}
+.req .d .c{display:block;min-height:29px;color:#9cc9ff}
+.req .d .g{display:block;color:var(--muted);font-family:"Segoe UI",Arial,sans-serif}
+.node{position:absolute;left:750px;top:396px;width:160px;white-space:nowrap;height:108px;border-radius:18px;background:#201a16;border:2px solid var(--accent);
+ display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:23px;line-height:1.3;font-weight:700;text-align:center}
+.node .n2{color:var(--accent);font-weight:600}
+.ag{position:absolute;left:960px;width:620px;height:74px;border-radius:16px}
+.ag .base{position:absolute;inset:0;border-radius:16px;background:var(--card);border:2px solid var(--line)}
+.ag .lit{position:absolute;inset:0;border-radius:16px;border:3px solid var(--c);background:color-mix(in srgb,var(--c) 16%,#1c1a17)}
+.ag .in{position:absolute;inset:0;padding:0 20px;display:flex;align-items:center;gap:12px}
+.ag .nm{font-size:25px;font-weight:700}
+.pill{font-size:22px;font-weight:700;padding:3px 13px;border-radius:10px;white-space:nowrap;border:1px solid transparent}
+.sp{flex:1}
+.ex{opacity:0}
+.stopc{position:absolute;left:960px;top:696px;width:620px;height:84px;border-radius:16px;border:3px solid var(--amber);background:color-mix(in srgb,var(--amber) 18%,#1c1a17);
+ display:flex;align-items:center;justify-content:center;gap:16px;font-size:34px;font-weight:800;color:var(--amber);opacity:0}
+.strip{position:absolute;left:40px;top:812px;width:1520px;height:70px;border-radius:18px;border:2px solid #2f7a4d;background:#14211a;
+ display:flex;align-items:center;justify-content:center;font-size:32px;font-weight:600;opacity:0;white-space:nowrap}
+.strip b{color:var(--ok);font-weight:800;margin:0 2px}
+svg{position:absolute;left:0;top:0;width:1600px;height:900px;pointer-events:none}
+</style></head><body>
+<div id="stage"><div id="title"></div><svg id="svg"></svg></div>
+<script>
+const lang = new URLSearchParams(location.search).get('lang') || 'en';
+const clamp = x => Math.max(0, Math.min(1, x));
+const prog = (t, a, b) => clamp((t - a) / (b - a));
+const eo = p => 1 - Math.pow(1 - p, 3);
+const MC = {haiku: 'var(--haiku)', sonnet: 'var(--sonnet)', opus: 'var(--opus)', fable: 'var(--fable)'};
+const AGENTS = [
+ ['Explore', 'haiku'], ['mech-executor', 'haiku'], ['test-analyst', 'haiku'], ['implementer-sonnet', 'sonnet'],
+ ['implementer', 'opus'], ['code-reviewer', 'fable'], ['acceptance-verifier', 'sonnet']];
+const AY = j => 118 + j * 82;           // agent card top
+const RY = i => 118 + i * 136;          // request card top
+const NODE = {lx: 750, rx: 910, y: 450};
+const DECL = [
+ '分類:機械/無風險/證據:測試', '分類:簡單/無風險/證據:審查', '分類:中等/無風險/證據:實機(瀏覽器)',
+ '分類:中等/R1(錯誤處理)/證據:審查', '分類:困難/R2(密碼學)/證據:審查+架構'];
+// request schedule: start s; route list [{agent index or 'stop', t0 (rel. line-to-node start), extra pill key}]
+const REQ = [
+ {s: 0.5, routes: [{a: 1, r: 0.0, x: 'tests'}]},
+ {s: 2.4, routes: [{a: 0, r: 0.0, x: 'readonly'}]},
+ {s: 4.2, routes: [{a: 3, r: 0.0, x: 'live'}]},
+ {s: 6.1, routes: [{a: 3, r: 0.0}, {a: 5, r: 2.3, chain: 3}]},
+ {s: 9.1, routes: [{a: 'stop', r: 0.0}]}];
+const TYPE_AT = 0.3, TYPE_DUR = 0.7, LINE1 = 1.0, LINE2 = 1.35, ARR = 1.75;
+let S, reqEls = [], agEls = [], paths = [], dots = [], nodeEl, stopEl, stripEl;
+const NS = 'http://www.w3.org/2000/svg';
+
+function mk(tag, cls, parent, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html) e.innerHTML = html; parent.appendChild(e); return e; }
+function curve(x1, y1, x2, y2) { const m = (x1 + x2) / 2; return `M${x1},${y1} C${m},${y1} ${m},${y2} ${x2},${y2}`; }
+function mkPath(d, color) {
+  const p = document.createElementNS(NS, 'path');
+  p.setAttribute('d', d); p.setAttribute('fill', 'none'); p.setAttribute('stroke', color); p.setAttribute('stroke-width', 5); p.setAttribute('stroke-linecap', 'round');
+  document.getElementById('svg').appendChild(p);
+  const len = p.getTotalLength(); p.setAttribute('stroke-dasharray', len);
+  const c = document.createElementNS(NS, 'circle'); c.setAttribute('r', 9); c.setAttribute('fill', color);
+  document.getElementById('svg').appendChild(c);
+  return {p, c, len};
+}
+function drawPath(o, t, a, b, fadeAt) {
+  const p = prog(t, a, b);
+  o.p.setAttribute('stroke-dashoffset', o.len * (1 - eo(p)));
+  const fade = 1 - 0.82 * prog(t, fadeAt, fadeAt + 0.5);
+  o.p.setAttribute('opacity', p > 0 ? fade : 0);
+  if (p > 0 && p < 1) { const pt = o.p.getPointAtLength(o.len * eo(p)); o.c.setAttribute('cx', pt.x); o.c.setAttribute('cy', pt.y); o.c.setAttribute('opacity', 1); }
+  else o.c.setAttribute('opacity', 0);
+}
+
+async function init() {
+  S = await (await fetch(`strings.${lang}.json`)).json();
+  const stage = document.getElementById('stage');
+  document.getElementById('title').textContent = S.title;
+  // requests
+  REQ.forEach((r, i) => {
+    const e = mk('div', 'req', stage);
+    e.style.top = RY(i) + 'px';
+    e.innerHTML = `<div class="t">${S.reqs[i].t}</div><div class="d mono"><span class="c"></span><span class="g">${S.reqs[i].g}</span></div>`;
+    reqEls.push(e);
+  });
+  nodeEl = mk('div', 'node', stage, `<div>${S.node1}</div><div class="n2">${S.node2}</div>`);
+  // agents
+  AGENTS.forEach(([name, model], j) => {
+    const e = mk('div', 'ag', stage); e.style.top = AY(j) + 'px'; e.style.setProperty('--c', MC[model]);
+    const base = mk('div', 'base', e), lit = mk('div', 'lit', e), inn = mk('div', 'in', e);
+    mk('span', 'nm mono', inn, name);
+    mk('span', 'sp', inn);
+    const ex = mk('span', 'pill ex', inn, '');
+    const mp = mk('span', 'pill', inn, model);
+    mp.style.color = MC[model]; mp.style.background = `color-mix(in srgb,${MC[model]} 16%,transparent)`;
+    agEls.push({e, base, lit, inn, ex, nm: inn.firstChild});
+  });
+  // extra pills
+  const exs = {tests: [1, S.tests, 'var(--ok)'], readonly: [0, S.readonly, '#c9c4b8'], live: [3, S.live, 'var(--haiku)']};
+  for (const k in exs) { const [j, txt, col] = exs[k]; const a = agEls[j]; a.ex.textContent = txt; a.ex.style.color = col; a.ex.style.background = `color-mix(in srgb,${col} 16%,transparent)`; a.ex.dataset.k = k; }
+  stopEl = mk('div', 'stopc', stage, `<span>⛔</span><span>${S.stop}</span>`);
+  stripEl = mk('div', 'strip', stage, `<span>${S.strip_pre}<b>${S.strip_num}</b>${S.strip_post}</span>`);
+  // paths
+  REQ.forEach((r, i) => {
+    const ry = RY(i) + 64;
+    const p1 = mkPath(curve(700, ry, NODE.lx, NODE.y), 'var(--accent)');
+    const rs = r.routes.map(rt => {
+      if (rt.chain !== undefined) {
+        const y1 = AY(rt.chain) + 37, y2 = AY(rt.a) + 37;
+        return {rt, o: mkPath(`M960,${y1} C925,${y1} 925,${y2} 960,${y2}`, 'var(--fable)')};
+      }
+      const ay = rt.a === 'stop' ? 738 : AY(rt.a) + 37;
+      return {rt, o: mkPath(curve(NODE.rx, NODE.y, 960, ay), rt.a === 'stop' ? 'var(--amber)' : 'var(--ok)')};
+    });
+    paths.push({p1, rs});
+  });
+  window.ready = document.fonts.ready.then(() => true);
+}
+window.ready = undefined;
+init();
+
+function render(t) {
+  // requests + declarations + paths
+  const lit = AGENTS.map(() => 0), extra = {};
+  let nodePulse = 0, stopLit = 0;
+  REQ.forEach((r, i) => {
+    const el = reqEls[i];
+    const pin = eo(prog(t, r.s, r.s + 0.3));
+    const next = REQ[i + 1] ? REQ[i + 1].s : 99;
+    const end = r.s + (r.routes.length > 1 ? 3.0 : 1.9);
+    const active = t >= r.s && t < end + 0.2;
+    el.style.opacity = pin; el.style.transform = `translateX(${(1 - pin) * -40}px)`;
+    el.style.borderColor = active ? 'var(--accent)' : 'var(--line)';
+    // typed declaration
+    const d = DECL[i], n = Math.floor(d.length * clamp((t - r.s - TYPE_AT) / TYPE_DUR) + 1e-6);
+    const caret = (t >= r.s + TYPE_AT && t < r.s + TYPE_AT + TYPE_DUR + 0.15) ? '▍' : '';
+    el.querySelector('.c').textContent = d.slice(0, n) + caret;
+    el.querySelector('.g').style.opacity = prog(t, r.s + TYPE_AT + TYPE_DUR, r.s + TYPE_AT + TYPE_DUR + 0.2);
+    // paths
+    const P = paths[i];
+    drawPath(P.p1, t, r.s + LINE1, r.s + LINE1 + 0.35, r.s + 2.6);
+    nodePulse = Math.max(nodePulse, Math.sin(Math.PI * prog(t, r.s + LINE1 + 0.2, r.s + LINE1 + 0.6)));
+    P.rs.forEach(({rt, o}) => {
+      const a0 = rt.chain !== undefined ? r.s + rt.r : r.s + LINE2 + rt.r, a1 = a0 + 0.45;
+      drawPath(o, t, a0, a1, a1 + 0.9);
+      const on = t >= a1 - 0.05 ? eo(prog(t, a1 - 0.05, a1 + 0.25)) : 0;
+      if (rt.a === 'stop') stopLit = Math.max(stopLit, on);
+      else {
+        const settle = 1 - 0.18 * prog(t, a1 + 0.9, a1 + 1.4);
+        lit[rt.a] = Math.max(lit[rt.a], on * settle);
+        if (rt.x && on > 0) extra[rt.x] = Math.max(extra[rt.x] || 0, on);
+      }
+    });
+  });
+  nodeEl.style.boxShadow = `0 0 ${nodePulse * 34}px rgba(240,138,93,${nodePulse * 0.55})`;
+  nodeEl.style.transform = `scale(${1 + nodePulse * 0.06})`;
+  agEls.forEach((a, j) => {
+    const l = lit[j];
+    a.lit.style.opacity = l; a.inn.style.opacity = 0.42 + 0.58 * l;
+    a.e.style.boxShadow = l > 0.5 ? `0 0 ${24 * l}px color-mix(in srgb,${a.lit.parentNode.style.getPropertyValue('--c')} 40%,transparent)` : 'none';
+    a.ex.style.opacity = extra[a.ex.dataset.k] || 0;
+  });
+  stopEl.style.opacity = eo(stopLit);
+  stopEl.style.transform = `scale(${0.92 + 0.08 * eo(stopLit)})`;
+  stripEl.style.opacity = eo(prog(t, 10.9, 11.4));
+  stripEl.style.transform = `translateY(${(1 - eo(prog(t, 10.9, 11.4))) * 14}px)`;
+}
+window.render = render;
+</script></body></html>
