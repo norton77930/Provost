@@ -61,8 +61,11 @@ function world(on: On) {
     return { value: agents.map(a => ({ ...a })) }
   })
   // The engine hands the hook the path in the machine's own spelling; the world keeps forward slashes.
+  // Off Windows, C:/work is not absolute and arrives under the runner's cwd, so match from C:/work on.
   on('fs.read', ($, e) => {
-    const path = e.path.replace(/\\/g, '/')
+    const slashed = e.path.replace(/\\/g, '/')
+    const at = slashed.indexOf('C:/work/')
+    const path = at === -1 ? slashed : slashed.slice(at)
     reads.push(path)
     const text = files[path]
     return text === undefined ? { deny: `ENOENT: ${e.path}` } : { value: text }
