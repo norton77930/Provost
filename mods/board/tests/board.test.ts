@@ -1650,6 +1650,34 @@ test('English gates-only headline', async ($, on) => {
   expect(w.status()).toBe('board  gates ██▓░░ 1/2 · needs you: H1')
 })
 
+test('gates-only headline with no gate to count names the malformed files instead of 0/0', async ($, on) => {
+  const w = world(on)
+  writeTools(on)
+  await start($)
+  w.file('a.json', '[]')
+  await writeAcceptance($, 'a.json')
+  await turnDone($)
+  expect(w.status()).toBe('board  gates · 1 malformed')
+  w.file('b.json', '{ "task": "Empty", "gates": [] }')
+  await writeAcceptance($, 'b.json')
+  await turnDone($)
+  expect(w.status()).toBe('board  gates · 1 malformed')
+  w.file('a.json', gateFile('Fixed', []))
+  await turnDone($)
+  expect(w.status()).toBe('board  gates —')
+})
+
+test('zh-TW gates-only headline names the malformed files', { options: ZH }, async ($, on) => {
+  const w = world(on)
+  writeTools(on)
+  await start($)
+  w.file('a.json', '[]')
+  w.file('b.json', 'not json')
+  for (const name of ['a.json', 'b.json']) await writeAcceptance($, name)
+  await turnDone($)
+  expect(w.status()).toBe('board  驗收 · 2 個格式錯誤')
+})
+
 test('English collapsed pane: Expand and Collapse buttons, the headline cut before the wider button', async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)

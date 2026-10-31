@@ -56,6 +56,7 @@ const EN = {
   elapsed: 'Elapsed',
   prompt: 'Dispatch prompt',
   malformed: 'malformed',
+  malformedCount: (n: number) => `${n} malformed`,
   steps: 'Steps',
   dispatches: 'Dispatches',
   gatesRule: 'Gates',
@@ -94,6 +95,7 @@ const ZH: typeof EN = {
   elapsed: '經過',
   prompt: '派工指令',
   malformed: '格式錯誤',
+  malformedCount: n => `${n} 個格式錯誤`,
   steps: '步驟',
   dispatches: '派工',
   gatesRule: '驗收',
@@ -265,9 +267,14 @@ function planSummaryOf(plan: BoardTodo[], list: BoardRow[], files: BoardGateFile
   )
 }
 
-// Only acceptance files and nothing else: the gates bar leads.
+// Only acceptance files and nothing else: the gates bar leads. With no gate to count,
+// a bar over 0/0 says nothing, so name the malformed files or show a dash.
 function gatesSummaryOf(files: BoardGateFile[]) {
   const all = files.flatMap(f => f.gates)
+  if (all.length === 0) {
+    const broken = files.filter(f => f.task === null).length
+    return `board  ${t.gates}` + (broken > 0 ? ` · ${t.malformedCount(broken)}` : ' —')
+  }
   const passed = all.filter(g => g.status === 'pass').length
   return `board  ${t.gates} ${barOf(ratio(passed, all.length), GATE_BAR_W)} ${passed}/${all.length}` + waitingTextOf(files)
 }
