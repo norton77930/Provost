@@ -4,19 +4,22 @@
 
 <h1 align="center">Provost</h1>
 
-<p align="center">
-  <b>Classify every request&nbsp;&nbsp;|&nbsp;&nbsp;Cheaper models do the typing&nbsp;&nbsp;|&nbsp;&nbsp;Review only on risk&nbsp;&nbsp;|&nbsp;&nbsp;Decisions survive compaction&nbsp;&nbsp;|&nbsp;&nbsp;Measured on real work</b>
-</p>
+<h3 align="center">Stop paying Opus prices for work that doesn't need Opus.</h3>
 
 <p align="center">
-  <img src="docs/demo/hero-en.png" width="100%"
-    alt="Same work, different price. Left: plain Claude Code runs every step (edits, tests, self-review, browser, a context at 92%) on Opus, cost 100%. Right: with Provost a 12-file rename goes to mech-executor on Haiku, a button label stays in main, a UI form goes to implementer-sonnet with a live browser check, expired-token errors go to implementer-sonnet and code-reviewer, auth or a migration stops for you, and PreCompact/PostCompact keep decisions near the context limit; build cost −53–66%">
+  Provost makes Claude Code route each request to the cheapest model that can do it,<br>
+  close it with evidence instead of "looks done", and keep its decisions through compaction.
 </p>
 
-<p align="center">
-  <b>Stop paying top-model prices for every step your agent takes.</b><br>
-  An orchestration policy, eight subagent roles and a handoff runtime for Claude Code. The main session classifies each request, hands the typing to cheaper models, and keeps its decisions through compaction.
-</p>
+<table align="center">
+  <tr>
+    <td align="center" width="220"><h2>−34%</h2>total spend<br><sub>10 days of real work</sub></td>
+    <td align="center" width="220"><h2>−68%</h2>subagent cost<br><sub>vs. running them all on Opus</sub></td>
+    <td align="center" width="220"><h2>0</h2>times re-explaining<br><sub>across 44 compactions</sub></td>
+  </tr>
+</table>
+
+<p align="center"><sub>One user's measured work, not a controlled experiment. Windows, baselines and limits are under <a href="#evidence">Evidence</a>.</sub></p>
 
 <p align="center">
   <a href="https://github.com/norton77930/Provost/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/norton77930/Provost/ci.yml?branch=main&style=flat-square&labelColor=16181d&label=CI" alt="CI"></a>
@@ -25,21 +28,49 @@
 </p>
 
 <p align="center">
-  <a href="#install"><b>Install</b></a> · <a href="#why-not-plain-claude-code">Why</a> · <a href="#how-it-works">How it works</a> · <a href="#evidence-so-far">Evidence</a> · <a href="README.zh-TW.md">繁體中文</a>
+  <a href="#install"><b>Install</b></a> · <a href="#try-the-mods-first">Try the mods</a> · <a href="#how-it-works">How it works</a> · <a href="#evidence">Evidence</a> · <a href="README.zh-TW.md">繁體中文</a>
 </p>
 
-Once installed, work the way you always do. Before it acts, the main session declares how it will handle each request:
+<p align="center">
+  <img src="mods/board/docs/board-pane.png" width="760"
+    alt="The board pane in a real session: 3 of 5 plan steps done, an implementer-sonnet dispatch under step 3, step 4 in progress, and the acceptance gates for 'board round 1' with tests and validate passed, a live check pending and the merge waiting for the user">
+</p>
 
-```
+<p align="center"><sub>A real session with Provost and the <a href="mods/board/">board</a> mod: the plan, who each step went to, and what still has to be proven before it counts as done.</sub></p>
+
+## Three things it does
+
+**1. Cheaper models do the typing.** The main session classifies every request
+before it acts. A 12-file rename goes to Haiku, a bounded feature to Sonnet, a
+one-line fix stays where it is. Over two weeks the main session wrote about 3%
+of the changed code; the rest came from cheaper roles across 270 dispatches.
+
+**2. "Done" needs proof.** Each claim is closed by the cheapest evidence that
+would actually catch it failing: a test, a live run in the browser or CLI, or a
+fresh-context reviewer when neither could. Acceptance gates are written before
+the work starts, and the turn cannot end while a gate is pending or failed.
+Changes to auth, secrets, payments or data migrations stop and wait for you.
+
+**3. Decisions survive compaction.** Hooks save decisions, dispatches and
+evidence before compaction and put them back after it, so early compaction is
+safe. Context stays small, and each call stays cheap.
+
+## What a request looks like
+
+Work the way you always do. Before it acts, the main session declares how it
+will handle the request (the line is written in your language; the notes on the
+right are added here for this README):
+
+```text
 > Rename getUser to fetchUser in all 12 files
-分類:機械/無風險/證據:測試 → mech-executor
+分類:機械/無風險/證據:測試 → mech-executor            # mechanical · no risk · tests close it → Haiku
 > Add validation to the signup form
-分類:中等/無風險/證據:實機(瀏覽器) → implementer-sonnet, then a live browser check
+分類:中等/無風險/證據:實機(瀏覽器) → implementer-sonnet  # moderate · no risk · live browser check → Sonnet
 > Handle expired tokens in the API client
-分類:中等/R1(錯誤處理)/證據:審查 → implementer-sonnet, then code-reviewer
+分類:中等/R1(錯誤處理)/證據:審查 → implementer-sonnet    # error handling is invisible to a live run → code-reviewer after
+> Add a role column to the users table
+分類:困難/R2(migration)/證據:審查+架構 → 停,等你決定    # data migration: stops and asks you first
 ```
-
-The declaration is written in your language; the format is in [How it works](#how-it-works).
 
 Here is the whole idea in 46 seconds:
 
@@ -49,18 +80,44 @@ https://github.com/user-attachments/assets/6e564d31-55b6-4271-a65d-1d8c1cebe413
 
 ## Why not plain Claude Code?
 
-You can. Plain Claude Code is a strong agent. What it does not do on its own is choose who does each step and what proves it is done, so every step runs on the main model and review happens when you remember to ask.
+Plain Claude Code is a strong agent. What it does not do on its own is decide
+who does each step and what proves it is done, so every step runs on the main
+model, and review happens when you remember to ask.
 
 | When… | Plain Claude Code | With Provost |
 | :--- | :--- | :--- |
-| a rename touches 12 files | the main model edits each file itself | `mech-executor` on Haiku does the batch; the tests close it |
-| a bounded feature is ready to build | the main model writes it at its own price | `implementer-sonnet` builds it: −53–66% build cost at equal review outcomes (34-slice trial) |
-| a change is visible in the UI | done when the code looks right | closes with a live check (browser, window, popup or CLI), not a reviewer |
-| a change touches error handling, data conversion or concurrency | reviewed only if you ask | `code-reviewer` runs in a fresh context; file count and diff size never trigger review |
-| a change alters how auth, secrets or payments behave, or migrates data | proceeds like any other | R2: the session stops and waits for your decision |
-| the context grows past 400K | each call costs about ×2.3 more, and compaction can drop decisions | compact early: PreCompact saves the decisions, PostCompact restores them (44 compactions, no re-explaining) |
+| a rename touches 12 files | the main model edits each file | `mech-executor` on Haiku, closed by the tests |
+| a bounded feature is ready | the main model writes it | `implementer-sonnet`: −53–66% build cost, same review outcomes |
+| the change shows on screen | done when the code looks right | done after a live run in the browser, window or CLI |
+| error handling, data conversion, concurrency | reviewed if you ask | `code-reviewer` in a fresh context, triggered by risk, never by diff size |
+| auth, secrets, payments, migrations | proceeds like any other change | stops and waits for your decision |
+| the context passes 400K | each call costs ~×2.3, compaction can drop decisions | compacts early; decisions are saved and restored |
 
-Measured results and their limits are under [Evidence so far](#evidence-so-far).
+<p align="center">
+  <img src="docs/demo/hero-en.png" width="100%"
+    alt="Same work, different price. Left: plain Claude Code runs every step (edits, tests, self-review, browser, a context at 92%) on Opus. Right: with Provost a 12-file rename goes to mech-executor on Haiku, a button label stays in main, a UI form goes to implementer-sonnet with a live browser check, expired-token errors go to implementer-sonnet and code-reviewer, auth or a migration stops for you, and PreCompact/PostCompact keep decisions near the context limit">
+</p>
+
+<p align="center"><sub>The build-cost bar compares <code>implementer-sonnet</code> with <code>implementer</code> on 34 trialled slices. Total spend fell 34% (see <a href="#evidence">Evidence</a>).</sub></p>
+
+## Try the mods first
+
+Two mods from this repo work on their own, without the rest of Provost. They
+are the fastest way to see what it is about.
+
+| Mod | What it does |
+|---|---|
+| [`board`](mods/board/) | A pane and status line for plan steps, subagent dispatches and acceptance gates (the screenshot above) |
+| [`idle-guard`](mods/idle-guard/) | Compacts a large idle conversation before the one-hour prompt cache expires, so a late wake-up doesn't re-read the whole context |
+
+```text
+/plugin marketplace add norton77930/Provost
+/plugin install board@provost
+/plugin install idle-guard@provost
+```
+
+The UI is in English by default. Set a mod's `language` option to `zh-TW` in
+`/config` for Traditional Chinese.
 
 ## Install
 
@@ -158,17 +215,10 @@ and recovery.
 
 ## How it works
 
-Provost is the source of truth for one Claude Code setup that is used every day.
-The main session classifies each request by difficulty and risk, keeps simple
-work for itself, hands bounded slices to cheaper implementer roles, and calls a
-fresh-context reviewer only when a failure would be invisible to tests and to a
-live run. A small runtime records decisions and dispatches so that work survives
-context compaction and session restarts.
-
-It is published as it is used: tuned for one person's work, Windows first, and
-installed by copying files into the Claude config directory with a drift check.
-
-Every non-trivial request starts with a one-line declaration:
+Provost has three parts: a policy the main session follows
+([`native/CLAUDE.native.md`](native/CLAUDE.native.md)), nine subagent roles,
+and a small runtime of hooks. Every non-trivial request starts with a one-line
+declaration:
 
 ```text
 分類:<simple|moderate|mechanical|hard> / <no-risk|R1|R2> / evidence:<test|live|review|architecture> → <route>
@@ -180,20 +230,23 @@ Every non-trivial request starts with a one-line declaration:
   concurrency, lifecycle or security logic). Fully specified repetition
   goes to `mech-executor`. Hard work needs an approved spec first.
 - **Risk decides which evidence closes a claim.** Pick the cheapest evidence that
-  would catch the failure: a focused test, a live run, or — only when the failure
-  is invisible to both — a `code-reviewer` (plus `architecture-reviewer` when an
+  would catch the failure: a focused test, a live run, or, only when the failure
+  is invisible to both, a `code-reviewer` (plus `architecture-reviewer` when an
   exposed interface changes). File count, diff size and "looks complex" are
-  explicitly not reasons to review.
+  explicitly not reasons to review. A change that needs review is **R1**.
 - **R2 stops.** Auth, secrets, payments, migrations, breaking public APIs,
   cross-repo or irreversible operations wait for the user's decision, and are
   done only after review.
+- **Acceptance gates hold the turn.** Before the work starts, the session writes
+  its gates (`machine`, `live`, `visual`, `review`, `human`) to
+  `.claude/acceptance/<task>.json`. A Stop hook pushes back while a non-human
+  gate is pending, failed or stale, and a visual gate is judged against its
+  mockup by `acceptance-verifier`, not by the session that did the work.
 - **Writers are budgeted.** Normally at most two concurrent writers, three when
   the third is provably independent; ownership of files and shared resources is
   checked before every wave.
-- **Completion is finite.** A Completion Contract lists the claims and their
-  evidence; once every claim passes, only the planned final verification runs.
-
-The full text is [`native/CLAUDE.native.md`](native/CLAUDE.native.md).
+- **Completion is finite.** Once every claim passes, only the planned final
+  verification runs. No extra review, tests or refactoring after that.
 
 ### Roles
 
@@ -218,7 +271,7 @@ The runtime keeps a sealed, per-session chain of handoff records (sources,
 decisions, assignments, evidence, next step) under
 `~/.claude/provost/handoffs`, shared by a checkout and its worktrees. Hooks
 inject the latest checkpoint after compaction or resume, capture facts (edited
-paths, dispatches, commits — never command text or file contents) and remind the
+paths, dispatches, commits; never command text or file contents) and remind the
 main session when a dispatch or edit has no record yet. Decisions and evidence go
 to an append-only log per work, shared by every session of the repository.
 Commands: `doctor`, `status`, `record`, `snapshot`, `list`, `resume`, `changes`,
@@ -235,49 +288,48 @@ See [`docs/native-handoff.md`](docs/native-handoff.md).
 | [`skills/verification-before-completion/`](skills/verification-before-completion/) | Completion-claim discipline | `skills/` |
 | [`skills/handoff/`](skills/handoff/) | The `/handoff` skill (save, resume, search) | `skills/handoff/` |
 | [`tools/dispatch-report.js`](tools/dispatch-report.js) | Cost and outcome report of past dispatches, from transcripts | `experiments/` |
+| [`mods/`](mods/) | The `board` and `idle-guard` plugins | installed with `/plugin` |
 | [`install.py`](install.py) | Installer and read-only drift check | — |
 
 Methodology skills (TDD, diagnosis, grilling, spec and tickets) come from the
 [`mattpocock-skills`](https://github.com/mattpocock/skills) plugin, which the
 policy refers to by name.
 
-## Mods
+## Evidence
 
-The repo is also a Claude Code plugin marketplace for two mods. They work on
-their own, without the rest of Provost.
+One user, real work, measured from Claude Code transcripts. Not a controlled
+experiment.
 
-| Mod | What it does |
-|---|---|
-| [`board`](mods/board/) | Pane and status line for plan steps, subagent dispatches and acceptance gates |
-| [`idle-guard`](mods/idle-guard/) | Compacts a large idle conversation before the prompt cache expires |
+- **Total spend −34% to −36%** over 10 days (2026-10-14 to 10-23), priced
+  against the same transcripts with the default compaction window and every
+  subagent role one model up (Sonnet for the Haiku roles, Opus for
+  `implementer-sonnet`). Reviewers were 7.7% of the spend.
+- **Subagents −68%** against an all-Opus baseline over the same 10 days:
+  implementation −50%, exploration −88%, tests and batches −97%.
+- **Main session −45.6%** from compacting earlier ($980 against $1,802 at the
+  default window, same 10 days). The handoff hooks are what make early
+  compaction safe, so this is the setting and the hooks together.
+- **`implementer-sonnet` −53–66%** against `implementer` on 34 slices across 5
+  repositories, including paired runs on the same brief, with equal review
+  outcomes. It became the default implementer on 2026-10-04.
+- **Main session wrote about 3%** of changed code lines over two weeks
+  (2026-09-28 to 10-12, 84 sessions); implementer roles wrote the rest across
+  270 dispatches.
+- **No re-explaining:** across 44 compactions, no session needed the user to
+  re-explain lost context.
+- **Reviews were earned:** 92% of `code-reviewer` dispatches had a genuine risk
+  trigger (79 of 86, audited over the same 10 days).
+- **Overhead:** the hook mechanism cost about 3% of total spend.
 
-```text
-/plugin marketplace add norton77930/Provost
-/plugin install board@provost
-/plugin install idle-guard@provost
-```
+## Known limitations
 
-The UI is in English by default. To switch a mod to Traditional Chinese, set
-its `language` option to `zh-TW` in `/config`.
-
-## Evidence so far
-
-Single user, real work, not a controlled experiment:
-
-- `implementer-sonnet` was trialled against `implementer` on 34 slices across 5
-  repositories, including paired runs on the same brief, before becoming the
-  default implementer (2026-10-04).
-- Over two weeks (2026-09-28 to 10-12, 84 sessions) the main session wrote about
-  3% of changed code lines; implementer roles wrote the rest across 270
-  dispatches.
-- `implementer-sonnet` cost 53–66% less than `implementer` on the trialled
-  slices, with equal review outcomes.
-- Cost per call rose about ×2.3 from a ≤200K-token context to 400–600K.
-  Compacting earlier (`autoCompactWindow`) cut the main session's weekly cost by
-  37% (7 days measured); the handoff hooks are what make early compaction safe, so the −37% is the
-  setting plus the hooks, not the hooks alone.
-- Across 44 compactions, no session needed the user to re-explain lost context.
-- The hook mechanism itself cost 3.6% of total spend over a measured week.
+- Tuned for one person's daily work and published as it is used: Windows first,
+  installed by copying files into the Claude config directory with a drift
+  check.
+- Model aliases (`fable`, `opus`, `sonnet`, `haiku`) resolve to whatever your
+  Claude Code version maps them to.
+- Hooks spawn bash and Python on every call; on Windows that costs roughly a
+  second per hook.
 
 ## Tests
 
@@ -285,36 +337,17 @@ Single user, real work, not a controlled experiment:
 python -m unittest discover -s tests/adaptive -p "test_*.py"
 ```
 
-CI runs the suite on Windows, Ubuntu and macOS, and checks Markdown links.
-
-## History
-
-Provost started as a three-tier governance framework (Tier 0 bare, Tier 1
-collaborator, Tier 2 governed with hash-pinned manifests and a PowerShell write
-gate), shipped as a Claude Code plugin. That design is archived at tag
-[`archive/tier2-foreman`](https://github.com/norton77930/Provost/tree/archive/tier2-foreman)
-and is no longer maintained.
-
-## Known limitations
-
-- Tuned for one user; model aliases (`fable`, `opus`, `sonnet`, `haiku`) resolve
-  to whatever your Claude Code version maps them to.
-- Hooks spawn bash and Python on every call; on Windows that costs roughly a
-  second per hook.
+CI runs the suite on Windows, Ubuntu and macOS, tests the mods, and checks
+Markdown links.
 
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Release notes are in [CHANGELOG.md](CHANGELOG.md); plans in [ROADMAP.md](ROADMAP.md). Ideas and bug reports go in [issues](https://github.com/norton77930/Provost/issues/new/choose). Security reports: [SECURITY.md](SECURITY.md).
 
-## Star History
-
-<a href="https://star-history.com/#norton77930/Provost&Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=norton77930/Provost&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=norton77930/Provost&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=norton77930/Provost&type=Date" />
-  </picture>
-</a>
+Provost started as a three-tier governance framework shipped as a Claude Code
+plugin. That design is archived at tag
+[`archive/tier2-foreman`](https://github.com/norton77930/Provost/tree/archive/tier2-foreman)
+and is no longer maintained.
 
 ## License
 
