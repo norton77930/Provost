@@ -1,7 +1,11 @@
 {
   "name": "idle-guard",
   "version": "0.1.0",
-  "description": "Compacts the main conversation after 54 idle minutes so a late wake rewrites a summary, not the whole context.",
+  "description": "Compacts the main conversation after an idle period (default 54 minutes) so a late wake rewrites a summary, not the whole context.",
+  "author": { "name": "Norton" },
+  "homepage": "https://github.com/norton77930/Provost/tree/main/mods/idle-guard",
+  "license": "MIT",
+  "keywords": ["idle", "compact", "context", "cache"],
   "types": "./types/index.d.ts",
   "userConfig": {
     "minutes": {
@@ -15,6 +19,13 @@
       "title": "Minimum context tokens",
       "description": "Compact only when the live context holds at least this many tokens.",
       "default": 200000
+    },
+    "language": {
+      "type": "string",
+      "title": "Language",
+      "description": "UI language: en (English) or zh-TW (繁體中文).",
+      "options": ["en", "zh-TW"],
+      "default": "en"
     }
   }
 }

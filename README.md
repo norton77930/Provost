@@ -241,6 +241,25 @@ Methodology skills (TDD, diagnosis, grilling, spec and tickets) come from the
 [`mattpocock-skills`](https://github.com/mattpocock/skills) plugin, which the
 policy refers to by name.
 
+## Mods
+
+The repo is also a Claude Code plugin marketplace for two mods. They work on
+their own, without the rest of Provost.
+
+| Mod | What it does |
+|---|---|
+| [`board`](mods/board/) | Pane and status line for plan steps, subagent dispatches and acceptance gates |
+| [`idle-guard`](mods/idle-guard/) | Compacts a large idle conversation before the prompt cache expires |
+
+```text
+/plugin marketplace add norton77930/Provost
+/plugin install board@provost
+/plugin install idle-guard@provost
+```
+
+The UI is in English by default. To switch a mod to Traditional Chinese, set
+its `language` option to `zh-TW` in `/config`.
+
 ## Evidence so far
 
 Single user, real work, not a controlled experiment:

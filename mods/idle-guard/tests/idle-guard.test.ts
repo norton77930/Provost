@@ -10,11 +10,15 @@ const OFF_LINE = 'idle-guard  compact ○ OFF'
 
 type Compact = 'ok' | 'skip' | 'reject'
 
+const ZH = { language: 'zh-TW' }
+const ZH_TEST = { options: ZH }
+
 function world(on: On, opts: { tokens?: number | null; compact?: Compact; store?: Record<string, unknown> } = {}) {
   const clock = mock.clock(on, { now: T0 })
   const store: Record<string, unknown> = { ...opts.store }
   const statuses: (string | undefined)[] = []
   const opened: PaneOpenArgs[] = []
+  const described: (string | undefined)[] = []
   let compacts = 0
 
   on('store.get', ($, e) => ({ value: store[e.key] }))
@@ -26,7 +30,10 @@ function world(on: On, opts: { tokens?: number | null; compact?: Compact; store?
     statuses.push(e.text)
     return { value: undefined }
   })
-  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  on('command.register', ($, e) => {
+    described.push(e.description)
+    return { value: { command: e.name } }
+  })
   on('ui.open', ($, e) => {
     opened.push(e)
     return { value: { isPlaced: true } }
@@ -60,6 +67,7 @@ function world(on: On, opts: { tokens?: number | null; compact?: Compact; store?
     clock,
     store,
     opened,
+    described,
     compacts: () => compacts,
     status: () => statuses[statuses.length - 1],
   }
@@ -70,7 +78,7 @@ const turnStart = ($: Engine, agentId?: string) => $.turn.start({ text: 'hi', tu
 const turnDone = ($: Engine, agentId?: string) =>
   $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer', agentId })
 
-test('arms on turn.complete and compacts at the deadline when usage is over the threshold', async ($, on) => {
+test('arms on turn.complete and compacts at the deadline when usage is over the threshold', ZH_TEST, async ($, on) => {
   const w = world(on)
   await start($)
   await turnDone($)
@@ -81,7 +89,7 @@ test('arms on turn.complete and compacts at the deadline when usage is over the 
   expect(w.status()).toMatch(/^idle-guard {2}compact ● ON · 已於 \d\d:\d\d 壓縮（300K→40K）$/)
 })
 
-test('status counts down while armed', async ($, on) => {
+test('status counts down while armed', ZH_TEST, async ($, on) => {
   const w = world(on)
   await start($)
   expect(w.status()).toBe(ON_LINE)
@@ -128,7 +136,7 @@ test('subagent turns neither arm nor cancel', async ($, on) => {
   expect(w.compacts()).toBe(1)
 })
 
-test('under the threshold: no compaction', async ($, on) => {
+test('under the threshold: no compaction', ZH_TEST, async ($, on) => {
   const w = world(on, { tokens: 150_000 })
   await start($)
   await turnDone($)
@@ -148,7 +156,7 @@ test('disabled: no compaction and the OFF line', async ($, on) => {
   expect(w.status()).toBe(OFF_LINE)
 })
 
-test('lapsed: a timer firing past 60 idle minutes does not compact', { options: { minutes: 61 } }, async ($, on) => {
+test('lapsed: a timer firing past 60 idle minutes does not compact', { options: { ...ZH, minutes: 61 } }, async ($, on) => {
   const w = world(on)
   await start($)
   await turnDone($)
@@ -165,7 +173,7 @@ test('options override the delay and the threshold', { options: { minutes: 1, mi
   expect(w.compacts()).toBe(1)
 })
 
-test('a vetoed compaction is a skip, not an error', async ($, on) => {
+test('a vetoed compaction is a skip, not an error', ZH_TEST, async ($, on) => {
   const w = world(on, { compact: 'skip' })
   await start($)
   await turnDone($)
@@ -174,7 +182,7 @@ test('a vetoed compaction is a skip, not an error', async ($, on) => {
   expect(w.status()).toBe(`${ON_LINE} · 未壓縮：已略過`)
 })
 
-test('a rejected compaction is a skip, not an error', async ($, on) => {
+test('a rejected compaction is a skip, not an error', ZH_TEST, async ($, on) => {
   const w = world(on, { compact: 'reject' })
   await start($)
   await turnDone($)
@@ -242,7 +250,7 @@ const paneLines = async (ui: Awaited<ReturnType<typeof mountPane>>) =>
 
 const BAR = (n: number) => '█'.repeat(n) + '░'.repeat(19 - n)
 
-test('title: the pane draws its own heading once; the frame title is only a tab', async ($, on) => {
+test('title: the pane draws its own heading once; the frame title is only a tab', ZH_TEST, async ($, on) => {
   world(on)
   await start($)
   const ui = await mountPane($)
@@ -252,7 +260,7 @@ test('title: the pane draws its own heading once; the frame title is only a tab'
   await ui.unmount()
 })
 
-test('idle row: the bar is empty at arm, rounds to 8 of 19 at 22/54, full at 54/54', async ($, on) => {
+test('idle row: the bar is empty at arm, rounds to 8 of 19 at 22/54, full at 54/54', ZH_TEST, async ($, on) => {
   const w = world(on)
   await start($)
   await turnDone($)
@@ -266,7 +274,7 @@ test('idle row: the bar is empty at arm, rounds to 8 of 19 at 22/54, full at 54/
   await ui.unmount()
 })
 
-test('idle row: not armed while a turn runs or before the first one', async ($, on) => {
+test('idle row: not armed while a turn runs or before the first one', ZH_TEST, async ($, on) => {
   world(on)
   await start($)
   const ui = await mountPane($)
@@ -288,7 +296,7 @@ test('idle row: the bar is dim when disabled', async ($, on) => {
   await ui.unmount()
 })
 
-test('ctx row: at or over the threshold says it will compact', async ($, on) => {
+test('ctx row: at or over the threshold says it will compact', ZH_TEST, async ($, on) => {
   world(on, { tokens: 312_000 })
   await start($)
   const ui = await mountPane($)
@@ -296,7 +304,7 @@ test('ctx row: at or over the threshold says it will compact', async ($, on) => 
   await ui.unmount()
 })
 
-test('ctx row: under the threshold says it will not', async ($, on) => {
+test('ctx row: under the threshold says it will not', ZH_TEST, async ($, on) => {
   world(on, { tokens: 150_000 })
   await start($)
   const ui = await mountPane($)
@@ -312,7 +320,7 @@ test('ctx row: a missing figure is unknown', async ($, on) => {
   await ui.unmount()
 })
 
-test('ctx row follows the configured threshold', { options: { minTokens: 1000 } }, async ($, on) => {
+test('ctx row follows the configured threshold', { options: { ...ZH, minTokens: 1000 } }, async ($, on) => {
   world(on, { tokens: 2000 })
   await start($)
   const ui = await mountPane($)
@@ -320,7 +328,7 @@ test('ctx row follows the configured threshold', { options: { minTokens: 1000 } 
   await ui.unmount()
 })
 
-test('last row: none, then the compaction with before and after', async ($, on) => {
+test('last row: none, then the compaction with before and after', ZH_TEST, async ($, on) => {
   const w = world(on)
   await start($)
   await turnDone($)
@@ -331,7 +339,7 @@ test('last row: none, then the compaction with before and after', async ($, on) 
   await ui.unmount()
 })
 
-test('last row: a skip reason, kept through the next turn', async ($, on) => {
+test('last row: a skip reason, kept through the next turn', ZH_TEST, async ($, on) => {
   const w = world(on, { tokens: 150_000 })
   await start($)
   await turnDone($)
@@ -343,7 +351,7 @@ test('last row: a skip reason, kept through the next turn', async ($, on) => {
   await ui.unmount()
 })
 
-test('last row: a vetoed compaction reads 已略過', async ($, on) => {
+test('last row: a vetoed compaction reads 已略過', ZH_TEST, async ($, on) => {
   const w = world(on, { compact: 'skip' })
   await start($)
   await turnDone($)
@@ -353,7 +361,7 @@ test('last row: a vetoed compaction reads 已略過', async ($, on) => {
   await ui.unmount()
 })
 
-test('last row: a lapsed timer reads 閒置已超過 60 分', { options: { minutes: 61 } }, async ($, on) => {
+test('last row: a lapsed timer reads 閒置已超過 60 分', { options: { ...ZH, minutes: 61 } }, async ($, on) => {
   const w = world(on)
   await start($)
   await turnDone($)
@@ -379,7 +387,7 @@ test('the pane is four rows and /idle-guard asks for four', async ($, on) => {
   await ui.unmount()
 })
 
-test('the pane redraws every minute while open', async ($, on) => {
+test('the pane redraws every minute while open', ZH_TEST, async ($, on) => {
   const w = world(on)
   await start($)
   await turnDone($)
@@ -392,7 +400,7 @@ test('the pane redraws every minute while open', async ($, on) => {
   await ui.unmount()
 })
 
-test('the pane toggle flips the stored setting, the label, its color and the status line', async ($, on) => {
+test('the pane toggle flips the stored setting, the label, its color and the status line', ZH_TEST, async ($, on) => {
   const w = world(on)
   await start($)
   await turnDone($)
@@ -420,4 +428,127 @@ test('the pane toggle flips the stored setting, the label, its color and the sta
     expect((await ui.find({ type: 'Button', key: 'toggle' }))?.text).toBe('● 開啟')
     await ui.unmount()
   }
+})
+
+// English is the default language; any value other than 'zh-TW' means English.
+test('en: the status line counts down, compacts and reports sizes', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await turnDone($)
+  expect(w.status()).toBe(`${ON_LINE} · compacts in 54 min`)
+  await w.clock.advance(22 * MIN)
+  expect(w.status()).toBe(`${ON_LINE} · compacts in 32 min`)
+  await w.clock.advance(DELAY)
+  expect(w.status()).toMatch(/^idle-guard {2}compact ● ON · Compacted at \d\d:\d\d \(300K→40K\)$/)
+})
+
+test('en: status line skip reasons', async ($, on) => {
+  const w = world(on, { tokens: 150_000 })
+  await start($)
+  await turnDone($)
+  await w.clock.advance(DELAY)
+  expect(w.status()).toBe(`${ON_LINE} · Not compacted: context under 200K`)
+})
+
+test('en: a vetoed compaction reads skipped', async ($, on) => {
+  const w = world(on, { compact: 'skip' })
+  await start($)
+  await turnDone($)
+  await w.clock.advance(DELAY)
+  expect(w.status()).toBe(`${ON_LINE} · Not compacted: skipped`)
+})
+
+test('en: a lapsed timer reads idle over 60 min', { options: { minutes: 61 } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  await turnDone($)
+  await w.clock.advance(61 * MIN + 30_000)
+  expect(w.status()).toBe(`${ON_LINE} · Not compacted: idle over 60 min`)
+})
+
+test('en: the pane header, toggle and hints', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await turnDone($)
+  const ui = await mountPane($)
+  expect((await paneLines(ui))[0]).toMatch(/^Idle Guard +\[ ● ON \] c toggle$/)
+  expect((await ui.find({ type: 'Text', text: '● ON' }))?.props.color).toBe('success')
+  expect(await ui.find({ type: 'Text', text: 'Esc close' })).toBeDefined()
+  await ui.press({ key: 'toggle' })
+  expect(w.status()).toBe(OFF_LINE)
+  expect((await ui.find({ type: 'Button', key: 'toggle' }))?.text).toBe('○ OFF')
+  expect((await ui.find({ type: 'Text', text: '○ OFF' }))?.props.dimColor).toBe(true)
+  await ui.unmount()
+})
+
+test('en: the idle row and the not-armed note', async ($, on) => {
+  const w = world(on)
+  await start($)
+  const ui = await mountPane($)
+  expect((await paneLines(ui))[1]).toBe('Idle  Turn running, timer off')
+  await turnDone($)
+  expect((await paneLines(ui))[1]).toBe(`Idle  ${BAR(0)}  0 / 54 min`)
+  await w.clock.advance(22 * MIN)
+  expect((await paneLines(ui))[1]).toBe(`Idle  ${BAR(8)}  22 / 54 min`)
+  await ui.unmount()
+})
+
+test('en: the ctx row in each state', async ($, on) => {
+  world(on, { tokens: 312_000 })
+  await start($)
+  const ui = await mountPane($)
+  expect((await paneLines(ui))[2]).toBe('ctx   312K ≥ 200K → will compact when idle')
+  await ui.press({ key: 'toggle' })
+  expect((await paneLines(ui))[2]).toBe('ctx   312K ≥ 200K → off, will not compact')
+  await ui.unmount()
+})
+
+test('en: the ctx row under the threshold', async ($, on) => {
+  world(on, { tokens: 150_000 })
+  await start($)
+  const ui = await mountPane($)
+  expect((await paneLines(ui))[2]).toBe('ctx   150K < 200K → will not compact')
+  await ui.unmount()
+})
+
+test('en: the last row, aligned with the Esc hint', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await turnDone($)
+  const ui = await mountPane($)
+  const first = (await paneLines(ui))[3] ?? ''
+  expect(first).toMatch(/^Last {2}— +Esc close$/)
+  expect(cells(first)).toBe(PANE_PROPS.bodyColumns)
+  await w.clock.advance(DELAY)
+  expect((await paneLines(ui))[3]).toMatch(/^Last {2}\d\d:\d\d compacted 300K → 40K +Esc close$/)
+  await ui.unmount()
+})
+
+test('en: last row skip reasons', async ($, on) => {
+  const w = world(on, { tokens: 150_000 })
+  await start($)
+  await turnDone($)
+  const ui = await mountPane($)
+  await w.clock.advance(DELAY)
+  expect((await paneLines(ui))[3]).toMatch(/^Last {2}\d\d:\d\d Not compacted: context under 200K +Esc close$/)
+  await ui.unmount()
+})
+
+test('en: the command description; zh-TW keeps the original', async ($, on) => {
+  const w = world(on)
+  await start($)
+  expect(w.described).toEqual(['Toggle idle compaction (Idle Guard)'])
+})
+
+test('zh-TW: the command description', ZH_TEST, async ($, on) => {
+  const w = world(on)
+  await start($)
+  expect(w.described).toEqual(['閒置 compact 開關（Idle Guard）'])
+})
+
+test('an unknown language value falls back to English', { options: { language: 'fr' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  await turnDone($)
+  expect(w.status()).toBe(`${ON_LINE} · compacts in 54 min`)
 })
