@@ -14,9 +14,58 @@ const view = { plugin: 'idle-guard', key: 'view' } as const
 const IDLE_VIEW: IdleGuardView = { enabled: true, detail: '', at: 0, armedAt: null, last: '' }
 const BAR_CELLS = 19
 
+// UI strings by language. zh-TW is the original text; any other language value is English.
+const TEXT = {
+  en: {
+    command: 'Toggle idle compaction (Idle Guard)',
+    countdown: (n: number) => `compacts in ${n} min`,
+    lapsed: 'Not compacted: idle over 60 min',
+    belowMin: (min: string) => `Not compacted: context under ${min}`,
+    skipped: 'Not compacted: skipped',
+    done: (at: string) => `Compacted at ${at}`,
+    doneSized: (at: string, before: string, after: string) => `Compacted at ${at} (${before}→${after})`,
+    lastDone: (at: string) => `${at} compacted`,
+    lastDoneSized: (at: string, before: string, after: string) => `${at} compacted ${before} → ${after}`,
+    ctxOff: 'off, will not compact',
+    ctxWill: 'will compact when idle',
+    ctxWont: 'will not compact',
+    on: '● ON',
+    off: '○ OFF',
+    hintToggle: 'c toggle',
+    hintClose: 'Esc close',
+    idleLabel: 'Idle  ',
+    running: 'Turn running, timer off',
+    elapsed: (n: number, total: number) => `${n} / ${total} min`,
+    lastLabel: 'Last  ',
+  },
+  'zh-TW': {
+    command: '閒置 compact 開關（Idle Guard）',
+    countdown: (n: number) => `${n} 分後壓縮`,
+    lapsed: '未壓縮：閒置已超過 60 分',
+    belowMin: (min: string) => `未壓縮：context 不到 ${min}`,
+    skipped: '未壓縮：已略過',
+    done: (at: string) => `已於 ${at} 壓縮`,
+    doneSized: (at: string, before: string, after: string) => `已於 ${at} 壓縮（${before}→${after}）`,
+    lastDone: (at: string) => `${at} 壓縮`,
+    lastDoneSized: (at: string, before: string, after: string) => `${at} 壓縮 ${before} → ${after}`,
+    ctxOff: '已關閉，不會壓縮',
+    ctxWill: '時間到會壓縮',
+    ctxWont: '不會壓縮',
+    on: '● 開啟',
+    off: '○ 關閉',
+    hintToggle: 'c 切換',
+    hintClose: 'Esc 關閉',
+    idleLabel: '閒置  ',
+    running: '對話進行中，未計時',
+    elapsed: (n: number, total: number) => `${n} / ${total} 分`,
+    lastLabel: '上次  ',
+  },
+}
+
 // Settings from userConfig, fixed at register().
 let minutes = 54
 let minTokens = 200_000
+let t: (typeof TEXT)['en'] = TEXT.en
 
 // Module state: a hot reload drops it together with the timers, so nothing is
 // re-armed after a reload; the next main-loop turn.complete arms again.
@@ -58,7 +107,7 @@ async function loadEnabled($: EngineInterface) {
 async function show($: EngineInterface) {
   const now = await $.clock.now()
   const detail =
-    deadline !== undefined ? `${Math.max(1, Math.floor((deadline - now) / MIN))} 分後壓縮` : result
+    deadline !== undefined ? t.countdown(Math.max(1, Math.floor((deadline - now) / MIN))) : result
   const next: IdleGuardView = {
     enabled: await loadEnabled($),
     detail,
@@ -76,27 +125,28 @@ async function fire($: EngineInterface) {
   if (!(await loadEnabled($))) {
     result = ''
   } else if (lastActivityAt === undefined || now - lastActivityAt > LAPSE_MS) {
-    result = '未壓縮：閒置已超過 60 分'
+    result = t.lapsed
     last = `${clockTime(now)} ${result}`
   } else {
     const tokens = (await $.session.usage()).context.tokens ?? 0
     if (tokens < minTokens) {
-      result = `未壓縮：context 不到 ${kilo(minTokens)}`
+      result = t.belowMin(kilo(minTokens))
       last = `${clockTime(now)} ${result}`
     } else {
       // Rejects while a turn runs, resolves { skip } when vetoed: both are a skip.
       const done = await $.session.compact().catch(() => undefined)
       if (done === undefined || done.skip !== undefined) {
-        result = '未壓縮：已略過'
+        result = t.skipped
         last = `${clockTime(now)} ${result}`
       } else {
         const at = clockTime(await $.clock.now())
         const before = done.tokensBefore ?? tokens
         result =
           done.tokensAfter === undefined
-            ? `已於 ${at} 壓縮`
-            : `已於 ${at} 壓縮（${kilo(before)}→${kilo(done.tokensAfter)}）`
-        last = done.tokensAfter === undefined ? `${at} 壓縮` : `${at} 壓縮 ${kilo(before)} → ${kilo(done.tokensAfter)}`
+            ? t.done(at)
+            : t.doneSized(at, kilo(before), kilo(done.tokensAfter))
+        last =
+          done.tokensAfter === undefined ? t.lastDone(at) : t.lastDoneSized(at, kilo(before), kilo(done.tokensAfter))
       }
     }
   }
@@ -131,9 +181,10 @@ async function toggle($: EngineInterface) {
 export const register: Register = (on, options) => {
   if (typeof options.minutes === 'number') minutes = options.minutes
   if (typeof options.minTokens === 'number') minTokens = options.minTokens
+  t = options.language === 'zh-TW' ? TEXT['zh-TW'] : TEXT.en
 
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'idle-guard', description: '閒置 compact 開關（Idle Guard）' })
+    await $.command.register({ name: 'idle-guard', description: t.command })
     await show($)
     return next(e)
   })
@@ -169,7 +220,7 @@ export const register: Register = (on, options) => {
       tokens === undefined
         ? '—'
         : `${kilo(tokens)} ${tokens >= minTokens ? '≥' : '<'} ${kilo(minTokens)} → ${
-            !enabled ? '已關閉，不會壓縮' : tokens >= minTokens ? '時間到會壓縮' : '不會壓縮'
+            !enabled ? t.ctxOff : tokens >= minTokens ? t.ctxWill : t.ctxWont
           }`
 
     // The pane frame draws `title` only while several panes are open (it is their tab),
@@ -182,30 +233,30 @@ export const register: Register = (on, options) => {
             <Button
               key="toggle"
               hotkey="c"
-              label={enabled ? '● 開啟' : '○ 關閉'}
+              label={enabled ? t.on : t.off}
               onPress={() => void toggle($).catch(() => undefined)}
             >
-              {enabled ? <Text color="success">● 開啟</Text> : <Text dimColor>○ 關閉</Text>}
+              {enabled ? <Text color="success">{t.on}</Text> : <Text dimColor>{t.off}</Text>}
             </Button>
-            <Text dimColor>c 切換</Text>
+            <Text dimColor>{t.hintToggle}</Text>
           </Box>
         </Box>
         {value.armedAt === null ? (
           <Box flexDirection="row">
-            <Text>{'閒置  '}</Text>
-            <Text dimColor>對話進行中，未計時</Text>
+            <Text>{t.idleLabel}</Text>
+            <Text dimColor>{t.running}</Text>
           </Box>
         ) : (
           <Box flexDirection="row">
-            <Text>{'閒置  '}</Text>
+            <Text>{t.idleLabel}</Text>
             <Text dimColor={!enabled}>{barOf(elapsed, minutes)}</Text>
-            <Text>{`  ${elapsed} / ${minutes} 分`}</Text>
+            <Text>{`  ${t.elapsed(elapsed, minutes)}`}</Text>
           </Box>
         )}
         <Text>{`ctx   ${ctx}`}</Text>
         <Box flexDirection="row" justifyContent="space-between">
-          <Text>{`上次  ${value.last || '—'}`}</Text>
-          <Text dimColor>Esc 關閉</Text>
+          <Text>{`${t.lastLabel}${value.last || '—'}`}</Text>
+          <Text dimColor>{t.hintClose}</Text>
         </Box>
       </Box>
     )

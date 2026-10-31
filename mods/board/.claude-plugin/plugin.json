@@ -2,5 +2,18 @@
   "name": "board",
   "version": "0.1.0",
   "description": "Task board: tracks subagent dispatches, the model's checklist and acceptance gates in a collapsible pane and a status line.",
-  "types": "./types/index.d.ts"
+  "author": { "name": "Norton" },
+  "homepage": "https://github.com/norton77930/Provost/tree/main/mods/board",
+  "license": "MIT",
+  "keywords": ["board", "tasks", "subagents", "status-line", "acceptance"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "language": {
+      "type": "string",
+      "title": "Language",
+      "description": "UI language: en (English) or zh-TW (繁體中文).",
+      "options": ["en", "zh-TW"],
+      "default": "en"
+    }
+  }
 }

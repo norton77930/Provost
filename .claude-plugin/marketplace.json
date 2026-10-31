@@ -1,0 +1,23 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "provost",
+  "owner": {
+    "name": "Norton",
+    "url": "https://github.com/norton77930"
+  },
+  "description": "Claude Code mods from the Provost repo: a task board pane and an idle-compaction guard.",
+  "plugins": [
+    {
+      "name": "board",
+      "source": "./mods/board",
+      "description": "Task board pane and status line: plan steps, subagent dispatches and acceptance gates at a glance.",
+      "category": "productivity"
+    },
+    {
+      "name": "idle-guard",
+      "source": "./mods/idle-guard",
+      "description": "Compacts a large idle conversation before the prompt cache expires, so the next turn rewrites a summary instead of the whole context.",
+      "category": "productivity"
+    }
+  ]
+}

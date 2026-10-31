@@ -20,6 +20,88 @@ const EXPANDED_ROWS = 20
 // A path (spelled with forward slashes) in here, ending in .json, is an acceptance file.
 const ACCEPTANCE_MARK = '/.claude/acceptance/'
 
+// Every word the board shows, in the language chosen at register time (English unless zh-TW).
+// Strings that carry numbers are functions. Labels and glyphs keep the same cells in both.
+const EN = {
+  command: 'Task board: open or close the board pane',
+  none: 'board  no dispatches yet',
+  done: (n: number, total: number) => `${n}/${total} done`,
+  running: (n: number) => `${n} running`,
+  failed: (n: number) => `${n} failed`,
+  minutes: (n: number) => `${n} min`,
+  underMinute: '<1 min',
+  gates: 'gates',
+  agentsRunning: (n: number) => `${n} agent${n === 1 ? '' : 's'} running`,
+  waiting: (id: string, n: number) => `needs you: ${id}${n > 1 ? ` (${n} waiting)` : ''}`,
+  over: (n: number) => `over +${n} min`,
+  status: { done: 'done', running: 'running', waiting: 'waiting', failed: 'failed' } as Record<BoardStatus, string>,
+  stopped: 'stopped',
+  runFailed: 'run failed',
+  denied: (why: string) => `denied: ${why}`,
+  dispatchFailed: 'dispatch failed',
+  cloud: 'launched in the cloud (not tracked)',
+  interrupted: 'interrupted',
+  turnError: 'turn ended with an error',
+  expand: 'Expand',
+  collapse: 'Collapse',
+  // What the collapsed headline leaves for the button beside it.
+  buttonW: 12,
+  back: 'Back',
+  role: 'Role',
+  background: ' (background)',
+  state: 'Status',
+  colon: ': ',
+  started: 'Start',
+  ended: 'End',
+  elapsed: 'Elapsed',
+  prompt: 'Dispatch prompt',
+  malformed: 'malformed',
+  steps: 'Steps',
+  dispatches: 'Dispatches',
+  gatesRule: 'Gates',
+  approval: 'needs your approval',
+}
+const ZH: typeof EN = {
+  command: '任務看板：開啟或關閉 board 面板',
+  none: 'board  尚無派工',
+  done: (n, total) => `${n}/${total} 完成`,
+  running: n => `${n} 執行中`,
+  failed: n => `${n} 失敗`,
+  minutes: n => `${n} 分`,
+  underMinute: '<1 分',
+  gates: '驗收',
+  agentsRunning: n => `${n} agent 執行中`,
+  waiting: (id, n) => `等你 ${id}${n > 1 ? ` 等 ${n} 項` : ''}`,
+  over: n => `超時 +${n} 分`,
+  status: { done: '完成', running: '執行中', waiting: '等待中', failed: '失敗' },
+  stopped: '已停止',
+  runFailed: '執行失敗',
+  denied: why => `已拒絕：${why}`,
+  dispatchFailed: '派工失敗',
+  cloud: '已在雲端啟動（不再追蹤）',
+  interrupted: '已中斷',
+  turnError: '回合以錯誤結束',
+  expand: '展開',
+  collapse: '收合',
+  buttonW: 8,
+  back: '返回',
+  role: '角色',
+  background: '（背景）',
+  state: '狀態',
+  colon: '：',
+  started: '開始',
+  ended: '結束',
+  elapsed: '經過',
+  prompt: '派工指令',
+  malformed: '格式錯誤',
+  steps: '步驟',
+  dispatches: '派工',
+  gatesRule: '驗收',
+  approval: '等你核可',
+}
+// Chosen once, by register(): any value but 'zh-TW' means English.
+let t: typeof EN = EN
+
 // Everything the board shows lives in $.state: it survives a hot reload of this module.
 const rows = atom({ plugin: 'board', key: 'rows' } as const, [])
 const todos = atom({ plugin: 'board', key: 'todos' } as const, [])
@@ -113,7 +195,7 @@ const isHumanPending = (g: BoardGate) => g.kind === 'human' && g.status === 'pen
 // The human gates still pending, the first one named: what the person is being waited on for.
 function waitingTextOf(files: BoardGateFile[]) {
   const waiting = files.flatMap(f => f.gates).filter(isHumanPending)
-  return waiting.length === 0 ? '' : ` · 等你 ${waiting[0]?.id ?? ''}${waiting.length > 1 ? ` 等 ${waiting.length} 項` : ''}`
+  return waiting.length === 0 ? '' : ` · ${t.waiting(waiting[0]?.id ?? '', waiting.length)}`
 }
 
 function summaryOf(list: BoardRow[], files: BoardGateFile[], now: number) {
@@ -122,9 +204,9 @@ function summaryOf(list: BoardRow[], files: BoardGateFile[], now: number) {
   const failed = list.filter(r => r.status === 'failed').length
   const eta = longestRemainingMs(list, now)
   return (
-    `board  ${barOf(ratio(done, list.length), STEP_BAR_W)} ${done}/${list.length} 完成 · ${active} 執行中` +
-    (failed > 0 ? ` · ${failed} 失敗` : '') +
-    (eta === undefined ? '' : ` · ~${minutes(eta)} 分`) +
+    `board  ${barOf(ratio(done, list.length), STEP_BAR_W)} ${t.done(done, list.length)} · ${t.running(active)}` +
+    (failed > 0 ? ` · ${t.failed(failed)}` : '') +
+    (eta === undefined ? '' : ` · ~${t.minutes(minutes(eta))}`) +
     waitingTextOf(files)
   )
 }
@@ -177,8 +259,8 @@ function planSummaryOf(plan: BoardTodo[], list: BoardRow[], files: BoardGateFile
   const passed = all.filter(g => g.status === 'pass').length
   return (
     `board  ${barOf(ratio(completed + running.length / 2, plan.length), STEP_BAR_W)} ${completed}/${plan.length}` +
-    (all.length === 0 ? '' : ` · 驗收 ${passed}/${all.length}`) +
-    (active > 0 ? ` · ${active} agent 執行中` : '') +
+    (all.length === 0 ? '' : ` · ${t.gates} ${passed}/${all.length}`) +
+    (active > 0 ? ` · ${t.agentsRunning(active)}` : '') +
     waitingTextOf(files)
   )
 }
@@ -187,7 +269,7 @@ function planSummaryOf(plan: BoardTodo[], list: BoardRow[], files: BoardGateFile
 function gatesSummaryOf(files: BoardGateFile[]) {
   const all = files.flatMap(f => f.gates)
   const passed = all.filter(g => g.status === 'pass').length
-  return `board  驗收 ${barOf(ratio(passed, all.length), GATE_BAR_W)} ${passed}/${all.length}` + waitingTextOf(files)
+  return `board  ${t.gates} ${barOf(ratio(passed, all.length), GATE_BAR_W)} ${passed}/${all.length}` + waitingTextOf(files)
 }
 
 // The status line and both pane summaries: the plan leads when there is one, else the
@@ -204,11 +286,10 @@ const clockTime = (ms: number) => {
   const d = new Date(ms)
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
 }
-const elapsedText = (ms: number) => (ms < MIN ? '<1 分' : `${Math.floor(ms / MIN)} 分`)
+const elapsedText = (ms: number) => (ms < MIN ? t.underMinute : t.minutes(Math.floor(ms / MIN)))
 const elapsedOf = (row: BoardRow, now: number) => (row.endedAt ?? now) - row.startedAt
 
 const ICON: Record<BoardStatus, string> = { done: '✓', running: '»', waiting: '·', failed: '✗' }
-const LABEL: Record<BoardStatus, string> = { done: '完成', running: '執行中', waiting: '等待中', failed: '失敗' }
 // Marks are Latin-1 or Dingbats glyphs, one cell wide in every terminal: a Geometric Shapes glyph
 // (▶ ○ ● ◆) draws two cells in some, which shifts the line it leads.
 const TODO_ICON: Record<BoardTodo['status'], string> = { completed: '✓', in_progress: '»', pending: '·' }
@@ -238,8 +319,6 @@ const MIN_DESC_W = 8
 const REASON_W = 24
 // A dispatch row under a plan step.
 const STEP_LEAD = '      ↳ '
-// What the collapsed headline leaves for the [展開] / [收合] button beside it.
-const BUTTON_W = 8
 
 // A section rule: `── label ──────` out to `width` cells.
 function ruleOf(label: string, width: number) {
@@ -247,14 +326,14 @@ function ruleOf(label: string, width: number) {
   return head + '─'.repeat(Math.max(0, width - cellsOf(head)))
 }
 
-// The 剩餘 part of an active row: elapsed over the estimate as a bar, the overrun in
+// The time-left part of an active row: elapsed over the estimate as a bar, the overrun in
 // minutes (rounded up) once past it, '—' with no estimate.
 function leftTextOf(row: BoardRow, list: BoardRow[], now: number) {
   if (!isActive(row)) return ''
   const estimate = estimateMs(row, list)
   if (estimate === undefined) return '—'
   const ran = now - row.startedAt
-  return ran > estimate ? `超時 +${Math.ceil((ran - estimate) / MIN)} 分` : barOf(ran / estimate, ROW_BAR_W)
+  return ran > estimate ? t.over(Math.ceil((ran - estimate) / MIN)) : barOf(ran / estimate, ROW_BAR_W)
 }
 
 // `<role> · <description> · <time>`: led by the step arrow under a plan step, else by the
@@ -281,17 +360,17 @@ const statusOfAgent = (status: AgentStatus): BoardStatus =>
         : 'waiting'
 
 const reasonOfAgent = (status: AgentStatus) =>
-  status === 'killed' ? '已停止' : status === 'failed' ? '執行失敗' : null
+  status === 'killed' ? t.stopped : status === 'failed' ? t.runFailed : null
 
 // The row as the Agent call's answer leaves it.
 function settle(row: BoardRow, ran: ToolCallResult<'Agent'>, now: number): BoardRow {
-  if (ran.deny !== undefined) return { ...row, status: 'failed', reason: `已拒絕：${ran.deny}`, endedAt: now }
-  if (ran.isError === true) return { ...row, status: 'failed', reason: ran.text || '派工失敗', endedAt: now }
+  if (ran.deny !== undefined) return { ...row, status: 'failed', reason: t.denied(ran.deny), endedAt: now }
+  if (ran.isError === true) return { ...row, status: 'failed', reason: ran.text || t.dispatchFailed, endedAt: now }
   const result = ran.result as Record<string, unknown> | undefined
   const agentId = typeof result?.agentId === 'string' ? result.agentId : null
   const status = typeof result?.status === 'string' ? result.status : undefined
   if (status === 'remote_launched') {
-    return { ...row, status: 'done', reason: '已在雲端啟動（不再追蹤）', endedAt: now, isRemote: true, background: true }
+    return { ...row, status: 'done', reason: t.cloud, endedAt: now, isRemote: true, background: true }
   }
   if (status === 'async_launched' || status === 'teammate_spawned' || (status === undefined && agentId !== null)) {
     // Launched in the background: its turn.complete or the poll ends it.
@@ -491,7 +570,7 @@ async function endAgent($: EngineInterface, agentId: string, reason: string) {
       row.agentId === agentId && isActive(row)
         ? reason === 'answer'
           ? { ...row, status: 'done', endedAt: now, reason: null }
-          : { ...row, status: 'failed', endedAt: now, reason: reason === 'aborted' ? '已中斷' : '回合以錯誤結束' }
+          : { ...row, status: 'failed', endedAt: now, reason: reason === 'aborted' ? t.interrupted : t.turnError }
         : row,
     ),
   )
@@ -538,10 +617,12 @@ async function toggle($: EngineInterface) {
 
 // ---------------------------------------------------------------- register
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  t = options.language === 'zh-TW' ? ZH : EN
+
   on('session.start', async ($, e, next) => {
     await $.command
-      .register({ name: 'board', description: '任務看板：開啟或關閉 board 面板', immediate: true })
+      .register({ name: 'board', description: t.command, immediate: true })
       .catch(() => undefined)
     await sync($).catch(() => undefined)
     return next(e)
@@ -663,7 +744,7 @@ export const register: Register = on => {
     const now = await $.clock.now()
     const columns = e.props.bodyColumns
     const summary =
-      list.length === 0 && plan.length === 0 && files.length === 0 ? 'board  尚無派工' : headlineOf(list, plan, files, now)
+      list.length === 0 && plan.length === 0 && files.length === 0 ? t.none : headlineOf(list, plan, files, now)
     // `s` with each run of bar cells in its color: done green, half yellow, left gray.
     const colored = (s: string) =>
       s
@@ -684,14 +765,14 @@ export const register: Register = on => {
     // The headline cut to leave room for the expand / collapse button beside it.
     const headline = (bold: boolean) => (
       <Text bold={bold} wrap="truncate-end">
-        {colored(clip(summary, columns - BUTTON_W))}
+        {colored(clip(summary, columns - t.buttonW))}
       </Text>
     )
 
     // Collapsed: one compact line per file, `task  id✓ id✗ id!`.
     const gatesLine = (file: BoardGateFile) =>
       file.task === null ? (
-        <Text dimColor>{`${file.file}  格式錯誤`}</Text>
+        <Text dimColor>{`${file.file}  ${t.malformed}`}</Text>
       ) : (
         <Text>
           {`${file.task}  `}
@@ -713,7 +794,7 @@ export const register: Register = on => {
           <Box flexDirection="row" justifyContent="space-between">
             {headline(false)}
             <Button key="expand" hotkey="b" onPress={() => void setExpanded($, true).catch(() => undefined)}>
-              展開
+              {t.expand}
             </Button>
           </Box>
           {files.length > 0 && (
@@ -732,20 +813,20 @@ export const register: Register = on => {
         <Box flexDirection="column">
           <Box flexDirection="row" gap={1}>
             <Button key="back" hotkey="b" onPress={() => void select($, null).catch(() => undefined)}>
-              返回
+              {t.back}
             </Button>
             <Text bold>{picked.description}</Text>
           </Box>
-          <Text>{`角色  ${picked.subagentType}${picked.background ? '（背景）' : ''}`}</Text>
+          <Text>{`${t.role}  ${picked.subagentType}${picked.background ? t.background : ''}`}</Text>
           <Text>
-            {`狀態  ${ICON[picked.status]} ${LABEL[picked.status]}` + (picked.reason === null ? '' : `：${picked.reason}`)}
+            {`${t.state}  ${ICON[picked.status]} ${t.status[picked.status]}` + (picked.reason === null ? '' : `${t.colon}${picked.reason}`)}
           </Text>
           <Text>
-            {`開始  ${clockTime(picked.startedAt)}` +
-              (picked.endedAt === null ? '' : `   結束  ${clockTime(picked.endedAt)}`) +
-              `   經過  ${elapsedText(elapsedOf(picked, now))}`}
+            {`${t.started}  ${clockTime(picked.startedAt)}` +
+              (picked.endedAt === null ? '' : `   ${t.ended}  ${clockTime(picked.endedAt)}`) +
+              `   ${t.elapsed}  ${elapsedText(elapsedOf(picked, now))}`}
           </Text>
-          <Text dimColor>派工指令</Text>
+          <Text dimColor>{t.prompt}</Text>
           {lines.map(line => (
             <Text>{line === '' ? ' ' : line}</Text>
           ))}
@@ -770,13 +851,13 @@ export const register: Register = on => {
     // Dispatches under no step: none in progress then, or the step has since gone.
     const loose = plan.length === 0 ? list : list.filter(row => !plan.some(t => t.id === row.todoId))
 
-    // One gate per line: `mark id  evidence | check | 等你核可`, the ids lined up within the file.
+    // One gate per line: `mark id  evidence | check | needs-approval text`, the ids lined up within the file.
     const gateLines = (file: BoardGateFile) => {
       const idW = Math.max(0, ...file.gates.map(g => cellsOf(g.id))) + 2
       return file.gates.map(g => {
         const mark = gateMark(g)
         const evidence = oneLine(g.evidence ?? '')
-        const text = isHumanPending(g) ? '等你核可' : g.status === 'pass' && evidence !== '' ? evidence : oneLine(g.check)
+        const text = isHumanPending(g) ? t.approval : g.status === 'pass' && evidence !== '' ? evidence : oneLine(g.check)
         const rest = ` ${padCells(g.id, idW)}`
         return (
           <Text wrap="truncate-end">
@@ -795,22 +876,22 @@ export const register: Register = on => {
         <Box flexDirection="row" justifyContent="space-between">
           {headline(true)}
           <Button key="collapse" hotkey="b" onPress={() => void setExpanded($, false).catch(() => undefined)}>
-            收合
+            {t.collapse}
           </Button>
         </Box>
-        {plan.length > 0 && <Text dimColor>{ruleOf('步驟', columns)}</Text>}
+        {plan.length > 0 && <Text dimColor>{ruleOf(t.steps, columns)}</Text>}
         {plan.flatMap((t, i) => [
           <Text dimColor={t.status === 'completed'} bold={t.status === 'in_progress'} wrap="truncate-end">
             {clip(` ${TODO_ICON[t.status]} ${i + 1}  ${oneLine(t.subject)}`, columns)}
           </Text>,
           ...list.filter(row => row.todoId === t.id).map(rowButton),
         ])}
-        {loose.length > 0 && <Text dimColor>{ruleOf('派工', columns)}</Text>}
+        {loose.length > 0 && <Text dimColor>{ruleOf(t.dispatches, columns)}</Text>}
         {loose.map(rowButton)}
         {files.flatMap(file =>
           file.task === null
-            ? [<Text dimColor>{`${file.file}  格式錯誤`}</Text>]
-            : [<Text dimColor>{ruleOf(`驗收 · ${oneLine(file.task)}`, columns)}</Text>, ...gateLines(file)],
+            ? [<Text dimColor>{`${file.file}  ${t.malformed}`}</Text>]
+            : [<Text dimColor>{ruleOf(`${t.gatesRule} · ${oneLine(file.task)}`, columns)}</Text>, ...gateLines(file)],
         )}
       </Box>
     )

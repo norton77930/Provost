@@ -143,6 +143,23 @@ runtime 在 `~/.claude/provost/handoffs` 為每個 session 保存一條 sealed �
 
 方法論 skill（TDD、除錯、grilling、spec 與 ticket）由 [`mattpocock-skills`](https://github.com/mattpocock/skills) plugin 提供，政策直接引用它們的名稱。
 
+## Mods
+
+這個 repo 同時也是一個 Claude Code plugin marketplace，提供兩個 mod，不需要安裝 Provost 的其他部分就能用。
+
+| Mod | 用途 |
+|---|---|
+| [`board`](mods/board/) | 用面板和狀態列顯示計畫步驟、subagent 派工和驗收 gate |
+| [`idle-guard`](mods/idle-guard/) | 對話閒置太久、context 又很大時，在 prompt cache 過期前先壓縮 |
+
+```text
+/plugin marketplace add norton77930/Provost
+/plugin install board@provost
+/plugin install idle-guard@provost
+```
+
+介面預設是英文。要改成繁體中文，在 `/config` 把該 mod 的 `language` 設為 `zh-TW`。
+
 ## 目前的證據
 
 單一使用者、真實工作，不是受控實驗：

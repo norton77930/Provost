@@ -9,6 +9,9 @@ const ACCEPTANCE = 'C:/work/.claude/acceptance/'
 
 type AgentAnswer = ToolCallResult<'Agent'>
 
+// The Traditional Chinese UI: the English one is the default.
+const ZH = { language: 'zh-TW' } as const
+
 // The world beneath the plugin: clock, status line, panes, agents, files.
 function world(on: On) {
   const clock = mock.clock(on, { now: T0 })
@@ -20,12 +23,16 @@ function world(on: On) {
   const files: Record<string, string> = {}
   let listCalls = 0
   const reads: string[] = []
+  const commands: string[] = []
 
   on('ui.status', ($, e) => {
     statuses.push(e.text)
     return { value: undefined }
   })
-  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  on('command.register', ($, e) => {
+    commands.push(e.description ?? '')
+    return { value: { command: e.name } }
+  })
   on('ui.open', ($, e) => {
     opened.push(e)
     const pane = panes.find(p => p.id === e.id)
@@ -54,8 +61,11 @@ function world(on: On) {
     return { value: agents.map(a => ({ ...a })) }
   })
   // The engine hands the hook the path in the machine's own spelling; the world keeps forward slashes.
+  // Off Windows, C:/work is not absolute and arrives under the runner's cwd, so match from C:/work on.
   on('fs.read', ($, e) => {
-    const path = e.path.replace(/\\/g, '/')
+    const slashed = e.path.replace(/\\/g, '/')
+    const at = slashed.indexOf('C:/work/')
+    const path = at === -1 ? slashed : slashed.slice(at)
     reads.push(path)
     const text = files[path]
     return text === undefined ? { deny: `ENOENT: ${e.path}` } : { value: text }
@@ -68,6 +78,7 @@ function world(on: On) {
     panes,
     agents,
     reads,
+    commands,
     listCalls: () => listCalls,
     status: () => statuses[statuses.length - 1],
     statusCount: () => statuses.length,
@@ -157,7 +168,7 @@ test('nothing shows before the first dispatch', async ($, on) => {
   expect(w.opened).toHaveLength(0)
 })
 
-test('a foreground dispatch runs until its result, then counts as done', async ($, on) => {
+test('a foreground dispatch runs until its result, then counts as done', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -170,7 +181,7 @@ test('a foreground dispatch runs until its result, then counts as done', async (
   expect(w.status()).toBe('board  ██████████ 1/1 完成 · 0 執行中')
 })
 
-test('a background dispatch ends at the turn.complete carrying its agentId', async ($, on) => {
+test('a background dispatch ends at the turn.complete carrying its agentId', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -184,7 +195,7 @@ test('a background dispatch ends at the turn.complete carrying its agentId', asy
   expect(w.status()).toBe('board  ██████████ 1/1 完成 · 0 執行中')
 })
 
-test('a background dispatch ends when the polled agent list says completed', async ($, on) => {
+test('a background dispatch ends when the polled agent list says completed', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -220,7 +231,7 @@ test('polling stops once nothing runs, and starts again with the next background
   expect(w.listCalls()).toBe(2)
 })
 
-test('a denied dispatch fails with the reason', async ($, on) => {
+test('a denied dispatch fails with the reason', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -230,7 +241,7 @@ test('a denied dispatch fails with the reason', async ($, on) => {
   expect(w.listCalls()).toBe(0)
 })
 
-test('an errored dispatch fails; so do an aborted turn and a killed agent', async ($, on) => {
+test('an errored dispatch fails; so do an aborted turn and a killed agent', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -256,7 +267,7 @@ async function finishThree($: Engine, w: ReturnType<typeof world>, agent: Return
   }
 }
 
-test('ETA: needs three finished rows of the same role; concurrent agents combine by max, not sum', async ($, on) => {
+test('ETA: needs three finished rows of the same role; concurrent agents combine by max, not sum', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -299,7 +310,7 @@ test('ETA: needs three finished rows of the same role; concurrent agents combine
   expect(w.status()).toBe('board  ██████▓░░░ 6/9 完成 · 2 執行中 · 1 失敗')
 })
 
-test('ETA is left out while nothing has finished', async ($, on) => {
+test('ETA is left out while nothing has finished', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -343,7 +354,7 @@ test('the pane opens by itself, collapsed and without the keyboard, at the first
   expect(w.opened[0]?.focus).toBeUndefined()
 })
 
-test('collapsed: the summary and an expand button on hotkey b', async ($, on) => {
+test('collapsed: the summary and an expand button on hotkey b', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -360,7 +371,7 @@ test('collapsed: the summary and an expand button on hotkey b', async ($, on) =>
   }
 })
 
-test('expand and collapse by button, both ways, resizing the pane', async ($, on) => {
+test('expand and collapse by button, both ways, resizing the pane', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -381,7 +392,7 @@ test('expand and collapse by button, both ways, resizing the pane', async ($, on
   }
 })
 
-test('expanded rows: icon, role, task and elapsed, told apart by a middle dot, under a 派工 rule', async ($, on) => {
+test('expanded rows: icon, role, task and elapsed, told apart by a middle dot, under a 派工 rule', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -419,7 +430,7 @@ const rule = (label: string) => {
   return head + '─'.repeat(PANE_PROPS.bodyColumns - cells(head))
 }
 
-test('active row: an 8-cell bar of elapsed over the role median; 超時 +N 分 past it; — under three samples', async ($, on) => {
+test('active row: an 8-cell bar of elapsed over the role median; 超時 +N 分 past it; — under three samples', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -445,7 +456,7 @@ test('active row: an 8-cell bar of elapsed over the role median; 超時 +N 分 p
   await ui.unmount()
 })
 
-test('a long description is cut so a row stays inside the pane width; role and time keep their place', async ($, on) => {
+test('a long description is cut so a row stays inside the pane width; role and time keep their place', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -469,7 +480,7 @@ test('a long description is cut so a row stays inside the pane width; role and t
   await ui.unmount()
 })
 
-test('a row opens its detail with the full prompt; back returns to the table', async ($, on) => {
+test('a row opens its detail with the full prompt; back returns to the table', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -548,7 +559,7 @@ function taskTools(on: On) {
 const checklistOf = async (ui: Awaited<ReturnType<typeof mountPane>>) =>
   (await ui.findAll({ type: 'Text' })).map(t => t.text).filter(t => /^ [✓»·] \d+  /.test(t))
 
-test('TaskCreate and TaskUpdate keep the checklist; it shows only when it has items', async ($, on) => {
+test('TaskCreate and TaskUpdate keep the checklist; it shows only when it has items', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   taskTools(on)
@@ -607,7 +618,7 @@ const GATES = JSON.stringify({
   ],
 })
 
-test('acceptance files the main loop wrote show as gates; malformed ones are noted; others are left out', async ($, on) => {
+test('acceptance files the main loop wrote show as gates; malformed ones are noted; others are left out', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   writeTools(on)
@@ -640,7 +651,7 @@ test('acceptance files the main loop wrote show as gates; malformed ones are not
   }
 })
 
-test('live and visual gates count; a gate of an unknown kind is skipped without spoiling the file', async ($, on) => {
+test('live and visual gates count; a gate of an unknown kind is skipped without spoiling the file', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   writeTools(on)
@@ -669,7 +680,7 @@ test('live and visual gates count; a gate of an unknown kind is skipped without 
   await ui.unmount()
 })
 
-test('only the acceptance files the main loop wrote count, read by absolute path, sorted by name', async ($, on) => {
+test('only the acceptance files the main loop wrote count, read by absolute path, sorted by name', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   writeTools(on)
@@ -740,7 +751,7 @@ test('acceptance files are read again on the 30 s tick', async ($, on) => {
   await ui.unmount()
 })
 
-test('no acceptance file written: no gates and no note', async ($, on) => {
+test('no acceptance file written: no gates and no note', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -921,7 +932,7 @@ test('a dispatch attaches to the one step in progress', { plugins: [READER] }, a
   expect((await peek($)).rows.map(r => r.todoId)).toEqual([null, '2'])
 })
 
-test('with several steps in progress the dispatch picks the best text match, else the latest activeAt', { plugins: [READER] }, async ($, on) => {
+test('with several steps in progress the dispatch picks the best text match, else the latest activeAt', { plugins: [READER], options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   taskTools(on)
@@ -944,7 +955,7 @@ test('with several steps in progress the dispatch picks the best text match, els
   expect((await peek($)).rows.map(r => r.todoId)).toEqual(['1', '3', '2', '3'])
 })
 
-test('collapsed with a plan: a bar of steps (one in progress counts half), steps done, running agents; no step subject, no minute ETA', async ($, on) => {
+test('collapsed with a plan: a bar of steps (one in progress counts half), steps done, running agents; no step subject, no minute ETA', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   taskTools(on)
@@ -988,7 +999,7 @@ const gateFile = (task: string, statuses: ('pass' | 'fail' | 'pending')[]) =>
     gates: statuses.map((status, i) => ({ id: `G${i + 1}`, kind: 'machine', check: 'c', status })),
   })
 
-test('the plan headline adds the gates passed over every acceptance file; none, nothing', async ($, on) => {
+test('the plan headline adds the gates passed over every acceptance file; none, nothing', { options: ZH }, async ($, on) => {
   const w = world(on)
   taskTools(on)
   writeTools(on)
@@ -1017,7 +1028,7 @@ test('the plan headline adds the gates passed over every acceptance file; none, 
 const humanFile = (task: string, gates: [string, 'pass' | 'fail' | 'pending', 'human' | 'machine'][]) =>
   JSON.stringify({ task, gates: gates.map(([id, status, kind]) => ({ id, kind, check: 'c', status })) })
 
-test('the plan headline names the pending human gate, and how many wait when several', async ($, on) => {
+test('the plan headline names the pending human gate, and how many wait when several', { options: ZH }, async ($, on) => {
   const w = world(on)
   taskTools(on)
   writeTools(on)
@@ -1044,7 +1055,7 @@ test('the plan headline names the pending human gate, and how many wait when sev
   expect(w.status()).toBe('board  ░░░░░░░░░░ 0/2 · 驗收 1/3')
 })
 
-test('the headline without a plan names the pending human gate too', async ($, on) => {
+test('the headline without a plan names the pending human gate too', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   writeTools(on)
@@ -1057,7 +1068,7 @@ test('the headline without a plan names the pending human gate too', async ($, o
   expect(w.status()).toBe('board  ░░░░░░░░░░ 0/1 完成 · 1 執行中 · 等你 H1 等 2 項')
 })
 
-test('gates alone: the status line and both pane summaries lead with the gates', async ($, on) => {
+test('gates alone: the status line and both pane summaries lead with the gates', { options: ZH }, async ($, on) => {
   const w = world(on)
   writeTools(on)
   await start($)
@@ -1102,7 +1113,7 @@ test('in the pane a pending human gate is warning-colored; a settled human gate 
   await ui.unmount()
 })
 
-test('without a plan the bar counts the dispatches done', async ($, on) => {
+test('without a plan the bar counts the dispatches done', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -1115,7 +1126,7 @@ test('without a plan the bar counts the dispatches done', async ($, on) => {
   expect(w.status()).toBe('board  █████░░░░░ 1/2 完成 · 1 執行中')
 })
 
-test('the 30 s tick runs for a foreground dispatch too, and does not poll the agent list for it', { plugins: [READER] }, async ($, on) => {
+test('the 30 s tick runs for a foreground dispatch too, and does not poll the agent list for it', { plugins: [READER], options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -1178,7 +1189,7 @@ test('the pane opens by itself at the first TodoWrite too', async ($, on) => {
   expect(w.opened[0]).toMatchObject({ id: 'board', rows: 2 })
 })
 
-test('expanded with a plan: numbered steps, their dispatches beneath, then the other dispatches under 派工', async ($, on) => {
+test('expanded with a plan: numbered steps, their dispatches beneath, then the other dispatches under 派工', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   taskTools(on)
@@ -1216,7 +1227,7 @@ test('expanded with a plan: numbered steps, their dispatches beneath, then the o
   await ui.unmount()
 })
 
-test('no 派工 section while every dispatch is attached', async ($, on) => {
+test('no 派工 section while every dispatch is attached', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   taskTools(on)
@@ -1232,7 +1243,7 @@ test('no 派工 section while every dispatch is attached', async ($, on) => {
   await ui.unmount()
 })
 
-test('state written by an older version (no new fields) is read as null, not a crash', { plugins: [READER, OLD_STATE] }, async ($, on) => {
+test('state written by an older version (no new fields) is read as null, not a crash', { plugins: [READER, OLD_STATE], options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   taskTools(on)
@@ -1275,7 +1286,7 @@ const BOARD_ROUND_1 = JSON.stringify({
   ],
 })
 
-test('the mockup fixture: rules, ✓ » · steps, a ↳ row, one gate per line with its evidence, check or 等你核可', async ($, on) => {
+test('the mockup fixture: rules, ✓ » · steps, a ↳ row, one gate per line with its evidence, check or 等你核可', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   taskTools(on)
@@ -1340,7 +1351,7 @@ test('the mockup fixture: rules, ✓ » · steps, a ↳ row, one gate per line w
   await ui.unmount()
 })
 
-test('a failed gate shows its check, not its evidence; a pass without evidence shows the check', async ($, on) => {
+test('a failed gate shows its check, not its evidence; a pass without evidence shows the check', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   writeTools(on)
@@ -1357,7 +1368,7 @@ test('a failed gate shows its check, not its evidence; a pass without evidence s
   await ui.unmount()
 })
 
-test('without a plan the dispatches sit under a 派工 rule, each field apart; a role as long as the old column no longer touches its neighbour', async ($, on) => {
+test('without a plan the dispatches sit under a 派工 rule, each field apart; a role as long as the old column no longer touches its neighbour', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -1382,7 +1393,7 @@ test('without a plan the dispatches sit under a 派工 rule, each field apart; a
   await ui.unmount()
 })
 
-test('collapsed: the headline is cut before the button instead of running into it', async ($, on) => {
+test('collapsed: the headline is cut before the button instead of running into it', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   taskTools(on)
@@ -1419,7 +1430,7 @@ test('collapsed: the headline is cut before the button instead of running into i
   await wide.unmount()
 })
 
-test('a step subject and a gate text longer than the pane are cut to its width', async ($, on) => {
+test('a step subject and a gate text longer than the pane are cut to its width', { options: ZH }, async ($, on) => {
   const w = world(on)
   taskTools(on)
   writeTools(on)
@@ -1505,7 +1516,7 @@ const OLD_GATES = {
   },
 }
 
-test('gates saved without check or evidence still load: the text is empty, nothing crashes', { plugins: [OLD_GATES] }, async ($, on) => {
+test('gates saved without check or evidence still load: the text is empty, nothing crashes', { plugins: [OLD_GATES], options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   writeTools(on)
@@ -1562,7 +1573,7 @@ test('/clear empties the board, gates and status line, and lets the pane open ag
   expect(w.opened).toHaveLength(2)
 })
 
-test('other session end reasons change nothing', { plugins: [READER] }, async ($, on) => {
+test('other session end reasons change nothing', { plugins: [READER], options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -1571,4 +1582,253 @@ test('other session end reasons change nothing', { plugins: [READER] }, async ($
   for (const reason of ['resume', 'logout', 'prompt_input_exit', 'other'] as const) await endSession($, reason)
   expect(w.status()).toBe('board  ░░░░░░░░░░ 0/1 完成 · 1 執行中')
   expect((await peek($)).rows).toHaveLength(1)
+})
+
+// ---------------------------------------------------------------- English (the default language)
+
+test('English by default: the command description and the empty pane', async ($, on) => {
+  const w = world(on)
+  writeTools(on)
+  await start($)
+  expect(w.commands).toEqual(['Task board: open or close the board pane'])
+  const ui = await mountPane($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: 'board  no dispatches yet' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('English headline: counts, failures, ETA and the person being waited on', async ($, on) => {
+  const w = world(on)
+  const agent = agentTool(on, w)
+  writeTools(on)
+  await start($)
+  agent.foreground(5 * MIN, 'a-1')
+  const call = dispatch($, { description: 'Read the code', prompt: 'p', subagent_type: 'Explore' })
+  await w.clock.settle()
+  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/1 done · 1 running')
+  await w.clock.advance(5 * MIN)
+  await call
+  expect(w.status()).toBe('board  ██████████ 1/1 done · 0 running')
+  agent.answer({ deny: 'no' })
+  await dispatch($, { description: 'Nope', prompt: 'p' })
+  expect(w.status()).toBe('board  █████░░░░░ 1/2 done · 0 running · 1 failed')
+  await finishThree($, w, agent, 'Plan')
+  agent.background('bg-1')
+  await dispatch($, { description: 'one', prompt: 'p', subagent_type: 'Plan' })
+  expect(w.status()).toBe('board  ██████▓░░░ 4/6 done · 1 running · 1 failed · ~6 min')
+  w.file('h.json', humanFile('H', [['H1', 'pending', 'human'], ['H2', 'pending', 'human']]))
+  await writeAcceptance($, 'h.json')
+  await turnDone($)
+  expect(w.status()).toBe('board  ██████▓░░░ 4/6 done · 1 running · 1 failed · ~6 min · needs you: H1 (2 waiting)')
+})
+
+test('English plan headline: gates passed, agents running (singular and plural), the pending human gate', async ($, on) => {
+  const w = world(on)
+  const agent = agentTool(on, w)
+  taskTools(on)
+  writeTools(on)
+  await start($)
+  await create($, 'A')
+  await setStatus($, '1', 'in_progress')
+  agent.background('bg-1')
+  await dispatch($, { description: 'one', prompt: 'p' })
+  w.file('board-ui.json', BOARD_ROUND_1)
+  await writeAcceptance($, 'board-ui.json')
+  await turnDone($)
+  expect(w.status()).toBe('board  █████░░░░░ 0/1 · gates 2/4 · 1 agent running · needs you: merge')
+  agent.background('bg-2')
+  await dispatch($, { description: 'two', prompt: 'p' })
+  expect(w.status()).toBe('board  █████░░░░░ 0/1 · gates 2/4 · 2 agents running · needs you: merge')
+})
+
+test('English gates-only headline', async ($, on) => {
+  const w = world(on)
+  writeTools(on)
+  await start($)
+  w.file('h.json', humanFile('H', [['H1', 'pending', 'human'], ['M1', 'pass', 'machine']]))
+  await writeAcceptance($, 'h.json')
+  await turnDone($)
+  expect(w.status()).toBe('board  gates ██▓░░ 1/2 · needs you: H1')
+})
+
+test('English collapsed pane: Expand and Collapse buttons, the headline cut before the wider button', async ($, on) => {
+  const w = world(on)
+  const agent = agentTool(on, w)
+  taskTools(on)
+  writeTools(on)
+  await start($)
+  await create($, 'A')
+  await setStatus($, '1', 'in_progress')
+  agent.background('bg-1')
+  await dispatch($, { description: 'one', prompt: 'p' })
+  w.file('board-ui.json', BOARD_ROUND_1)
+  await writeAcceptance($, 'board-ui.json')
+  await turnDone($)
+  const full = 'board  █████░░░░░ 0/1 · gates 2/4 · 1 agent running · needs you: merge'
+  const narrow = await $.ui.mount({
+    plugin: 'board',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'board',
+    props: { ...PANE_PROPS, bodyColumns: 40 },
+  })
+  const cut = (await narrow.find({ type: 'Text', text: /^board/ }))?.text ?? ''
+  expect(cells(cut)).toBeLessThanOrEqual(40 - 12)
+  expect(cut.endsWith('…')).toBe(true)
+  expect(full.startsWith(cut.slice(0, -1))).toBe(true)
+  expect((await narrow.find({ type: 'Button', key: 'expand' }))?.text).toBe('Expand')
+  await narrow.unmount()
+  const ui = await mountPane($, 'terminal')
+  await ui.press({ key: 'expand' })
+  expect((await ui.find({ type: 'Button', key: 'collapse' }))?.text).toBe('Collapse')
+  expect(cells(full)).toBeLessThanOrEqual(PANE_PROPS.bodyColumns - 12)
+  await ui.unmount()
+})
+
+test('English rows: Dispatches rule, minutes, the denial reason, the overrun and the missing estimate', async ($, on) => {
+  const w = world(on)
+  const agent = agentTool(on, w)
+  await start($)
+  await finishThree($, w, agent, 'Explore')
+  agent.background('bg-1')
+  await dispatch($, { description: 'Map more', prompt: 'p', subagent_type: 'Explore' })
+  agent.background('bg-2')
+  await dispatch($, { description: 'Draft plan', prompt: 'p', subagent_type: 'Plan' })
+  agent.answer({ deny: 'no' })
+  await dispatch($, { description: 'Refused', prompt: 'p', subagent_type: 'Plan' })
+  await w.clock.advance(3 * MIN)
+  const ui = await mountPane($, 'terminal')
+  await ui.press({ key: 'expand' })
+  const shown = async () => (await ui.findAll({ type: 'Button', text: /Map more|Draft plan|Refused/ })).map(r => r.text)
+  expect(await shown()).toEqual([
+    ' » Explore · Map more · 3 min ████░░░░',
+    ' » Plan · Draft plan · 3 min —',
+    ' ✗ Plan · Refused · <1 min · denied: no',
+  ])
+  expect((await ui.find({ type: 'Text', text: rule('Dispatches') }))?.props.dimColor).toBe(true)
+  await w.clock.advance(7.5 * MIN)
+  expect((await shown())[0]).toBe(' » Explore · Map more · 10 min over +5 min')
+  await ui.unmount()
+})
+
+test('English detail view: Back, Role, Status, Start, End, Elapsed and the dispatch prompt', async ($, on) => {
+  const w = world(on)
+  const agent = agentTool(on, w)
+  await start($)
+  agent.background('bg-1')
+  await dispatch($, { description: 'Long brief', prompt: 'first line\nsecond line', subagent_type: 'implementer' })
+  agent.answer({ deny: 'blocked by policy' })
+  await dispatch($, { description: 'Refused brief', prompt: 'p', subagent_type: 'Plan' })
+  const ui = await mountPane($, 'terminal')
+  await ui.press({ key: 'expand' })
+  const open = async (text: RegExp) => ui.press({ key: (await ui.find({ type: 'Button', text }))?.key ?? '' })
+  await open(/Long brief/)
+  expect((await ui.find({ type: 'Button', key: 'back' }))?.text).toBe('Back')
+  expect(await ui.find({ type: 'Text', text: 'Role  implementer (background)' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Status  » running' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Start  \d\d:\d\d   Elapsed  <1 min$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Dispatch prompt' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'second line' })).toBeDefined()
+  await ui.press({ key: 'back' })
+  await open(/Refused brief/)
+  expect(await ui.find({ type: 'Text', text: 'Role  Plan' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Status  ✗ failed: denied: blocked by policy' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Start  \d\d:\d\d   End  \d\d:\d\d   Elapsed  <1 min$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('English failure reasons: stopped, run failed, interrupted, turn error, dispatch failed, cloud', async ($, on) => {
+  const w = world(on)
+  const agent = agentTool(on, w)
+  await start($)
+  agent.answer({ result: undefined, text: '', isError: true } as unknown as AgentAnswer)
+  await dispatch($, { description: 'd-bad', prompt: 'p' })
+  agent.answer({ result: { status: 'remote_launched' } } as unknown as AgentAnswer)
+  await dispatch($, { description: 'd-cloud', prompt: 'p' })
+  for (const id of ['bg-aborted', 'bg-error', 'bg-killed', 'bg-failed']) {
+    agent.background(id)
+    await dispatch($, { description: `d-${id}`, prompt: 'p' })
+  }
+  await turnDone($, 'bg-aborted', 'aborted')
+  await turnDone($, 'bg-error', 'error')
+  w.agents.push({ id: 'bg-killed', description: 'k', type: 'general-purpose', status: 'killed' })
+  w.agents.push({ id: 'bg-failed', description: 'f', type: 'general-purpose', status: 'failed' })
+  await w.clock.advance(30_000)
+  const ui = await mountPane($, 'terminal')
+  await ui.press({ key: 'expand' })
+  const rows = await ui.findAll({ type: 'Button', text: /d-/ })
+  expect(rows.map(r => r.text.replace(/ · <1 min/, ''))).toEqual([
+    ' ✗ general-purpose · d-bad · dispatch failed',
+    ' ✓ general-purpose · d-cloud',
+    ' ✗ general-purpose · d-bg-aborted · interrupted',
+    ' ✗ general-purpose · d-bg-error · turn ended with an error',
+    ' ✗ general-purpose · d-bg-killed · stopped',
+    ' ✗ general-purpose · d-bg-failed · run failed',
+  ])
+  // The cloud row's reason is long: it shows in the detail view.
+  await ui.press({ key: rows[1]?.key ?? '' })
+  expect(await ui.find({ type: 'Text', text: 'Status  ✓ done: launched in the cloud (not tracked)' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('English gate pane: Steps and Gates rules, malformed files, the approval text, the mockup layout', async ($, on) => {
+  const w = world(on)
+  const agent = agentTool(on, w)
+  taskTools(on)
+  writeTools(on)
+  await start($)
+  for (const subject of [
+    'Move board mod into Provost repo',
+    'Write acceptance file for board round 1',
+    'Implement board round-1 fixes',
+    'Point plugin dir at repo board and verify live',
+    'Commit, push and open draft PR',
+  ]) {
+    await create($, subject)
+  }
+  await setStatus($, '1', 'completed')
+  await setStatus($, '2', 'completed')
+  await setStatus($, '3', 'in_progress')
+  agent.foreground(19 * MIN, 'fg-1')
+  const call = dispatch($, { description: 'Board round-1 fixes', prompt: 'p', subagent_type: 'implementer-sonnet' })
+  await w.clock.advance(19 * MIN)
+  await call
+  await setStatus($, '3', 'completed')
+  await setStatus($, '4', 'in_progress')
+  w.file('board-ui.json', BOARD_ROUND_1)
+  w.file('broken.json', '{ "task": "Half", "gates": [ { "id": 1 } ] }')
+  await writeAcceptance($, 'board-ui.json')
+  await writeAcceptance($, 'broken.json')
+  await turnDone($)
+  const headline = 'board  ███████░░░ 3/5 · gates 2/4 · needs you: merge'
+  expect(w.status()).toBe(headline)
+  const ui = await mountPane($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: 'broken.json  malformed' })).toBeDefined()
+  await ui.press({ key: 'expand' })
+  expect(await layoutOf(ui)).toEqual([
+    headline,
+    rule('Steps'),
+    ' ✓ 1  Move board mod into Provost repo',
+    ' ✓ 2  Write acceptance file for board round 1',
+    ' ✓ 3  Implement board round-1 fixes',
+    '      ↳ implementer-sonnet · Board round-1 fixes · 19 min',
+    ' » 4  Point plugin dir at repo board and verify live',
+    ' · 5  Commit, push and open draft PR',
+    rule('Gates · board round 1'),
+    ' ✓ tests           plugin test 48 pass',
+    ' ✓ validate        plugin validate',
+    ' · live-new-reset  real session /new',
+    ' ! merge           needs your approval',
+  ])
+  expect(await ui.find({ type: 'Text', text: 'broken.json  malformed' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('an unknown language value falls back to English', { options: { language: 'fr' } }, async ($, on) => {
+  const w = world(on)
+  const agent = agentTool(on, w)
+  await start($)
+  expect(w.commands).toEqual(['Task board: open or close the board pane'])
+  agent.background('bg-1')
+  await dispatch($, { description: 'one', prompt: 'p' })
+  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/1 done · 1 running')
 })

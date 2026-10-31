@@ -38,3 +38,23 @@ jobs:
           python-version: '3.11'
       - name: Exercise optional runtime in temporary workspaces
         run: python -m unittest discover -s tests/adaptive -p "test_*.py" -v
+
+  mods:
+    name: Mods (validate + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Validate marketplace and mods
+        run: |
+          claude plugin validate .
+          claude plugin validate mods/board
+          claude plugin validate mods/idle-guard
+      - name: Test mods
+        run: |
+          claude plugin test mods/board
+          claude plugin test mods/idle-guard
