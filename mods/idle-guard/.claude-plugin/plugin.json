@@ -1,0 +1,20 @@
+{
+  "name": "idle-guard",
+  "version": "0.1.0",
+  "description": "Compacts the main conversation after 54 idle minutes so a late wake rewrites a summary, not the whole context.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "minutes": {
+      "type": "number",
+      "title": "Idle minutes",
+      "description": "Idle minutes before compacting; 30 s are added so the built-in idle compaction goes first.",
+      "default": 54
+    },
+    "minTokens": {
+      "type": "number",
+      "title": "Minimum context tokens",
+      "description": "Compact only when the live context holds at least this many tokens.",
+      "default": 200000
+    }
+  }
+}
