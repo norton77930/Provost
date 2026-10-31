@@ -1,0 +1,6 @@
+{
+  "name": "board",
+  "version": "0.1.0",
+  "description": "Task board: tracks subagent dispatches, the model's checklist and acceptance gates in a collapsible pane and a status line.",
+  "types": "./types/index.d.ts"
+}
