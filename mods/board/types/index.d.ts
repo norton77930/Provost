@@ -40,6 +40,10 @@ export type BoardGate = {
   id: string
   kind: 'machine' | 'live' | 'visual' | 'review' | 'human'
   status: 'pass' | 'fail' | 'pending'
+  // What the gate checks; '' in state saved before the board kept it.
+  check: string
+  // What showed it passed, when the file records any.
+  evidence?: string
 }
 
 // One `.claude/acceptance/*.json` file the main loop wrote during this session.
