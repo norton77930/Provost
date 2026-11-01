@@ -13,6 +13,9 @@
 // for an error without result text) and linked in the report column, so a score can be audited.
 // --max-cost stops after the case that takes the cumulative total_cost_usd above it. --claude PATH ending in
 // .js runs under this node (test doubles).
+// A usage-limit reply (error exit whose result text matches /hit your .*limit/i) is recorded as
+// error:usage-limit and saved as <id>.err.txt; the run stops there and stderr lists the ids not run and a
+// ready `--ids` rerun list (the limit case first).
 const fs = require("fs"), path = require("path"), os = require("os");
 const { execFileSync, spawnSync } = require("child_process");
 
@@ -25,6 +28,7 @@ const EVALS = path.join(os.homedir(), ".claude", "provost", "evals", "reviewer")
 const TOOLS = "Read,Glob,Grep";
 const WINDOW = 10;
 const CLI_TIMEOUT_MS = 30 * 60 * 1000;
+const USAGE_LIMIT = /hit your .*limit/i;
 
 function git(repo, a, encoding = "utf8") {
   return execFileSync("git", ["-c", "core.quotepath=off", "-C", repo, ...a],
@@ -90,6 +94,9 @@ function runClaude(cli, dir, c, role) {
   const cost = out && Number(out.total_cost_usd) || 0;
   const text = out && typeof out.result === "string" ? out.result : undefined;
   const raw = { stdout: String(r.stdout || ""), stderr: String(r.stderr || "") };
+  // A usage-limit reply ("You've hit your 5-hour limit · resets …") arrives as an error exit with the notice as
+  // result text; the CLI has no separate structured error for it.
+  if ((r.status !== 0 || (out && out.is_error)) && text !== undefined && USAGE_LIMIT.test(text)) return { cost, text, raw, error: "usage-limit" };
   if (r.status !== 0) return { cost, text, raw, error: `cli exit ${r.status}` };
   if (text === undefined) return { cost, raw, error: "cli output not json" };
   if (out.is_error) return { cost, text, raw, error: "cli is_error" };
@@ -151,11 +158,11 @@ function score(found, expected, dir) {
 // CLI never produced output.
 function saveReport(rep, id, out) {
   let name;
-  if (typeof out.text === "string") { name = `${id}.md`; fs.writeFileSync(path.join(rep.dir, name), out.text); }
-  else if (out.error && (out.raw.stdout || out.raw.stderr)) {
+  if (typeof out.text === "string" && out.error !== "usage-limit") { name = `${id}.md`; fs.writeFileSync(path.join(rep.dir, name), out.text); }
+  else if (out.error && (out.text || out.raw.stdout || out.raw.stderr)) {
     name = `${id}.err.txt`;
     const clip = t => t.slice(0, 4000);
-    fs.writeFileSync(path.join(rep.dir, name), [out.error, "", "--- stdout ---", clip(out.raw.stdout), "", "--- stderr ---", clip(out.raw.stderr), ""].join("\n"));
+    fs.writeFileSync(path.join(rep.dir, name), [out.error, ...(out.error === "usage-limit" ? ["", clip(out.text)] : []), "", "--- stdout ---", clip(out.raw.stdout), "", "--- stderr ---", clip(out.raw.stderr), ""].join("\n"));
   }
   return name ? `${rep.name}/${name}` : "";
 }
@@ -213,14 +220,16 @@ function run() {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
   const rep = { name: `${stamp}-${label}`, dir: path.join(runsDir, `${stamp}-${label}`) };
   fs.mkdirSync(rep.dir, { recursive: true });
-  let total = 0, stoppedAfter = "";
+  let total = 0, stoppedAfter = "", limitAt = "";
   for (const id of ids) {
     const row = runCase(id, path.join(casesDir, id, "case.json"), cli, role, rep);
     rows.push(row);
     total += row.cost;
     console.error(`${id}: ${row.status}`);
+    if (row.status === "error:usage-limit") { limitAt = id; break; }
     if (total > maxCost) { stoppedAfter = id; break; }
   }
+  const notRun = limitAt ? ids.slice(ids.indexOf(limitAt) + 1) : [];
 
   const ok = rows.filter(r => r.status === "ok");
   const defects = ok.filter(r => r.kind === "defect"), cleans = ok.filter(r => r.kind === "clean");
@@ -234,6 +243,7 @@ function run() {
     `mean Important: ${meanImp.toFixed(2)}`,
     `total cost: $${total.toFixed(4)}`,
     `stopped by ceiling: ${stoppedAfter ? `yes (after ${stoppedAfter}, ceiling $${maxCost})` : "no"}`,
+    `stopped by usage limit: ${limitAt ? `yes (at ${limitAt})` : "no"}`,
     `role: code-reviewer model=${role.model || "default"} effort=${role.effort || "default"}`,
   ];
 
@@ -249,6 +259,7 @@ function run() {
     rows.forEach(r => console.log("| " + cols.map(c => cell(r, c).replace(/\|/g, "\\|").replace(/[\r\n]+/g, " ")).join(" | ") + " |"));
   }
   console.error("\n" + summary.join("\n") + `\nsaved: ${out}`);
+  if (limitAt) console.error(`\nusage limit hit at ${limitAt}; not run: ${notRun.join(", ") || "(none)"}\nrerun after the limit resets: --ids ${[limitAt, ...notRun].join(",")}`);
 }
 
 if (cmd === "run") run();

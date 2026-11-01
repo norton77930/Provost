@@ -4,8 +4,11 @@
 //        node reviewer-cases.js save --id <id> --repo <path> --base <sha> --head <sha> --claim <text>
 //             --origin escape|seeded|clean --confirmed-by <name> [--expected '<json array of {file,lines,summary}>']
 // candidates reads ~/.claude/projects/*/<session>.jsonl (code-reviewer dispatches whose cwd is in --repo) and
-// `git log --all`; head = the first commit named in the claim that resolves in the repo (headFrom=claim), else
-// the first commit within 3h after the dispatch (headFrom=window); base = head^ (first parent). Read-only.
+// `git log --all`; head = the first commit named in the claim that resolves in the repo (headFrom=claim), else,
+// when the claim names a ticket (`ticket #N`, `#N`, `(N)` or a leading `NNN:`), the first commit within 3h
+// after the dispatch whose subject carries the same ticket number (headFrom=ticket), else the first commit
+// within 3h after the dispatch (headFrom=window; window? when the claim named a ticket no subject matched, so
+// check it before saving); base = head^ (first parent). Read-only.
 // save writes ~/.claude/provost/evals/reviewer/cases/<id>/case.json and refuses to overwrite.
 const fs = require("fs"), path = require("path"), os = require("os"), readline = require("readline");
 const { execFileSync } = require("child_process");
@@ -129,6 +132,14 @@ function claimedCommit(repo, claim, bySha) {
   return null;
 }
 
+// Ticket number the claim names: `ticket #N`, `#N`, `(N)` or a leading `NNN:`; null if none.
+function claimedTicket(claim) {
+  const m = /\bticket\s*#?(\d+)\b/i.exec(claim) || /(?:^|[^\w&])#(\d+)\b/.exec(claim) || /\((\d+)\)/.exec(claim) || /^\s*(\d+):/.exec(claim);
+  return m ? m[1] : null;
+}
+// Does the commit subject carry ticket n (`#n`, `(n)` or a leading `n:`)?
+const subjectHasTicket = (subject, n) => new RegExp(`(?:^|[^\\w&])#${n}\\b|\\(${n}\\)|^\\s*${n}:`).test(subject);
+
 const rangeText = ls => {
   const out = [];
   for (const n of ls) {
@@ -150,7 +161,10 @@ async function candidates() {
     const t = Date.parse(r.ts);
     const base = { repo, ts: r.ts.slice(0, 16).replace("T", " "), session: r.session, claim: r.claim, base: "", head: "", headFrom: "", fix: "", file: "", lines: "", note: "" };
     let head = claimedCommit(repo, r.claim, bySha), headFrom = "claim";
-    if (!head) { head = all.find(c => c.ct > t && c.ct <= t + WINDOW_MS); headFrom = "window"; }
+    const inWindow = c => c.ct > t && c.ct <= t + WINDOW_MS;
+    const ticket = head ? null : claimedTicket(r.claim);
+    if (!head && ticket) { head = all.find(c => inWindow(c) && subjectHasTicket(c.subject, ticket)); headFrom = "ticket"; }
+    if (!head) { head = all.find(inWindow); headFrom = ticket ? "window?" : "window"; }
     if (!head) { rows.push({ ...base, kind: "skip", note: "no commit within 3h" }); continue; }
     Object.assign(base, { base: head.parent.slice(0, 12), head: head.sha.slice(0, 12), headFrom });
     let found = false;
