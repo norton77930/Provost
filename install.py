@@ -287,8 +287,9 @@ def with_hooks(config):
     if not isinstance(hooks, dict):
         raise InstallError(f"{SETTINGS}: \"hooks\" is not an object; nothing was changed")
     runtime = (config / RUNTIME).as_posix()
-    if '"' in runtime:
-        raise InstallError("config dir path contains a double quote; register the hooks by hand")
+    if any(char in runtime for char in '"$`\\'):  # bash expands $, ` and \ inside double quotes
+        raise InstallError("config dir path contains a double quote, $, backtick or backslash; "
+                           "register the hooks by hand")
     added = []
     for event, matcher, name, extra in REGISTRATIONS:
         groups = hooks.setdefault(event, [])
@@ -306,7 +307,12 @@ def with_hooks(config):
     text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
     if raw is not None and b"\r\n" in raw:
         text = text.replace("\n", "\r\n")
-    return (BOM if raw is not None and raw.startswith(BOM) else b"") + text.encode("utf-8"), added
+    try:
+        encoded = text.encode("utf-8")
+    except UnicodeEncodeError:  # a lone surrogate in the path or in settings.json; never echo the text
+        raise InstallError(f"{SETTINGS} or the config dir path contains a lone surrogate "
+                           "(not valid Unicode); nothing was changed") from None
+    return (BOM if raw is not None and raw.startswith(BOM) else b"") + encoded, added
 
 
 def setup_targets(config):
