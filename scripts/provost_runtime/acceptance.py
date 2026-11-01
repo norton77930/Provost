@@ -56,7 +56,7 @@ def check(event, config_path=None):
     try:
         if "agent_id" in event:  # only the main session's turn end is gated
             return {}
-        directory = _directory(event)
+        directory = acceptance_directory(event)
         if directory is None:
             return {}
         files = session_files(event, directory)
@@ -279,7 +279,8 @@ def _clock(when):
     return when.astimezone().strftime("%H:%M:%S")
 
 
-def _directory(event):
+def acceptance_directory(event):
+    """<cwd>/.claude/acceptance of the event as a Path; None without an absolute cwd or without the directory."""
     cwd = event.get("cwd")
     if not isinstance(cwd, str) or not cwd or not Path(cwd).is_absolute():
         return None

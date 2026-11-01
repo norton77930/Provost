@@ -657,7 +657,13 @@ session has no directory anywhere in the store are listed per session under
 `orphan_facts_cache` (`candidates`, `removed`, `skipped`, `errors`; present only when
 non-empty) once their newest file is older than the expiry age, and deleted only with
 `--apply`; names without a `[A-Za-z0-9-]+` session id (`UNEXPECTED_NAME`) and linked
-entries (`LINKED_STORAGE`) are skipped. `--older-than-days` (default 14) applies
+entries (`LINKED_STORAGE`) are skipped. The acceptance gate's push counters
+(`<provost dir>/cache/acceptance/<session_id>.pushes`) belong to no session dir; `prune`
+lists the ones not written for the expiry age (`--expired-older-than-days`, default 30)
+under `stale_acceptance_pushes` (`candidates`, `removed`, `skipped`, `errors`; present
+only when non-empty) and deletes them with `--apply`, even when no handoff store exists.
+Only regular files named `<session_id>.pushes` directly in that folder are touched; the
+`--session` counter, other files and linked entries are kept. `--older-than-days` (default 14) applies
 to binding-only dirs only. `doctor` reports `expired_sessions` at the default age.
 `--apply` removes expired sessions (counted in `expired_removed`) with the same
 move, re-check and delete steps as below; a session that became fresh or locked in
@@ -1050,7 +1056,8 @@ acceptance-gate ones described under [Acceptance gates](#acceptance-gates).
 `python install.py check` reports `settings: not-registered` until the
 `SessionStart`, `PreToolUse`, `PostToolUse` and both `Stop` registrations (the async
 declaration scan and the synchronous [acceptance gate](#acceptance-gates)) are all
-present.
+present. That counts as drift: `check` exits non-zero and tells you to run
+`python install.py setup`.
 
 Do not register any of these hooks for `SubagentStop`. That event's context is delivered
 to the subagent's own conversation and keeps the subagent running, so it would loop
@@ -1065,7 +1072,10 @@ reminders. Remove any registration that still points at it.
 A non-simple task can carry an **acceptance file**: the list of gates the main
 session must pass before it reports the task done. The main session writes it with
 the Write tool as `<working tree>/.claude/acceptance/<task>.json`, where the working
-tree is the `cwd` Claude Code sends with the `Stop` event.
+tree is the `cwd` Claude Code sends with the `Stop` event. Add `.claude/acceptance/`
+to the project's `.gitignore`: the files are the session's working state and `install.py`
+never edits your `.gitignore`. When you need the evidence for an audit (for example an R2
+task), commit the acceptance file deliberately or attach it to the PR.
 
 ```json
 {
@@ -1157,6 +1167,11 @@ behalf, because a hook cannot tell those apart. With the `cache/acceptance` fold
 present (after the first push), `native-facts` also reads every `PostToolUse` event
 with handoff off, only to find that it has nothing to do.
 
+Accepted limit: after `<cwd>/.claude/acceptance` is deleted, a leftover push counter
+survives until the person's next prompt. The bash part of the gate exits before Python
+runs when that directory is gone, so a clean `Stop` cannot delete the counter; the
+prompt reset empties it, and `prune` removes it once it is stale.
+
 A `machine`, `live` or `visual` gate with status `pass` goes **stale** when the main
 session edits a file after it: its `ranAt` is before the session's last edit, or it
 has no `ranAt`, or a `ranAt` without a time zone (it cannot be compared with the
@@ -1213,8 +1228,12 @@ without `"async"`:
 ```
 
 `python install.py check` reports `settings: not-registered` while the synchronous
-registration is missing; an `acceptance-gate` entry marked `"async": true` does not
-count, because an async hook cannot block. Do not register it for `SubagentStop`.
+registration is missing, and exits non-zero with a pointer to `python install.py setup`;
+an `acceptance-gate` entry marked `"async": true` does not count, because an async hook
+cannot block. An async entry beside the sync one would spend a second push on every
+`Stop`, so `check` reports `settings: async-duplicate` (also drift) and `setup` drops
+every async `acceptance-gate` entry from `Stop` and `PreToolUse` (it says so in its
+output) and keeps the synchronous one. Do not register it for `SubagentStop`.
 
 ### Dispatch reminder
 
@@ -1253,4 +1272,4 @@ adds context at dispatch time and never denies, asks or blocks one:
 ```
 
 `python install.py setup` registers it, and `check` reports `settings: not-registered`
-while it is missing or marked `"async": true`.
+(drift, exit 1) while it is missing or marked `"async": true`.

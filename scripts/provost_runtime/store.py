@@ -1585,6 +1585,64 @@ def _orphan_cache(home, cache, cutoff, keep_session, claimed, apply):
     return out
 
 
+# A push counter of hooks/acceptance-gate (<config dir>/cache/acceptance/<session>.pushes): the only
+# file name the counter prune may delete.
+ACCEPTANCE_PUSHES = re.compile(r"[A-Za-z0-9-]+\.pushes")
+
+
+def _stale_pushes(counters, cutoff, keep_session, apply):
+    """Push counters of the acceptance gate in the folder counters whose last write is older than cutoff.
+
+    Only regular files named <session id>.pushes directly in that folder are considered; anything else
+    in it, and linked entries, are left alone. A counter is rewritten on every push and emptied on the
+    person's prompt, so an old one belongs to an episode that is long over. The kept session's counter is
+    never listed. Under apply, each file is re-checked (still a plain file, still older than cutoff)
+    right before it is deleted."""
+    out = {"candidates": [], "removed": 0, "skipped": [], "errors": []}
+    counters = Path(counters)
+    found = []
+    try:
+        guard(counters.parent.parent, counters)
+        if not counters.is_dir():
+            return out
+        for path in sorted(counters.iterdir()):
+            match = ACCEPTANCE_PUSHES.fullmatch(path.name)
+            if not match or (keep_session and path.name == keep_session + ".pushes"):
+                continue
+            try:
+                guard(counters.parent.parent, path)
+                info = path.lstat()
+            except StoreError as exc:
+                out["skipped"].append({"path": str(path), "reason": str(exc)})
+                continue
+            except OSError:
+                continue
+            if stat.S_ISREG(info.st_mode) and info.st_mtime < cutoff:
+                found.append(path)
+    except (StoreError, OSError) as exc:
+        reason = str(exc) if isinstance(exc, StoreError) else type(exc).__name__
+        out["skipped"].append({"path": str(counters), "reason": reason})
+        return out
+    for path in found:
+        out["candidates"].append({"path": str(path)})
+        if not apply:
+            continue
+        try:
+            guard(counters.parent.parent, path)
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_mtime >= cutoff:
+                continue  # refreshed or replaced since the listing; left for a later run
+            path.unlink()
+            out["removed"] += 1
+        except FileNotFoundError:
+            pass
+        except StoreError as exc:
+            out["skipped"].append({"path": str(path), "reason": str(exc)})
+        except OSError as exc:
+            out["errors"].append({"path": str(path), "error": type(exc).__name__})
+    return out
+
+
 LOG_IDLE_DAYS = 180  # idle days after which a done or orphan work's decision log is a prune candidate
 
 
@@ -1778,7 +1836,7 @@ def _log_backups(ws, clock):
 
 
 def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_session=None, apply=False, now=None,
-          facts_cache=None):
+          facts_cache=None, acceptance_cache=None):
     """List (or with apply, remove) abandoned session dirs; dry-run unless apply.
 
     Two kinds, each with its own age: dirs holding only an old binding.json
@@ -1807,6 +1865,10 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
     Cache files of sessions with no dir anywhere in the store are listed under
     `orphan_facts_cache` (only when there is something to report) once their newest
     file is older than the expiry age; under apply they are deleted.
+    With acceptance_cache (the acceptance gate's folder, <config dir>/cache/acceptance), push counters
+    (`<session id>.pushes` files, nothing else) not written for the expiry age are listed under
+    `stale_acceptance_pushes` (only when there is something to report) and deleted under apply; this
+    does not depend on a session dir or on the handoff store existing.
     """
     for days in (older_than_days, expired_older_than_days):
         if days is not None and (not isinstance(days, int) or isinstance(days, bool) or days < 1):
@@ -1822,10 +1884,19 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
               "applied": bool(apply), "candidates": [], "removed": 0, "expired": [], "expired_removed": 0,
               "leftovers": [], "reclaimed": 0, "skipped": [], "errors": [],
               "idle_logs": _idle_logs(ws, clock, apply), "log_backups": _log_backups(ws, clock)}
+    expiry_cutoff = clock - expiry_days * 86400
+
+    def counters():
+        if acceptance_cache is not None:
+            stale = _stale_pushes(acceptance_cache, expiry_cutoff, keep_session, apply)
+            if stale["candidates"] or stale["skipped"] or stale["errors"]:
+                result["stale_acceptance_pushes"] = stale
+
     if not sessions.is_dir():
+        counters()
         return result
     keep = digest(keep_session) if keep_session else None
-    cutoff, expiry_cutoff = clock - binding_days * 86400, clock - expiry_days * 86400
+    cutoff = clock - binding_days * 86400
     held = _unmigrated_guard(ws)
     for entry in sorted(sessions.iterdir()):
         if STAGING.fullmatch(entry.name):
@@ -1912,4 +1983,5 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
         orphans = _orphan_cache(home, facts_cache, expiry_cutoff, keep_session, claimed, apply)
         if orphans["candidates"] or orphans["skipped"] or orphans["errors"]:
             result["orphan_facts_cache"] = orphans
+    counters()
     return result

@@ -12,7 +12,7 @@ must not continue a longer one (myfeature.json, feature.json.bak do not count). 
 """
 import re
 
-from .acceptance import _directory, load, session_files, DIRECTORY, Malformed
+from .acceptance import acceptance_directory, load, session_files, DIRECTORY, Malformed
 
 ROLES = ("implementer", "implementer-sonnet", "mech-executor")
 
@@ -28,7 +28,7 @@ def remind(event):
         prompt = tool_input.get("prompt")
         if not isinstance(prompt, str):
             return {}
-        directory = _directory(event)
+        directory = acceptance_directory(event)
         if directory is None:
             return {}
         files = session_files(event, directory)

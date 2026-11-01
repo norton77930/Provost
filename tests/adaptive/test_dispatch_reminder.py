@@ -26,6 +26,13 @@ class DispatchReminderTests(AcceptanceCase):
         for needle in needles:
             self.assertIn(needle, output["additionalContext"])
 
+    def test_reminder_uses_the_public_acceptance_directory_lookup(self):
+        # A private name imported across modules is renamed unnoticed, and the fail-soft hook then
+        # silently stops reminding; the shared lookup is public and the reminder holds the same object.
+        from provost_runtime import acceptance, dispatch_reminder
+        self.assertTrue(callable(acceptance.acceptance_directory))
+        self.assertIs(dispatch_reminder.acceptance_directory, acceptance.acceptance_directory)
+
     def test_each_implementation_role_gets_a_reminder_naming_the_file(self):
         self.acceptance("feature.json", [gate("unit-tests")])
         for role in ROLES:

@@ -93,6 +93,17 @@ class InstallCase(unittest.TestCase):
         write(self.config / "skills/handoff/SKILL.md", "local handoff\n")
         write(self.config / "settings.json", json.dumps({"env": {"TOKEN": SECRET}}))
 
+    def register_hooks(self):
+        """Replace settings.json with one that registers every hook (as setup does), so that check's
+        exit code depends on the installed files alone."""
+        runtime = (self.config / RUNTIME).as_posix()
+        hooks = {}
+        for event, matcher, name, extra in install.REGISTRATIONS:
+            group = {} if matcher is None else {"matcher": matcher}
+            group["hooks"] = [{"type": "command", "command": f'bash "{runtime}/hooks/{name}"', **extra}]
+            hooks.setdefault(event, []).append(group)
+        write(self.config / "settings.json", json.dumps({"hooks": hooks}))
+
     def run_cli(self, *argv):
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
@@ -147,6 +158,7 @@ class CheckTests(InstallCase):
     def test_extra_alone_is_not_drift_and_agents_extras_not_reported(self):
         self.assertEqual(self.run_cli("install")[0], 0)
         write(self.config / RUNTIME / "hooks/native-reminder", "old\n")
+        self.register_hooks()
         code, report = self.check_json()
         self.assertEqual(code, 0)
         self.assertFalse(report["drift"])
@@ -173,6 +185,14 @@ class CheckTests(InstallCase):
 
 
 class InstallTests(InstallCase):
+    def test_acceptance_verifier_role_is_a_managed_install_target(self):
+        # The #43 gate kinds name acceptance-verifier; a config without the role file could not dispatch it.
+        rels = [t.rel for t in install.source_targets(REPO)]
+        self.assertIn("agents/acceptance-verifier.md", rels)
+        write(self.source / "agents/acceptance-verifier.md", "verifier\n")
+        self.assertEqual(self.run_cli("install")[0], 0)
+        self.assertEqual((self.config / "agents/acceptance-verifier.md").read_bytes(), b"verifier\n")
+
     def test_dry_run_writes_nothing(self):
         before = self.snapshot()
         code, out, _ = self.run_cli("install", "--dry-run")
@@ -186,6 +206,7 @@ class InstallTests(InstallCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(self.backups()), 1)
         self.assertIn(str(self.backups()[0]), out)
+        self.register_hooks()
         code, report = self.check_json()
         self.assertEqual(code, 0, report)
         self.assertEqual(set(self.statuses(report).values()), {"ok"})
@@ -558,6 +579,10 @@ class InstallTests(InstallCase):
 
 
 class PolicySectionTests(InstallCase):
+    def setUp(self):
+        super().setUp()
+        self.register_hooks()
+
     def assert_policy(self, eol):
         write(self.config / "CLAUDE.md", claude_md(eol=eol))
         self.assertEqual(self.run_cli("install")[0], 0)
@@ -735,14 +760,56 @@ class SettingsTests(InstallCase):
         other = self.hooks(start, post, pre={"command": base + "native-facts"})
         self.assertEqual(self.settings(other), "not-registered")
 
-    def test_missing_or_unparsable_is_unknown(self):
-        self.assertEqual(self.settings(None), "unknown")
+    def test_async_duplicate_of_the_acceptance_gate_is_reported(self):
+        base = f"/x/{RUNTIME}/hooks/"
+        start, post = {"command": base + "native-event"}, {"command": base + "native-facts"}
+        dup = self.hooks(start, post)
+        dup["hooks"]["Stop"].append({"hooks": [{"type": "command", "command": base + "acceptance-gate",
+                                                "async": True}]})
+        self.assertEqual(self.settings(dup), "async-duplicate")
+        code, out, _ = self.run_cli("check")
+        self.assertIn("async", out)
+
+    def test_unparsable_is_unknown(self):
         self.assertEqual(self.settings('{"env": {"TOKEN": "' + SECRET + '"'), "unknown")
 
-    def test_settings_not_drift(self):
+    def test_missing_settings_file_is_not_registered_and_drift(self):
+        # Nothing is registered without a settings.json: only setup can create it.
+        self.assertEqual(self.run_cli("install")[0], 0)
+        (self.config / "settings.json").unlink()
+        code, report = self.check_json()
+        self.assertEqual((code, report["settings"], report["drift"]), (1, "not-registered", True))
+        code, out, _ = self.run_cli("check")
+        self.assertEqual(code, 1)
+        self.assertIn("python install.py setup", out)
+
+    def test_missing_registrations_are_drift_and_point_at_setup(self):
+        # Files in sync, hooks not registered: only setup can fix that, so check exits non-zero and says so.
         self.assertEqual(self.run_cli("install")[0], 0)
         code, report = self.check_json()
-        self.assertEqual((code, report["settings"]), (0, "not-registered"))
+        self.assertEqual((code, report["settings"], report["drift"]), (1, "not-registered", True))
+        code, out, _ = self.run_cli("check")
+        self.assertEqual(code, 1)
+        self.assertIn("python install.py setup", out)
+
+    def test_missing_acceptance_gate_registrations_are_drift(self):
+        base = f"/x/{RUNTIME}/hooks/"
+        start, post = {"command": base + "native-event"}, {"command": base + "native-facts"}
+        no_pre = self.hooks(start, post)
+        del no_pre["hooks"]["PreToolUse"]
+        no_gate = self.hooks(start, post)
+        del no_gate["hooks"]["Stop"][1]
+        self.assertEqual(self.run_cli("install")[0], 0)
+        for name, value in (("PreToolUse", no_pre), ("sync Stop", no_gate)):
+            with self.subTest(name):
+                write(self.config / "settings.json", json.dumps(value))
+                code, report = self.check_json()
+                self.assertEqual((code, report["settings"], report["drift"]), (1, "not-registered", True))
+                self.assertIn("python install.py setup", self.run_cli("check")[1])
+        write(self.config / "settings.json", json.dumps(self.hooks(start, post)))
+        code, out, _ = self.run_cli("check")
+        self.assertEqual(code, 0)
+        self.assertNotIn("python install.py setup", out)
 
 
 class SetupTests(InstallCase):
@@ -819,6 +886,38 @@ class SetupTests(InstallCase):
                 "timeout": 30}
         self.assertEqual(data["hooks"]["Stop"], [{"hooks": [stop]}, {"hooks": [gate]}])
         self.assertEqual(set(data["hooks"]), set(self.EVENTS))
+
+    def test_async_acceptance_gate_entries_are_dropped_and_the_sync_one_kept(self):
+        # An async copy would run beside the sync one on every Stop and spend a second push each time.
+        runtime = (self.config / RUNTIME).as_posix()
+        command = f'bash "{runtime}/hooks/acceptance-gate"'
+        mine = {"type": "command", "command": "my-linter"}
+        asyn = {"type": "command", "command": command, "async": True, "timeout": 30}
+        sync = {"type": "command", "command": command, "timeout": 30}
+        write(self.config / "settings.json", json.dumps({"hooks": {
+            "Stop": [{"hooks": [asyn]}, {"hooks": [mine, dict(asyn)]}, {"hooks": [sync]}],
+            "PreToolUse": [{"matcher": "Agent", "hooks": [dict(asyn)]}]}}))
+        code, out, _ = self.run_setup()
+        self.assertEqual(code, 0)
+        data = self.settings_data()
+        self.assertEqual(data["hooks"]["Stop"][:2], [{"hooks": [mine]}, {"hooks": [sync]}])
+        self.assertEqual([h for g in data["hooks"]["Stop"] for h in g["hooks"] if h.get("async") is True
+                          and "acceptance-gate" in h["command"]], [])
+        self.assertEqual(data["hooks"]["PreToolUse"], [{"matcher": "Agent", "hooks": [sync]}])
+        self.assertIn("async", out)
+        self.assertEqual(self.check_json()[1]["settings"], "ok")
+        before = self.snapshot()
+        self.assertEqual(self.run_setup()[0], 0)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_dry_run_names_the_async_acceptance_gate_it_would_drop(self):
+        command = f'bash "{(self.config / RUNTIME).as_posix()}/hooks/acceptance-gate"'
+        write(self.config / "settings.json", json.dumps({"hooks": {"Stop": [
+            {"hooks": [{"type": "command", "command": command, "async": True}]}]}}))
+        before = self.snapshot()
+        code, out, _ = self.run_setup("--dry-run", "--json")
+        self.assertEqual((code, json.loads(out)["drop_async"]), (0, ["Stop"]))
+        self.assertEqual(self.snapshot(), before)
 
     def test_unusable_settings_are_refused_and_nothing_written(self):
         cases = {"unparsable": '{"env": {"TOKEN": "' + SECRET + '"',
