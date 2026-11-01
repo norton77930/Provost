@@ -77,6 +77,43 @@ class NativeWrapperTests(FixtureCase):
         self.assertEqual((result.returncode, json.loads(result.stdout)), (0, {}), result.stderr)
         self.assertIn("-m provost_runtime.cli acceptance-hook", log.read_text(encoding="utf-8"))
 
+    def test_acceptance_gate_hands_escaped_cwd_to_python(self):
+        # bash cannot decode \uXXXX or \" in the cwd string, so it must not guess "no directory" and exit:
+        # the interpreter decides. (A path with a quote cannot be created on Windows; none is needed.)
+        log = self.root / "python.log"
+        bin_dir = self.root / "bin"
+        self.fake_interpreter(bin_dir, "python3", log)
+        hook = REPO / "hooks" / "acceptance-gate"
+        for name, cwd, escape in (("unicode", str(self.root / "café"), "\\u00e9"),
+                                  ("quote", str(self.root / 'say "hi"'), '\\"')):
+            with self.subTest(name):
+                log.unlink(missing_ok=True)
+                stop = json.dumps({"session_id": "s1", "transcript_path": str(self.root / "t.jsonl"),
+                                   "cwd": cwd, "hook_event_name": "Stop"})
+                self.assertIn(escape, stop)
+                result = self.run_bash(hook, path_dirs=[bin_dir], stdin=stop)
+                self.assertEqual((result.returncode, json.loads(result.stdout)), (0, {}), result.stderr)
+                self.assertIn("-m provost_runtime.cli acceptance-hook", log.read_text(encoding="utf-8"))
+
+    def test_acceptance_gate_blocks_for_a_cwd_with_a_unicode_escape(self):
+        cwd = self.root / "café"
+        directory = cwd / ".claude" / "acceptance"
+        directory.mkdir(parents=True)
+        transcript = self.root / "t.jsonl"
+        write = {"type": "assistant", "timestamp": "2020-01-01T00:00:00Z", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "Write",
+             "input": {"file_path": str(directory / "task.json")}}]}}
+        transcript.write_text(json.dumps({"type": "user", "timestamp": "2020-01-01T00:00:00Z"}) + "\n"
+                              + json.dumps(write) + "\n", encoding="utf-8")
+        (directory / "task.json").write_text(json.dumps({"task": "t", "gates": [
+            {"id": "unit-tests", "kind": "machine", "check": "pytest", "status": "pending"}]}), encoding="utf-8")
+        stop = json.dumps({"session_id": "s1", "transcript_path": str(transcript), "cwd": str(cwd),
+                           "hook_event_name": "Stop"})
+        self.assertIn("\\u00e9", stop)
+        result = self.run_bash(REPO / "hooks" / "acceptance-gate", stdin=stop)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["decision"], "block")
+
     def test_acceptance_gate_blocks_end_to_end(self):
         directory = self.root / ".claude" / "acceptance"
         directory.mkdir(parents=True)

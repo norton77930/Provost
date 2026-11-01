@@ -204,7 +204,8 @@ def main(argv=None):
                 result = prune(root, older_than_days=options.older_than_days,
                                expired_older_than_days=options.expired_older_than_days,
                                keep_session=options.session, apply=options.apply,
-                               facts_cache=config_path().parent / "cache" / "facts")
+                               facts_cache=config_path().parent / "cache" / "facts",
+                               acceptance_cache=config_path().parent / "cache" / "acceptance")
             else:
                 if not options.session:
                     raise StoreError("SESSION_REQUIRED")

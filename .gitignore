@@ -32,3 +32,6 @@ node_modules/
 # Python runtime caches
 __pycache__/
 *.py[cod]
+
+# Acceptance files: per-session working state of the acceptance gate
+.claude/acceptance/

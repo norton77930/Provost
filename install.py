@@ -210,7 +210,7 @@ def check_layout(source, config, targets):
 
 
 def settings_status(config):
-    """ok | not-registered | unknown. Only hook command strings are inspected; nothing is printed."""
+    """ok | not-registered | async-duplicate | unknown. Only hook command strings are inspected; nothing is printed."""
     try:
         data = json.loads((config / SETTINGS).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
@@ -222,6 +222,9 @@ def settings_status(config):
         for name in names:
             if not _registered(hooks.get(event), name):
                 return "not-registered"
+    if any(list(_async_gates(hooks.get(event), name)) for event, names in HOOK_EVENTS.items()
+           for name in names if name in SYNC_HOOKS):
+        return "async-duplicate"
     return "ok"
 
 
@@ -237,12 +240,35 @@ def _hook_strings(groups, sync_only=False):
         for hook in entries if isinstance(entries, list) else []:
             if not isinstance(hook, dict) or (sync_only and hook.get("async") is True):
                 continue
-            if isinstance(hook.get("command"), str):
-                yield hook["command"]
-            args = hook.get("args")
-            for arg in args if isinstance(args, list) else []:
-                if isinstance(arg, str):
-                    yield arg
+            yield from _strings(hook)
+
+
+def _strings(hook):
+    if isinstance(hook.get("command"), str):
+        yield hook["command"]
+    args = hook.get("args")
+    for arg in args if isinstance(args, list) else []:
+        if isinstance(arg, str):
+            yield arg
+
+
+def _async_gates(groups, name):
+    """The (group, hook) pairs of groups that run RUNTIME/hooks/<name> with "async": true."""
+    for group in groups if isinstance(groups, list) else []:
+        entries = group.get("hooks") if isinstance(group, dict) else None
+        for hook in entries if isinstance(entries, list) else []:
+            if (isinstance(hook, dict) and hook.get("async") is True
+                    and any(_ends_with(text, f"{RUNTIME}/hooks/{name}") for text in _strings(hook))):
+                yield group, hook
+
+
+def _drop_async(groups, name):
+    """Remove the async entries of hook <name> from groups, and a group left without hooks; True if any."""
+    found = list(_async_gates(groups, name))
+    for group, hook in found:
+        group["hooks"] = [h for h in group["hooks"] if h is not hook]
+    groups[:] = [g for g in groups if not any(g is group for group, _ in found) or g["hooks"]]
+    return bool(found)
 
 
 def _ends_with(text, suffix):
@@ -271,7 +297,8 @@ def _unique_keys(pairs):
 
 
 def with_hooks(config):
-    """(settings.json bytes with the missing registrations, events added); never echoes values."""
+    """(settings.json bytes with the missing registrations, events added, events whose async acceptance-gate
+    entry was dropped); never echoes values."""
     path = config / SETTINGS
     raw = path.read_bytes() if path.is_file() else None
     data = {}
@@ -290,11 +317,13 @@ def with_hooks(config):
     if any(char in runtime for char in '"$`\\'):  # bash expands $, ` and \ inside double quotes
         raise InstallError("config dir path contains a double quote, $, backtick or backslash; "
                            "register the hooks by hand")
-    added = []
+    added, dropped = [], []
     for event, matcher, name, extra in REGISTRATIONS:
         groups = hooks.setdefault(event, [])
         if not isinstance(groups, list):
             raise InstallError(f"{SETTINGS}: hooks.{event} is not a list; nothing was changed")
+        if name in SYNC_HOOKS and _drop_async(groups, name) and event not in dropped:
+            dropped.append(event)
         if _registered(groups, name):
             continue
         group = {} if matcher is None else {"matcher": matcher}
@@ -302,8 +331,8 @@ def with_hooks(config):
         groups.append(group)
         if event not in added:
             added.append(event)
-    if not added:
-        return raw, added
+    if not added and not dropped:
+        return raw, added, dropped
     text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
     if raw is not None and b"\r\n" in raw:
         text = text.replace("\n", "\r\n")
@@ -312,22 +341,22 @@ def with_hooks(config):
     except UnicodeEncodeError:  # a lone surrogate in the path or in settings.json; never echo the text
         raise InstallError(f"{SETTINGS} or the config dir path contains a lone surrogate "
                            "(not valid Unicode); nothing was changed") from None
-    return (BOM if raw is not None and raw.startswith(BOM) else b"") + encoded, added
+    return (BOM if raw is not None and raw.startswith(BOM) else b"") + encoded, added, dropped
 
 
 def setup_targets(config):
     """Build setup's in-memory targets; returns (policy bytes, settings/config targets, report)."""
     policy, markers = with_markers(config)
-    settings, added = with_hooks(config)
+    settings, added, dropped = with_hooks(config)
     extra = []
-    if added:
+    if added or dropped:
         extra.append(Target(SETTINGS, None, desired=settings,
                             status="modified" if (config / SETTINGS).exists() else "missing"))
     runtime_config = config / RUNTIME_CONFIG
     if not runtime_config.exists():
         extra.append(Target(RUNTIME_CONFIG, None, status="missing",
                             desired=(json.dumps(DEFAULT_CONFIG, indent=2) + "\n").encode("utf-8")))
-    report = {"markers": markers, "register": added,
+    report = {"markers": markers, "register": added, "drop_async": dropped,
               "runtime_config": "keep" if runtime_config.exists() else "create"}
     return policy, extra, report
 
@@ -538,6 +567,9 @@ def run_setup(args, config, changes, report):
     would = "would " if args.dry_run else ""
     steps = ([f"{would}add the claudex-native markers to {POLICY_TARGET}"] if report["markers"] else [])
     steps += [f"{would}register the {event} hook in {SETTINGS}" for event in report["register"]]
+    steps += [f"{would}drop the async acceptance-gate entry from {event} in {SETTINGS} "
+              "(it cannot block, and beside the sync one it spends a second push)"
+              for event in report["drop_async"]]
     if report["runtime_config"] == "create":
         steps.append(f"{would}create {RUNTIME_CONFIG} (adaptive mode, handoff on)")
     plan = [{"path": t.rel, "action": "create" if t.status == "missing" else "update"} for t in changes]
@@ -575,12 +607,17 @@ def main(argv=None):
         if args.command == "check":
             extra = extras(config, targets)
             settings = settings_status(config)
-            payload = {"command": "check", "drift": bool(changes), "settings": settings, "extra": extra,
+            # Registrations that setup would add or fix (not "unknown": an unreadable file is not diagnosed)
+            unregistered = settings in ("not-registered", "async-duplicate")
+            drift = bool(changes) or unregistered
+            payload = {"command": "check", "drift": drift, "settings": settings, "extra": extra,
                        "targets": [{"path": t.rel, "status": t.status} for t in targets]}
             lines = [f"{t.status:<9} {t.rel}" for t in targets] + [f"{'extra':<9} {rel}" for rel in extra]
-            lines += [f"settings  {settings}", f"drift: {'yes' if changes else 'no'}"]
+            lines += [f"settings  {settings}", f"drift: {'yes' if drift else 'no'}"]
+            if unregistered:
+                lines.append("next: run python install.py setup to register the hooks in settings.json")
             emit(args, payload, lines)
-            return 1 if changes else 0
+            return 1 if drift else 0
         plan = [{"path": t.rel, "action": "create" if t.status == "missing" else "update"} for t in changes]
         if args.dry_run or not changes:
             keep = to_keep(config, changes)

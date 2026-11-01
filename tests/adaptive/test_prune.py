@@ -811,6 +811,87 @@ class FactsPruneTests(FixtureCase):
         self.assertTrue(session_dir(self.root, "live").is_dir())
 
 
+class AcceptancePushesPruneTests(FixtureCase):
+    """cache/acceptance/<session>.pushes counters (hooks/acceptance-gate) are not part of any session dir:
+    prune removes the stale ones and nothing else."""
+
+    def setUp(self):
+        super().setUp()
+        self.cache = self.root / "cache"
+        self.counters = self.cache / "acceptance"
+        self.counters.mkdir(parents=True)
+
+    def put(self, path, days, text="2"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        age(path, days)
+        return path
+
+    def listed(self, result):
+        return sorted(Path(c["path"]).name for c in result["stale_acceptance_pushes"]["candidates"])
+
+    def test_stale_counters_are_listed_and_only_they_are_removed(self):
+        stale = [self.put(self.counters / "old-1.pushes", 40), self.put(self.counters / "Old2.pushes", 31, "")]
+        fresh = self.put(self.counters / "fresh.pushes", 2)
+        kept_session = self.put(self.counters / "current.pushes", 40)
+        # Same age, but not a counter of this folder: none of these may go.
+        others = [self.put(self.counters / "notes.txt", 40), self.put(self.counters / "old.jsonl", 40),
+                  self.put(self.counters / "old.pushes.bak", 40), self.put(self.counters / "bad name.pushes", 40),
+                  self.put(self.counters / ".pushes", 40), self.put(self.counters / "sub" / "deep.pushes", 40),
+                  self.put(self.cache / "root.pushes", 40), self.put(self.cache / "facts" / "f.pushes", 40),
+                  self.put(self.cache / "facts" / "f.jsonl", 40), self.put(self.root / "x.pushes", 40)]
+        (self.counters / "dir.pushes").mkdir()
+        dry = prune(self.root, acceptance_cache=self.counters, keep_session="current")
+        self.assertEqual(self.listed(dry), ["Old2.pushes", "old-1.pushes"])
+        self.assertTrue(all(p.exists() for p in [*stale, fresh, kept_session, *others]))
+        result = prune(self.root, acceptance_cache=self.counters, keep_session="current", apply=True)
+        report = result["stale_acceptance_pushes"]
+        self.assertEqual((report["removed"], report["errors"]), (2, []))
+        self.assertEqual([p for p in stale if p.exists()], [])
+        self.assertTrue(all(p.exists() for p in [fresh, kept_session, *others, self.counters / "dir.pushes"]))
+
+    def test_nothing_stale_reports_nothing(self):
+        self.put(self.counters / "fresh.pushes", 2)
+        self.assertNotIn("stale_acceptance_pushes", prune(self.root, acceptance_cache=self.counters, apply=True))
+        self.assertNotIn("stale_acceptance_pushes", prune(self.root, apply=True))
+
+    def test_the_expiry_age_decides(self):
+        counter = self.put(self.counters / "mid.pushes", 10)
+        self.assertNotIn("stale_acceptance_pushes", prune(self.root, acceptance_cache=self.counters))
+        result = prune(self.root, acceptance_cache=self.counters, expired_older_than_days=5)
+        self.assertEqual(self.listed(result), ["mid.pushes"])
+        self.assertTrue(counter.exists())
+
+    def test_counters_are_pruned_without_any_handoff_store(self):
+        # handoff off: no session dir exists, yet the gate still keeps counters
+        self.assertFalse(session_dir(self.root, "any").parent.exists())
+        counter = self.put(self.counters / "old.pushes", 40)
+        result = prune(self.root, acceptance_cache=self.counters, apply=True)
+        self.assertEqual(result["stale_acceptance_pushes"]["removed"], 1)
+        self.assertFalse(counter.exists())
+
+    def test_a_linked_counter_folder_is_never_followed(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        target = self.put(outside / "t.pushes", 40)
+        self.counters.rmdir()
+        if not make_link(outside, self.counters):
+            self.skipTest("OS permits neither symlinks nor junctions")
+        result = prune(self.root, acceptance_cache=self.counters, apply=True)
+        self.assertTrue(target.exists())
+        self.assertEqual(result["stale_acceptance_pushes"]["removed"], 0)
+        self.assertEqual(result["stale_acceptance_pushes"]["skipped"][0]["reason"], "LINKED_STORAGE")
+
+    def test_a_linked_counter_is_never_followed(self):
+        target = self.put(self.root / "elsewhere" / "t.pushes", 40)
+        link = self.counters / "linked.pushes"
+        if not make_link(target, link, directory=False):
+            self.skipTest("OS permits no file symlinks")
+        result = prune(self.root, acceptance_cache=self.counters, apply=True)
+        self.assertTrue(target.exists())
+        self.assertEqual(result["stale_acceptance_pushes"]["removed"], 0)
+
+
 class PruneCliTests(FixtureCase):
     def run_cli(self, *args):
         env = dict(os.environ, PYTHONPATH=str(REPO / "scripts"),
@@ -848,6 +929,22 @@ class PruneCliTests(FixtureCase):
         self.assertEqual((code, data["removed"]), (0, 1))
         self.assertFalse(spool.exists())
         self.assertTrue(other.exists())
+
+    def test_cli_prune_removes_stale_acceptance_counters_beside_the_config(self):
+        counters = self.config_path.parent / "cache" / "acceptance"
+        counters.mkdir(parents=True)
+        stale, fresh, other = counters / "old.pushes", counters / "new.pushes", counters / "old.txt"
+        for path in (stale, fresh, other):
+            path.write_text("1", encoding="utf-8")
+        for path in (stale, other):
+            age(path, 40)
+        code, data = self.run_cli("prune", "--workspace", str(self.root))
+        self.assertEqual((code, [Path(c["path"]).name for c in data["stale_acceptance_pushes"]["candidates"]]),
+                         (0, ["old.pushes"]))
+        self.assertTrue(stale.exists())
+        code, data = self.run_cli("prune", "--workspace", str(self.root), "--apply")
+        self.assertEqual((code, data["stale_acceptance_pushes"]["removed"]), (0, 1))
+        self.assertEqual([stale.exists(), fresh.exists(), other.exists()], [False, True, True])
 
     def test_cli_prune_honours_age_and_kept_session(self):
         self.aged("a", 5)
