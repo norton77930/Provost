@@ -1,0 +1,14 @@
+{
+ "title": "Every request goes to the cheapest agent that can do it.",
+ "node1": "main session", "node2": "classify",
+ "reqs": [
+  {"t": "Rename getUser in 12 files", "g": "mechanical · no risk · tests"},
+  {"t": "Find where tokens are refreshed", "g": "simple · no risk · review"},
+  {"t": "Add validation to the signup form", "g": "medium · no risk · live (browser)"},
+  {"t": "Handle expired tokens", "g": "medium · R1 error handling · review"},
+  {"t": "Change how login tokens are signed", "g": "hard · R2 crypto · review + architecture"}
+ ],
+ "tests": "tests", "readonly": "read-only", "live": "live browser",
+ "stop": "stops for you",
+ "strip_pre": "subagent cost ", "strip_num": "−68%", "strip_post": " vs. running them all on Opus · 10 days of real work"
+}

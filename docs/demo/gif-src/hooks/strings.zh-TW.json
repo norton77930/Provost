@@ -1,0 +1,18 @@
+{
+ "title": "Hook 留住決策，沒證明完成就不放行。",
+ "caps": [
+  "注入最新的 checkpoint：決策、分工、下一步",
+  "檢查派工的 brief 有引用 acceptance 檔案",
+  "記錄事實：改過的路徑、派工、commit（絕不存檔案內容）",
+  "壓縮之前，先把決策存下來",
+  "壓縮之後放回去，不必重講",
+  "gate 還沒過，就不放行這一輪",
+  "gate 通過了，這一輪才能結束"
+ ],
+ "log": "決策紀錄", "d": ["改名交給 mech-executor", "公開 API 保持不變", "實作完成後才做 review"],
+ "saved": "已存入 checkpoint", "restored": "已還原 ✓",
+ "context": "context", "limit": "上限", "compaction": "壓縮",
+ "gate": "gate", "pending": "live · pending", "passed": "live · ✓ passed",
+ "blocked": "擋下：gate 尚未通過", "ends": "這一輪結束",
+ "strip": "<b>44</b> 次壓縮 · <b>0</b> 次需要重講"
+}

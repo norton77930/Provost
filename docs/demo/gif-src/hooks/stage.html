@@ -1,0 +1,186 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Provost hooks GIF</title>
+<style>
+:root{--bg:#151311;--card:#1c1a17;--line:#35302b;--fg:#f3efe6;--muted:#8f8a80;--ok:#4ade80;--red:#f2704f;--amber:#ff9f43}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);overflow:hidden;color:var(--fg);
+ font-family:"Segoe UI","Inter",Arial,"Microsoft JhengHei","Noto Sans TC",sans-serif}
+.mono{font-family:"Cascadia Mono",Consolas,"Microsoft JhengHei","Noto Sans TC",monospace}
+#stage{position:absolute;left:0;top:0;width:1600px;height:900px;background:var(--bg);overflow:hidden}
+.abs{position:absolute}
+#title{left:0;right:0;top:22px;text-align:center;font-size:46px;font-weight:800;letter-spacing:-.01em;white-space:nowrap}
+#cap{width:660px;padding:16px 24px 18px;border-radius:18px;background:var(--card);border:3px solid var(--c);transform-origin:50% 100%}
+#cap .h{font-size:26px;font-weight:800;color:var(--c)}
+#cap .x{font-size:29px;line-height:1.3;margin-top:6px;font-weight:600}
+#axis{left:80px;top:357px;width:1440px;height:6px;border-radius:3px;background:var(--line)}
+#trail{left:80px;top:357px;height:6px;border-radius:3px;background:var(--ok)}
+.dot{width:34px;height:34px;border-radius:50%;border:4px solid var(--line);background:var(--bg);margin:-14px 0 0 -17px}
+.lab{width:260px;margin-left:-130px;text-align:center;font-size:23px;font-weight:700;top:390px}
+#ph{width:4px;top:340px;height:40px;background:#fff;margin-left:-2px;border-radius:2px}
+#phh{width:0;height:0;border-left:11px solid transparent;border-right:11px solid transparent;border-top:16px solid #fff;margin-left:-11px;top:330px}
+#gtrack{left:210px;top:452px;width:1310px;height:36px;border-radius:18px;background:#26221e;border:2px solid var(--line);overflow:hidden}
+#gfill{left:0;top:0;bottom:0;border-radius:18px}
+#glab{left:80px;top:450px;font-size:25px;color:var(--muted);font-weight:600}
+#gtick{left:1470px;top:444px;width:3px;height:52px;background:#ff6b57}
+#glim{left:1380px;width:180px;text-align:center;top:496px;font-size:22px;color:#ff8a78}
+#gchip{top:456px;padding:0 16px;height:28px;line-height:28px;border-radius:14px;background:var(--amber);color:#1a1209;font-weight:800;font-size:22px;white-space:nowrap}
+.box{top:540px;height:252px;border-radius:20px;background:var(--card);border:2px solid var(--line);padding:16px 24px}
+.box .hd{font-size:28px;font-weight:800;line-height:1.2}
+#logbox{left:40px;width:740px}
+#gatebox{left:820px;width:740px}
+.badge{position:absolute;right:24px;top:14px;font-size:23px;font-weight:700;padding:3px 14px;border-radius:12px}
+.row{height:50px;margin-top:8px;border-radius:12px;border:2px dashed #2b2723;display:flex;align-items:center;gap:14px;padding:0 14px;font-size:27px}
+.row .id{font-weight:800;padding:2px 10px;border-radius:9px;background:#2b3a30;color:var(--ok);font-size:24px}
+.chip{display:inline-block;font-size:30px;font-weight:800;padding:6px 20px;border-radius:14px;white-space:nowrap}
+.strip{left:40px;top:812px;width:1520px;height:70px;border-radius:18px;border:2px solid #2f7a4d;background:#14211a;
+ display:flex;align-items:center;justify-content:center;font-size:34px;font-weight:600;opacity:0;white-space:nowrap}
+.strip b{color:var(--ok);font-weight:800;margin:0 4px}
+</style></head><body>
+<div id="stage">
+ <div id="title" class="abs"></div>
+ <div id="cap" class="abs"><div class="h mono"></div><div class="x"></div></div>
+ <div id="capline" class="abs" style="width:3px;top:300px;height:44px;margin-left:-1px"></div>
+ <div id="axis" class="abs"></div><div id="trail" class="abs"></div>
+ <div id="markers"></div>
+ <div id="ph" class="abs"></div><div id="phh" class="abs"></div>
+ <div id="glab" class="abs"></div>
+ <div id="gtrack" class="abs"><div id="gfill" class="abs"></div></div>
+ <div id="gtick" class="abs"></div><div id="glim" class="abs"></div><div id="gchip" class="abs mono"></div>
+ <div id="logbox" class="box abs"><div class="hd" id="loghd"></div><div class="badge" id="badge"></div><div id="rows"></div></div>
+ <div id="gatebox" class="box abs"><div class="hd" id="gatehd"></div>
+   <div style="margin-top:20px"><span class="chip mono" id="gstat"></span></div>
+   <div style="margin-top:22px"><span class="chip mono" id="stopchip" style="opacity:0"></span></div></div>
+ <div id="strip" class="strip abs"></div>
+</div>
+<script>
+const lang = new URLSearchParams(location.search).get('lang') || 'en';
+const clamp = x => Math.max(0, Math.min(1, x));
+const prog = (t, a, b) => clamp((t - a) / (b - a));
+const eo = p => 1 - Math.pow(1 - p, 3);
+const lerp = (a, b, p) => a + (b - a) * p;
+const HOOKS = [
+ ['SessionStart', 130, 0.9, '#79b8ff'], ['PreToolUse(Agent)', 390, 2.6, '#e6c34a'], ['PostToolUse', 650, 4.3, '#a78bfa'],
+ ['PreCompact', 910, 6.2, '#ff9f43'], ['PostCompact', 1170, 7.9, '#4ade80'], ['Stop', 1430, 9.5, '#f2704f']];
+const CAPS = [[0, 0.9], [1, 2.6], [2, 4.3], [3, 6.2], [4, 7.9], [5, 9.5], [5, 10.6]];   // [hook idx, start]
+const LOGT = [1.5, 3.1, 4.8];
+const T_BLOCK = 9.7, T_GATE = 10.4, T_ENDS = 10.6, T_STRIP = 11.3, T_DROP = [6.6, 7.4];
+let S;
+const $ = id => document.getElementById(id);
+const pos = (el, l, t) => { if (l !== null) el.style.left = l + 'px'; if (t !== null) el.style.top = t + 'px'; };
+
+async function init() {
+  S = await (await fetch(`strings.${lang}.json`)).json();
+  $('title').textContent = S.title;
+  $('glab').textContent = S.context; $('glim').textContent = S.limit; $('gchip').textContent = S.compaction;
+  $('loghd').textContent = S.log; $('gatehd').textContent = S.gate;
+  $('strip').innerHTML = `<span>${S.strip}</span>`;
+  HOOKS.forEach(([n, x], i) => {
+    const d = document.createElement('div'); d.className = 'dot abs'; d.id = 'dot' + i; pos(d, x, 360); $('markers').appendChild(d);
+    const l = document.createElement('div'); l.className = 'lab abs mono'; l.id = 'lab' + i; l.textContent = n; pos(l, x, null); $('markers').appendChild(l);
+  });
+  S.d.forEach((txt, i) => {
+    const r = document.createElement('div'); r.className = 'row'; r.id = 'row' + i;
+    r.innerHTML = `<span class="id" style="visibility:hidden">D${i + 1}</span><span class="tx" style="visibility:hidden">${txt}</span>`;
+    $('rows').appendChild(r);
+  });
+  window.ready = document.fonts.ready.then(() => true);
+}
+window.ready = undefined;
+init();
+
+function playheadX(t) {
+  const pts = [[0.1, 80], [0.9, 130]].concat(HOOKS.slice(1).map(h => [h[2], h[1]]));
+  if (t <= pts[0][0]) return 80;
+  for (let i = 1; i < pts.length; i++) if (t <= pts[i][0]) return lerp(pts[i - 1][1], pts[i][1], (t - pts[i - 1][0]) / (pts[i][0] - pts[i - 1][0]));
+  return 1430;
+}
+function gauge(t) {
+  if (t < 4.3) return lerp(0.07, 0.2, prog(t, 0.5, 4.3));
+  if (t < T_DROP[0]) return lerp(0.2, 0.94, eo(prog(t, 4.4, 6.0)));
+  if (t < T_DROP[1]) return lerp(0.94, 0.13, eo(prog(t, T_DROP[0], T_DROP[1])));
+  return lerp(0.13, 0.2, prog(t, 7.4, 12));
+}
+function gcolor(v) { return v < 0.55 ? '#4ade80' : v < 0.8 ? '#e6c34a' : '#f2704f'; }
+
+function render(t) {
+  // playhead + trail
+  const px = playheadX(t);
+  $('ph').style.left = px + 'px'; $('phh').style.left = px + 'px';
+  $('trail').style.width = (px - 80) + 'px';
+  // hooks
+  HOOKS.forEach(([n, x, T, col], i) => {
+    const on = eo(prog(t, T - 0.05, T + 0.25));
+    const d = $('dot' + i);
+    let c = col;
+    if (i === 5) c = t >= T_ENDS ? '#4ade80' : '#f2704f';
+    d.style.borderColor = on > 0 ? c : '#35302b';
+    d.style.background = on > 0 ? c : '#151311';
+    d.style.transform = `scale(${1 + 0.5 * Math.sin(Math.PI * prog(t, T - 0.05, T + 0.5))})`;
+    d.style.boxShadow = on > 0.5 ? `0 0 ${18 * on}px ${c}88` : 'none';
+    const l = $('lab' + i); l.style.opacity = 0.4 + 0.6 * on; l.style.color = on > 0 ? c : '#f3efe6';
+  });
+  // caption
+  let ci = -1; CAPS.forEach((c, k) => { if (t >= c[1]) ci = k; });
+  const cap = $('cap');
+  if (ci < 0) { cap.style.opacity = 0; $('capline').style.opacity = 0; }
+  else {
+    const [hi, st] = CAPS[ci]; const h = HOOKS[hi];
+    let col = h[3]; if (hi === 5) col = ci === 6 ? '#4ade80' : '#f2704f';
+    cap.style.setProperty('--c', col);
+    cap.querySelector('.h').textContent = h[0] + (hi === 5 && ci === 6 ? ' ✓' : '');
+    cap.querySelector('.x').textContent = S.caps[ci];
+    const p = eo(prog(t, st, st + 0.28));
+    cap.style.opacity = p; cap.style.transform = `scale(${0.9 + 0.1 * p})`;
+    const w = 660 + 54, hgt = cap.offsetHeight;
+    cap.style.left = Math.max(40, Math.min(1560 - 660 - 6, h[1] - 330)) + 'px';
+    cap.style.top = (296 - hgt) + 'px';
+    const cl = $('capline'); cl.style.left = h[1] + 'px'; cl.style.background = col; cl.style.opacity = p;
+  }
+  // gauge
+  const v = gauge(t);
+  const gf = $('gfill'); gf.style.width = (v * 100) + '%'; gf.style.background = gcolor(v);
+  const dropping = t >= 6.35 && t < 7.6;
+  $('gchip').style.opacity = dropping ? 1 : 0; $('gchip').style.left = '1180px';
+  $('gtrack').style.borderColor = v > 0.85 ? '#f2704f' : '#35302b';
+  // decision log
+  LOGT.forEach((tt, i) => {
+    const r = $('row' + i), p = eo(prog(t, tt, tt + 0.35));
+    r.querySelector('.id').style.visibility = p > 0 ? 'visible' : 'hidden';
+    r.querySelector('.tx').style.visibility = p > 0 ? 'visible' : 'hidden';
+    r.style.opacity = p > 0 ? 1 : 0.55;
+    r.style.border = p > 0 ? '2px solid #2f7a4d' : '2px dashed #2b2723';
+    r.style.background = p > 0 ? `rgba(74,222,128,${0.10 + 0.08 * Math.sin(Math.PI * prog(t, tt, tt + 0.7))})` : 'transparent';
+    r.style.transform = `translateX(${(1 - p) * -30}px)`;
+    // restore flash after PostCompact
+    const fl = Math.sin(Math.PI * prog(t, 7.9 + i * 0.12, 8.5 + i * 0.12));
+    if (fl > 0) r.style.boxShadow = `0 0 ${22 * fl}px rgba(74,222,128,${0.5 * fl})`; else r.style.boxShadow = 'none';
+  });
+  const bd = $('badge');
+  if (t >= 7.9) { bd.textContent = S.restored; bd.style.background = '#1d3a28'; bd.style.color = '#4ade80'; bd.style.opacity = eo(prog(t, 7.9, 8.2)); }
+  else if (t >= 6.3) { bd.textContent = S.saved; bd.style.background = '#3a2c14'; bd.style.color = '#ff9f43'; bd.style.opacity = eo(prog(t, 6.3, 6.6)); }
+  else bd.style.opacity = 0;
+  $('logbox').style.borderColor = (t >= 6.3 && t < 8.6) ? '#2f7a4d' : '#35302b';
+  // gate
+  const gp = t >= T_GATE;
+  const gs = $('gstat');
+  gs.textContent = gp ? S.passed : S.pending;
+  gs.style.color = gp ? '#4ade80' : '#ff9f43'; gs.style.background = gp ? '#1d3a28' : '#3a2c14';
+  const gatebox = $('gatebox'); const gon = eo(prog(t, 8.6, 9.2));
+  gatebox.style.opacity = 0.4 + 0.6 * gon;
+  gatebox.style.borderColor = gon > 0 ? (gp ? '#2f7a4d' : '#6b3a20') : '#35302b';
+  const sc = $('stopchip');
+  if (t >= T_BLOCK && t < T_ENDS) {
+    const p = eo(prog(t, T_BLOCK, T_BLOCK + 0.2));
+    const shake = t < T_BLOCK + 0.8 ? Math.sin((t - T_BLOCK) * 38) * 14 * (1 - (t - T_BLOCK) / 0.8) : 0;
+    sc.textContent = '⛔ ' + S.blocked; sc.style.color = '#ff7a63'; sc.style.background = '#3d1f19';
+    sc.style.opacity = p; sc.style.transform = `translateX(${shake}px)`;
+  } else if (t >= T_ENDS) {
+    sc.textContent = '✓ ' + S.ends; sc.style.color = '#4ade80'; sc.style.background = '#1d3a28';
+    const p = eo(prog(t, T_ENDS, T_ENDS + 0.25)); sc.style.opacity = p; sc.style.transform = `scale(${0.92 + 0.08 * p})`;
+  } else sc.style.opacity = 0;
+  // closing strip
+  const sp = eo(prog(t, T_STRIP, T_STRIP + 0.5));
+  $('strip').style.opacity = sp; $('strip').style.transform = `translateY(${(1 - sp) * 14}px)`;
+}
+window.render = render;
+</script></body></html>

@@ -1,0 +1,18 @@
+{
+ "title": "Hooks keep the decisions and hold the turn until it's proven.",
+ "caps": [
+  "injects the latest checkpoint: decisions, assignments, next step",
+  "checks the brief cites the acceptance file",
+  "records facts: edited paths, dispatches, commits (never file contents)",
+  "saves decisions before compaction",
+  "puts them back; nothing to re-explain",
+  "holds the turn while a gate is pending",
+  "gate passed, so the turn may end"
+ ],
+ "log": "decision log", "d": ["rename goes to mech-executor", "keep the public API unchanged", "review after the implementer"],
+ "saved": "saved to checkpoint", "restored": "restored ✓",
+ "context": "context", "limit": "limit", "compaction": "compaction",
+ "gate": "gate", "pending": "live · pending", "passed": "live · ✓ passed",
+ "blocked": "blocked: gate pending", "ends": "turn ends",
+ "strip": "<b>44</b> compactions · <b>0</b> times re-explaining"
+}
