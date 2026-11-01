@@ -14,6 +14,19 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Added
 
+- Reviewer eval lessons from pstack (#56): `reviewer-eval.js run --inject
+  DEST=SRC` puts files such as the current `REVIEW.md` into the archived tree, so
+  an eval sees the context a real review sees; the temp tree is now `wt-*` with
+  the diff at `.changes/change.patch`, so no path says "review" or "eval". New
+  `rescore --run NAME[,NAME]` re-scores saved reports with a blind judge model
+  (default `sonnet`) that sees only the expected defect, the fix diff and the
+  findings relabelled F1, F2…, next to the ±10-line score. `run` and `rescore`
+  append a row to `evals/reviewer/decisions.tsv` (`--hypothesis`, empty
+  `verdict`). Temp-tree cleanup retries and no longer aborts a run on EPERM.
+- `code-reviewer` gives each `Important` finding a `Reproduce:` line (or
+  `Reproduce: none — <why>`); §3 adds the `unproven` disposition for a finding
+  whose reproduction does not show the failure, handled as a `Nit`; and
+  `dispatch-report.js --reviews` counts `unproven` and includes it in precision.
 - Acceptance gates, first slice (#44): `hooks/acceptance-gate`, registered for
   `Stop` as a synchronous hook, blocks the main turn end while an acceptance file
   the session wrote (`<cwd>/.claude/acceptance/*.json`, written by its main

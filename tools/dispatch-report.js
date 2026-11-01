@@ -4,7 +4,7 @@
 // Reads ~/.claude/projects/*/<session>.jsonl and <session>/subagents/*. Read-only.
 // --reviews lists code-reviewer dispatches instead: Important findings (the number after "Important" in the report's
 // counts line, else the distinct I<n> ids) and the "Dispositions: I1 fixed; I2 rejected — why" line main writes after
-// it; per-model precision on stderr. tagged=no marks a report with neither (its important=0 means unknown), and
+// it (outcomes: fixed, rejected, intentional, moot, unproven); per-model precision on stderr. tagged=no marks a report with neither (its important=0 means unknown), and
 // precision covers tagged reviews only.
 // A code-reviewer that ran in the background returns only "Async agent launched"; its report is then the message of
 // the subagent's last SubagentHandback call (else its last assistant text). --reviews --reports <dir> saves each report (redacted) as
@@ -124,7 +124,7 @@ async function scanSession(projectDir, file) {
   return rows.filter(r => !r.skip);
 }
 
-const OUTCOMES = ["fixed", "rejected", "intentional", "moot"];
+const OUTCOMES = ["fixed", "rejected", "intentional", "moot", "unproven"];
 const resultText = c => typeof c.content === "string" ? c.content
   : (Array.isArray(c.content) ? c.content.filter(b => b && b.type === "text").map(b => b.text).join("\n") : "");
 
@@ -177,7 +177,7 @@ async function scanReviews(projectDir, file) {
           last.disp = true;
           const line = c.text.split("\n").find(l => /^\s*Dispositions:/.test(l));
           for (const e of line.replace(/^\s*Dispositions:/, "").split(";")) {
-            const m = /^\s*I(\d+)\s+(fixed|rejected|intentional|moot)\b/.exec(e);
+            const m = /^\s*I(\d+)\s+(fixed|rejected|intentional|moot|unproven)\b/.exec(e);
             if (m) last.out["I" + m[1]] = m[2];
           }
         }
@@ -244,11 +244,11 @@ async function scanReviews(projectDir, file) {
   if (reviews) {
     const byModel = {}, prec = {}; // precision counts only tagged reviews
     for (const r of all) {
-      const m = byModel[r.model] = byModel[r.model] || { reviews: 0, important: 0, fixed: 0, rejected: 0, intentional: 0, moot: 0, unrecorded: 0, tagged: 0 };
+      const m = byModel[r.model] = byModel[r.model] || { reviews: 0, important: 0, fixed: 0, rejected: 0, intentional: 0, moot: 0, unproven: 0, unrecorded: 0, tagged: 0 };
       const p = prec[r.model] = prec[r.model] || { fixed: 0, dec: 0 };
       m.reviews++;
       for (const k of Object.keys(m)) if (k !== "reviews" && k !== "tagged") m[k] += r[k];
-      if (r.tagged === "yes") { m.tagged++; p.fixed += r.fixed; p.dec += r.fixed + r.rejected + r.intentional + r.moot; }
+      if (r.tagged === "yes") { m.tagged++; p.fixed += r.fixed; p.dec += r.fixed + r.rejected + r.intentional + r.moot + r.unproven; }
     }
     console.error(`
 ${all.length} reviews since ${since.toISOString().slice(0, 10)}` + (untilArg ? ` through ${untilArg}` : ""));

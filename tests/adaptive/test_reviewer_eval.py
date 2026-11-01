@@ -21,15 +21,45 @@ FAKE_CLI = r"""
 const fs = require("fs"), path = require("path");
 const stdin = fs.readFileSync(0, "utf8");
 const cwd = process.cwd();
-const diff = path.join(cwd, ".review", "diff.patch");
+const diff = path.join(cwd, ".changes", "change.patch");
 fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({
   cwd, args: process.argv.slice(2), stdin,
   diff: fs.existsSync(diff) ? fs.readFileSync(diff, "utf8") : null,
   app: fs.existsSync(path.join(cwd, "src", "app.js")) ? fs.readFileSync(path.join(cwd, "src", "app.js"), "utf8") : null,
+  review: fs.existsSync(path.join(cwd, "REVIEW.md")) ? fs.readFileSync(path.join(cwd, "REVIEW.md"), "utf8") : null,
+  notes: fs.existsSync(path.join(cwd, "ctx", "notes.md")) ? fs.readFileSync(path.join(cwd, "ctx", "notes.md"), "utf8") : null,
+  review: fs.existsSync(path.join(cwd, "REVIEW.md")) ? fs.readFileSync(path.join(cwd, "REVIEW.md"), "utf8") : null,
+  notes: fs.existsSync(path.join(cwd, "ctx", "notes.md")) ? fs.readFileSync(path.join(cwd, "ctx", "notes.md"), "utf8") : null,
 }) + "\n");
 const reply = JSON.parse(fs.readFileSync(path.join(cwd, "reply.json"), "utf8"));
 if (reply.exit) { process.stderr.write("boom"); process.exit(reply.exit); }
 process.stdout.write(JSON.stringify({ type: "result", is_error: false, total_cost_usd: reply.cost, result: reply.text }));
+"""
+
+# Stands in for the judge: logs the call (cwd contents included) and answers by the first marker of FAKE_JUDGE_MAP
+# (a JSON file {marker: {text, cost}}) found in the prompt.
+FAKE_JUDGE = r"""
+const fs = require("fs");
+const stdin = fs.readFileSync(0, "utf8");
+fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({
+  cwd: process.cwd(), cwdFiles: fs.readdirSync(process.cwd()), args: process.argv.slice(2), stdin }) + "\n");
+const map = JSON.parse(fs.readFileSync(process.env.FAKE_JUDGE_MAP, "utf8"));
+const key = Object.keys(map).find(k => stdin.includes(k));
+if (!key) { process.stderr.write("no marker"); process.exit(4); }
+process.stdout.write(JSON.stringify({ type: "result", is_error: false, total_cost_usd: map[key].cost, result: map[key].text }));
+"""
+
+# Stands in for the judge: logs the call (cwd contents included) and answers by the first marker of FAKE_JUDGE_MAP
+# (a JSON file {marker: {text, cost}}) found in the prompt.
+FAKE_JUDGE = r"""
+const fs = require("fs");
+const stdin = fs.readFileSync(0, "utf8");
+fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({
+  cwd: process.cwd(), cwdFiles: fs.readdirSync(process.cwd()), args: process.argv.slice(2), stdin }) + "\n");
+const map = JSON.parse(fs.readFileSync(process.env.FAKE_JUDGE_MAP, "utf8"));
+const key = Object.keys(map).find(k => stdin.includes(k));
+if (!key) { process.stderr.write("no marker"); process.exit(4); }
+process.stdout.write(JSON.stringify({ type: "result", is_error: false, total_cost_usd: map[key].cost, result: map[key].text }));
 """
 
 REPLIES = {
@@ -61,9 +91,13 @@ class ReviewerEvalTest(unittest.TestCase):
         self.fake = self.tmp / "fake" / "claude.js"
         self.fake.parent.mkdir()
         self.fake.write_text(FAKE_CLI, encoding="utf-8")
+        self.judge = self.tmp / "fake" / "judge.js"
+        self.judge.write_text(FAKE_JUDGE, encoding="utf-8")
+        self.judge_map = self.tmp / "judge_map.json"
         self.env = {k: v for k, v in os.environ.items() if k not in GIT_REPO_ENV}
         self.env.update(HOME=str(self.home), USERPROFILE=str(self.home), TMP=str(self.scratch),
-                        TEMP=str(self.scratch), TMPDIR=str(self.scratch), FAKE_LOG=str(self.log))
+                        TEMP=str(self.scratch), TMPDIR=str(self.scratch), FAKE_LOG=str(self.log),
+                        FAKE_JUDGE_MAP=str(self.judge_map))
         agents = self.home / ".claude" / "agents"
         agents.mkdir(parents=True)
         (agents / "code-reviewer.md").write_text(
@@ -71,7 +105,8 @@ class ReviewerEvalTest(unittest.TestCase):
             encoding="utf-8")
         self.git("init", "-q")
         self.git("checkout", "-q", "-b", "main")
-        self.write({"src/app.js": "".join(f"line {i}\n" for i in range(1, 31)), "reply.json": "{}"})
+        self.write({"src/app.js": "".join(f"line {i}\n" for i in range(1, 31)), "reply.json": "{}",
+                    "REVIEW.md": "archived review\n"})
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "init")
         self.cases = {}
@@ -170,7 +205,10 @@ class ReviewerEvalTest(unittest.TestCase):
             self.assertEqual(a[a.index("--effort") + 1], "high")
             self.assertTrue(Path(call["cwd"]).resolve().is_relative_to(self.scratch.resolve()), call["cwd"])
             self.assertFalse(Path(call["cwd"]).exists(), "temporary checkout left behind")
-            self.assertIn(".review/diff.patch", call["stdin"])
+            self.assertIn(".changes/change.patch", call["stdin"])
+            self.assertNotIn(".review", call["stdin"])
+            self.assertNotIn("eval", call["stdin"].lower())
+            self.assertTrue(Path(call["cwd"]).name.startswith("wt-"), call["cwd"])
             self.assertIn("I1", call["stdin"])
         first = calls[0]
         self.assertIn("Claim to review: claim for a-hit", first["stdin"])
@@ -178,7 +216,7 @@ class ReviewerEvalTest(unittest.TestCase):
         self.assertIn("diff --git a/src/app.js b/src/app.js", first["diff"])
         self.assertIn("+line 10 a-hit", first["diff"])
         # Only the tool's own checkouts: git/Windows may leave unrelated GUID dirs in TMP.
-        self.assertEqual(list(self.scratch.glob("provost-reval-*")), [])
+        self.assertEqual(list(self.scratch.glob("wt-*")), [])
         self.assertEqual(self.repo_state(), before)
 
         # The run TSV lands under the fixture HOME.
@@ -229,6 +267,164 @@ class ReviewerEvalTest(unittest.TestCase):
         self.assertTrue(lines[0].endswith("| status | report |"), lines[0])
         self.assertIn("| a-hit |", lines[2])
         self.assertRegex(lines[2], r"\| \d{8}T\d{6}-run/a-hit\.md \|$")
+
+    def run_raw(self, *args):
+        return subprocess.run(["node", str(TOOL), *args], env=self.env, capture_output=True, text=True,
+                              encoding="utf-8")
+
+    def test_inject_copies_and_overrides(self):
+        self.build_cases()
+        local = self.tmp / "local"
+        local.mkdir()
+        (local / "REVIEW.md").write_text("local rules\n", encoding="utf-8")
+        (local / "n.md").write_text("notes\n", encoding="utf-8")
+        rows, err = self.run_tool("--ids", "a-hit", "--inject", f"REVIEW.md={local / 'REVIEW.md'}",
+                                  "--inject", f"ctx/notes.md={local / 'n.md'}")
+        call = self.calls()[0]
+        self.assertEqual(call["review"].strip(), "local rules")  # overrides the archived file
+        self.assertEqual(call["notes"].strip(), "notes")  # parent dir created
+        self.assertIn("injected: REVIEW.md, ctx/notes.md", err)
+        self.assertEqual(list(self.scratch.glob("wt-*")), [])
+
+    def test_no_inject_keeps_archived_file(self):
+        self.build_cases()
+        rows, err = self.run_tool("--ids", "a-hit")
+        call = self.calls()[0]
+        self.assertEqual(call["review"].strip(), "archived review")
+        self.assertIsNone(call["notes"])
+        self.assertIn("injected: none", err)
+
+    def test_inject_rejects_bad_dest_and_missing_src(self):
+        self.build_cases()
+        src = self.tmp / "src.md"
+        src.write_text("x\n", encoding="utf-8")
+        for dest in ("../x", "a/../../x", "a\\..\\b", "/abs/x", "C:\\x"):
+            out = self.run_raw("run", "--claude", str(self.fake), "--ids", "a-hit", "--inject", f"{dest}={src}")
+            self.assertNotEqual(out.returncode, 0, dest)
+            self.assertIn("--inject DEST must", out.stderr, dest)
+        out = self.run_raw("run", "--claude", str(self.fake), "--ids", "a-hit", "--inject",
+                           f"REVIEW.md={self.tmp / 'missing.md'}")
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("SRC does not exist", out.stderr)
+        self.assertEqual(self.calls(), [])  # nothing ran
+
+    def decisions(self):
+        f = self.home / ".claude" / "provost" / "evals" / "reviewer" / "decisions.tsv"
+        lines = f.read_text(encoding="utf-8").splitlines()
+        cols = lines[0].split("\t")
+        return cols, [dict(zip(cols, ln.split("\t"))) for ln in lines[1:]]
+
+    def test_decisions_log_header_and_rows(self):
+        self.build_cases()
+        local = self.tmp / "REVIEW.md"
+        local.write_text("r\n", encoding="utf-8")
+        self.run_tool("--ids", "a-hit,d-clean-alarm", "--label", "base", "--hypothesis", "tabs\tand\nnewlines")
+        self.run_tool("--ids", "a-hit,d-clean-alarm", "--label", "inj", "--inject", f"REVIEW.md={local}")
+        cols, rows = self.decisions()
+        self.assertEqual(cols, ["utc", "command", "label", "hypothesis", "cases", "ok", "recall", "falseAlarm",
+                                "judgeYes", "costUsd", "injected", "verdict"])
+        self.assertEqual(len(rows), 2)  # one header only, one row per finished command
+        self.assertRegex(rows[0]["utc"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertEqual((rows[0]["command"], rows[0]["label"], rows[0]["hypothesis"]), ("run", "base", "tabs and newlines"))
+        self.assertEqual((rows[0]["cases"], rows[0]["ok"], rows[0]["recall"], rows[0]["falseAlarm"]), ("2", "2", "1/1", "1/1"))
+        self.assertEqual((rows[0]["costUsd"], rows[0]["injected"]), ("0.7500", "none"))
+        self.assertEqual((rows[1]["label"], rows[1]["injected"], rows[1]["hypothesis"]), ("inj", "REVIEW.md", ""))
+        self.assertEqual((rows[0]["verdict"], rows[1]["verdict"]), ("", ""))
+
+    # --- rescore ---------------------------------------------------------------------------------
+
+    def build_rescore(self):
+        app = (self.repo / "src" / "app.js").read_text(encoding="utf-8").replace("line 2\n", "line 2 fixed-marker\n")
+        self.write({"src/app.js": app})
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "fix guard")
+        fix = self.git("rev-parse", "--short=8", "HEAD")
+        exp = [{"file": "src/app.js", "lines": "2,9-10", "summary": f"guard missing; follow-up {fix}"}]
+        for cid, expected in (("r-yes", exp), ("r-no", exp), ("r-garbage", exp), ("r-zero", exp), ("r-clean", [])):
+            self.add_case(cid, {"cid": cid}, expected)
+        run = self.home / ".claude" / "provost" / "evals" / "reviewer" / "runs" / "20261101T000000-old"
+        run.mkdir(parents=True)
+        reports = {
+            "r-yes": "Important 1\n\n**I1** (Important) `src/app.js:20` YESMARK drops the guard.\n",
+            "r-no": "Important 1\n\nI1 lib/other.js:9 NOMARK races on close.\n",
+            "r-garbage": "Important 1\n\nI1 src/app.js:3 GARBMARK odd.\n",
+            "r-zero": "Important 0\n\nNo material finding.\n",
+            "r-clean": "Important 1\n\n### I1 src/app.js:4 CLEANMARK unchecked input\n",
+            "r-nocase": "Important 1\n\nI1 src/app.js:4 NOCASEMARK\n",
+        }
+        for cid, text in reports.items():
+            (run / f"{cid}.md").write_text(text, encoding="utf-8")
+        (run / "r-err.err.txt").write_text("cli exit 3\n", encoding="utf-8")
+        self.judge_map.write_text(json.dumps({
+            "YESMARK": {"cost": 0.1, "text": 'Looks the same.\n{"verdict":"yes","finding":"F1"}'},
+            "NOMARK": {"cost": 0.1, "text": '{"verdict":"no","finding":"none"}'},
+            "GARBMARK": {"cost": 0.1, "text": "I cannot say."},
+        }), encoding="utf-8")
+        return fix
+
+    def run_rescore(self, *args):
+        out = subprocess.run(["node", str(TOOL), "rescore", "--claude", str(self.judge), *args], env=self.env,
+                             capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stderr
+
+    def test_rescore_judges_blind(self):
+        fix = self.build_rescore()
+        err = self.run_rescore("--run", "20261101T000000-old", "--hypothesis", "old prompt")
+        calls = self.calls()
+        self.assertEqual(len(calls), 3)  # r-garbage, r-no, r-yes: not r-zero (no Important), r-clean, r-nocase
+        for call in calls:
+            a = call["args"]
+            self.assertIn("-p", a)
+            self.assertEqual(a[a.index("--model") + 1], "sonnet")
+            self.assertEqual(a[a.index("--tools") + 1], "")
+            self.assertEqual(a[a.index("--output-format") + 1], "json")
+            self.assertEqual(a[a.index("--permission-mode") + 1], "dontAsk")
+            self.assertIn("--no-session-persistence", a)
+            self.assertNotIn("--agent", a)
+            self.assertEqual(call["cwdFiles"], [])
+            self.assertTrue(Path(call["cwd"]).resolve().is_relative_to(self.scratch.resolve()), call["cwd"])
+            self.assertFalse(Path(call["cwd"]).exists(), "temporary judge dir left behind")
+            low = call["stdin"].lower()
+            for word in ("reviewer", "eval", "prompt", "20261101"):
+                self.assertNotIn(word, low)
+            self.assertNotIn("I1", call["stdin"])
+            self.assertIn("F1", call["stdin"])
+            self.assertIn("guard missing", call["stdin"])
+        yes = next(c for c in calls if "YESMARK" in c["stdin"])
+        self.assertIn(f"commit {fix}", yes["stdin"])
+        self.assertIn("+line 2 fixed-marker", yes["stdin"])  # the fix diff for the expected file
+        self.assertEqual(list(self.scratch.glob("wt-*")), [])
+
+        runs = self.home / ".claude" / "provost" / "evals" / "reviewer" / "runs"
+        lines = (runs / "20261101T000000-old.rescore.tsv").read_text(encoding="utf-8").splitlines()
+        cols = lines[0].split("\t")
+        self.assertEqual(cols, ["run", "id", "kind", "important", "lineHit", "fileHit", "judge", "finding", "costUsd", "status"])
+        by = {r["id"]: r for r in (dict(zip(cols, ln.split("\t"))) for ln in lines[1:] if not ln.startswith("#"))}
+        self.assertEqual(sorted(by), ["r-clean", "r-garbage", "r-no", "r-yes", "r-zero"])  # r-nocase / .err.txt skipped
+        pick = lambda r: (r["kind"], r["important"], r["lineHit"], r["fileHit"], r["judge"], r["finding"], r["costUsd"], r["status"])
+        self.assertEqual(pick(by["r-yes"]), ("defect", "1", "yes", "yes", "yes", "F1", "0.1000", "ok"))
+        self.assertEqual(pick(by["r-no"]), ("defect", "1", "no", "no", "no", "none", "0.1000", "ok"))
+        self.assertEqual(pick(by["r-garbage"]), ("defect", "1", "yes", "yes", "error", "", "0.1000", "ok"))
+        self.assertEqual(pick(by["r-zero"]), ("defect", "0", "no", "no", "no", "none", "0.0000", "ok"))
+        self.assertEqual(pick(by["r-clean"]), ("clean", "1", "", "", "", "", "0.0000", "ok"))
+        self.assertIn("lineHit=yes (2): judge yes 1, judge no 0, judge unsure 0, judge error 1", err)
+        self.assertIn("lineHit=no (2): judge yes 0, judge no 2, judge unsure 0, judge error 0", err)
+        self.assertIn("total cost: $0.3000", err)
+
+        cols, rows = self.decisions()
+        self.assertEqual(len(rows), 1)
+        r = rows[0]
+        self.assertEqual((r["command"], r["label"], r["hypothesis"], r["cases"], r["ok"]),
+                         ("rescore", "20261101T000000-old", "old prompt", "5", "5"))
+        self.assertEqual((r["recall"], r["falseAlarm"], r["judgeYes"], r["costUsd"], r["verdict"]),
+                         ("2/4", "1/1", "1/4", "0.3000", ""))
+
+    def test_rescore_max_cost_stops(self):
+        self.build_rescore()
+        err = self.run_rescore("--run", "20261101T000000-old", "--max-cost", "0.15")
+        self.assertEqual(len(self.calls()), 2)
+        self.assertIn("stopped by ceiling: yes", err)
 
 
 if __name__ == "__main__":

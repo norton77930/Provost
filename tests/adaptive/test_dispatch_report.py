@@ -100,19 +100,30 @@ class DispatchReportTests(unittest.TestCase):
     def test_reviews_mode_counts_findings_and_dispositions(self):
         self.reviews_fixture()
         out, err = self.run_report("--reviews", "--tsv")
-        self.assertEqual(out[0], "ts\tproject\tsession\tmodel\timportant\tfixed\trejected\tintentional\tmoot\tunrecorded\tdesc\ttagged\treport")
+        self.assertEqual(out[0], "ts\tproject\tsession\tmodel\timportant\tfixed\trejected\tintentional\tmoot\tunproven\tunrecorded\tdesc\ttagged\treport")
         self.assertEqual(out[1:], [
-            "2026-10-20 10:00\tproj-x\tabcdef12\tfable-5-1\t4\t1\t1\t1\t1\t0\tReview one\tyes\t",
-            "2026-10-20 11:00\tproj-x\tabcdef12\topus-5-5\t2\t0\t0\t0\t0\t2\tReview two\tyes\t",
+            "2026-10-20 10:00\tproj-x\tabcdef12\tfable-5-1\t4\t1\t1\t1\t1\t0\t0\tReview one\tyes\t",
+            "2026-10-20 11:00\tproj-x\tabcdef12\topus-5-5\t2\t0\t0\t0\t0\t0\t2\tReview two\tyes\t",
         ])
-        self.assertIn("fable-5-1: reviews=1 important=4 fixed=1 rejected=1 intentional=1 moot=1 unrecorded=0 tagged=1 precision=25%", err)
-        self.assertIn("opus-5-5: reviews=1 important=2 fixed=0 rejected=0 intentional=0 moot=0 unrecorded=2 tagged=1 precision=n/a", err)
+        self.assertIn("fable-5-1: reviews=1 important=4 fixed=1 rejected=1 intentional=1 moot=1 unproven=0 unrecorded=0 tagged=1 precision=25%", err)
+        self.assertIn("opus-5-5: reviews=1 important=2 fixed=0 rejected=0 intentional=0 moot=0 unproven=0 unrecorded=2 tagged=1 precision=n/a", err)
+
+    def test_reviews_mode_counts_unproven_and_lowers_precision(self):
+        jl(self.proj / f"{SESSION}.jsonl", [
+            dispatch("r1", "2026-10-20T10:00:00Z", "code-reviewer", "Review unproven"),
+            result("r1", "2026-10-20T10:05:00Z", "a1", "Report: 2 Important\nI1 a.py:1 bug\nI2 b.py:2 bug"),
+            say("2026-10-20T10:06:00Z", "Dispositions: I1 fixed; I2 unproven — test passed at head"),
+        ])
+        self.agent("a1", "claude-fable-5-1", "2026-10-20T10:00:05Z", "2026-10-20T10:04:05Z")
+        out, err = self.run_report("--reviews", "--tsv")
+        self.assertEqual(out[1:], ["2026-10-20 10:00\tproj-x\tabcdef12\tfable-5-1\t2\t1\t0\t0\t0\t1\t0\tReview unproven\tyes\t"])
+        self.assertIn("fable-5-1: reviews=1 important=2 fixed=1 rejected=0 intentional=0 moot=0 unproven=1 unrecorded=0 tagged=1 precision=50%", err)
 
     def test_reviews_mode_markdown_table(self):
         self.reviews_fixture()
         out, _ = self.run_report("--reviews")
         self.assertTrue(out[0].startswith("| ts | project | session | model | important |"))
-        self.assertEqual(out[1], "|" + "|".join(["---"] * 13) + "|")
+        self.assertEqual(out[1], "|" + "|".join(["---"] * 14) + "|")
         self.assertEqual(len(out), 4)
 
     def async_fixture(self):
@@ -133,8 +144,8 @@ class DispatchReportTests(unittest.TestCase):
     def test_reviews_mode_reads_report_of_background_dispatch(self):
         self.async_fixture()
         out, err = self.run_report("--reviews", "--tsv")
-        self.assertEqual(out[1:], ["2026-10-20 10:00\tproj-x\tabcdef12\tfable-5-1\t2\t1\t1\t0\t0\t0\tReview async\tyes\t"])
-        self.assertIn("fable-5-1: reviews=1 important=2 fixed=1 rejected=1 intentional=0 moot=0 unrecorded=0 tagged=1 precision=50%", err)
+        self.assertEqual(out[1:], ["2026-10-20 10:00\tproj-x\tabcdef12\tfable-5-1\t2\t1\t1\t0\t0\t0\t0\tReview async\tyes\t"])
+        self.assertIn("fable-5-1: reviews=1 important=2 fixed=1 rejected=1 intentional=0 moot=0 unproven=0 unrecorded=0 tagged=1 precision=50%", err)
 
     def test_reviews_mode_async_without_subagent_transcript_counts_zero(self):
         self.async_fixture()
@@ -190,19 +201,19 @@ class DispatchReportTests(unittest.TestCase):
                 self.handback_review(report)
                 out, _ = self.run_report("--reviews", "--tsv")
                 cells = out[1].split("\t")
-                self.assertEqual((cells[4], cells[11]), (expected, "yes"))
+                self.assertEqual((cells[4], cells[12]), (expected, "yes"))
 
     def test_reviews_mode_counts_line_dispositions_are_recorded(self):
         self.handback_review("Counts: Important 2 · Nit 0 · Pre-existing 0")
         out, err = self.run_report("--reviews", "--tsv")
-        self.assertEqual(out[1].split("\t")[4:10], ["2", "1", "1", "0", "0", "0"])
+        self.assertEqual(out[1].split("\t")[4:11], ["2", "1", "1", "0", "0", "0", "0"])
         self.assertIn("tagged=1 precision=50%", err)
 
     def test_reviews_mode_untagged_report_is_not_zero_findings(self):
         self.handback_review("Verdict: PASS. Nothing blocking.")
         out, err = self.run_report("--reviews", "--tsv")
         cells = out[1].split("\t")
-        self.assertEqual((cells[4], cells[11]), ("0", "no"))
+        self.assertEqual((cells[4], cells[12]), ("0", "no"))
         self.assertIn("reviews=1 important=0", err)
         self.assertIn("tagged=0 precision=n/a", err)
 
