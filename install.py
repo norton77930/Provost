@@ -213,6 +213,8 @@ def settings_status(config):
     """ok | not-registered | async-duplicate | unknown. Only hook command strings are inspected; nothing is printed."""
     try:
         data = json.loads((config / SETTINGS).read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return "not-registered"  # nothing is registered without the file; setup creates it
     except (OSError, ValueError):
         return "unknown"
     hooks = data.get("hooks") if isinstance(data, dict) else None
@@ -567,8 +569,10 @@ def run_setup(args, config, changes, report):
     would = "would " if args.dry_run else ""
     steps = ([f"{would}add the claudex-native markers to {POLICY_TARGET}"] if report["markers"] else [])
     steps += [f"{would}register the {event} hook in {SETTINGS}" for event in report["register"]]
+    reasons = {"Stop": "an async hook cannot block the turn end, and beside the sync one it spends a second push",
+               "PreToolUse": "an async hook cannot add context to the dispatch"}
     steps += [f"{would}drop the async acceptance-gate entry from {event} in {SETTINGS} "
-              "(it cannot block, and beside the sync one it spends a second push)"
+              f"({reasons.get(event, 'it must run synchronously')})"
               for event in report["drop_async"]]
     if report["runtime_config"] == "create":
         steps.append(f"{would}create {RUNTIME_CONFIG} (adaptive mode, handoff on)")
@@ -615,7 +619,7 @@ def main(argv=None):
             lines = [f"{t.status:<9} {t.rel}" for t in targets] + [f"{'extra':<9} {rel}" for rel in extra]
             lines += [f"settings  {settings}", f"drift: {'yes' if drift else 'no'}"]
             if unregistered:
-                lines.append("next: run python install.py setup to register the hooks in settings.json")
+                lines.append("next: run python install.py setup to fix the hook registrations in settings.json")
             emit(args, payload, lines)
             return 1 if drift else 0
         plan = [{"path": t.rel, "action": "create" if t.status == "missing" else "update"} for t in changes]

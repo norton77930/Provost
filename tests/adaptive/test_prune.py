@@ -862,6 +862,21 @@ class AcceptancePushesPruneTests(FixtureCase):
         self.assertEqual(self.listed(result), ["mid.pushes"])
         self.assertTrue(counter.exists())
 
+    def test_counters_are_pruned_beside_an_existing_store(self):
+        # the normal path: a sessions dir exists, so prune does not take the early return
+        bind(self.root, "old", {})
+        age(session_dir(self.root, "old") / "binding.json", 30)
+        stale = self.put(self.counters / "gone.pushes", 40)
+        fresh = self.put(self.counters / "fresh.pushes", 2)
+        other = self.put(self.counters / "notes.txt", 40)
+        dry = prune(self.root, acceptance_cache=self.counters)
+        self.assertEqual(len(dry["candidates"]), 1)
+        self.assertEqual(self.listed(dry), ["gone.pushes"])
+        self.assertTrue(stale.exists())
+        result = prune(self.root, acceptance_cache=self.counters, apply=True)
+        self.assertEqual((result["removed"], result["stale_acceptance_pushes"]["removed"]), (1, 1))
+        self.assertEqual([stale.exists(), fresh.exists(), other.exists()], [False, True, True])
+
     def test_counters_are_pruned_without_any_handoff_store(self):
         # handoff off: no session dir exists, yet the gate still keeps counters
         self.assertFalse(session_dir(self.root, "any").parent.exists())

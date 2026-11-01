@@ -770,9 +770,18 @@ class SettingsTests(InstallCase):
         code, out, _ = self.run_cli("check")
         self.assertIn("async", out)
 
-    def test_missing_or_unparsable_is_unknown(self):
-        self.assertEqual(self.settings(None), "unknown")
+    def test_unparsable_is_unknown(self):
         self.assertEqual(self.settings('{"env": {"TOKEN": "' + SECRET + '"'), "unknown")
+
+    def test_missing_settings_file_is_not_registered_and_drift(self):
+        # Nothing is registered without a settings.json: only setup can create it.
+        self.assertEqual(self.run_cli("install")[0], 0)
+        (self.config / "settings.json").unlink()
+        code, report = self.check_json()
+        self.assertEqual((code, report["settings"], report["drift"]), (1, "not-registered", True))
+        code, out, _ = self.run_cli("check")
+        self.assertEqual(code, 1)
+        self.assertIn("python install.py setup", out)
 
     def test_missing_registrations_are_drift_and_point_at_setup(self):
         # Files in sync, hooks not registered: only setup can fix that, so check exits non-zero and says so.
