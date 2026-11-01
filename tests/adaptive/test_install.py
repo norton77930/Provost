@@ -881,6 +881,65 @@ class SetupTests(InstallCase):
         self.assertEqual(sorted(plan["register"]), sorted(self.EVENTS))
         self.assertTrue(plan["dry_run"])
 
+    def test_lone_surrogate_in_config_path_is_a_one_line_error(self):
+        # Nothing is created: the path is only used to build the hook commands.
+        self.config = self.config.parent / "cl\udc80aude"
+        code, out, err = self.run_setup("--dry-run")
+        self.assertEqual(code, 2)
+        self.assertEqual(len(err.strip().splitlines()), 1, err)
+        self.assertTrue(err.startswith("install.py: error:"), err)
+        self.assertFalse(self.config.exists())
+
+    def test_shell_special_characters_in_config_path_are_refused(self):
+        # bash expands $, ` and \ inside the double quotes the hook command is written with.
+        base = self.config.parent
+        for char in ("$", "`", "\\"):
+            if char == "\\" and os.name == "nt":
+                continue  # a separator there, as_posix() never contains it
+            with self.subTest(char=char):
+                self.config = base / f"a{char}b"
+                code, out, err = self.run_setup("--dry-run")
+                self.assertEqual(code, 2)
+                self.assertEqual(len(err.strip().splitlines()), 1, err)
+                self.assertIn("register the hooks by hand", err)
+                self.assertFalse(self.config.exists())
+
+    def test_duplicate_key_settings_are_refused_and_nothing_written(self):
+        write(self.config / "settings.json", '{"env": {"TOKEN": "%s"}, "env": {}}' % SECRET)
+        before = self.snapshot()
+        code, _, err = self.run_setup()
+        self.assertEqual(code, 2)
+        self.assertIn("repeats a key", err)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.backups(), [])
+
+    def test_hooks_null_is_refused_and_nothing_written(self):
+        write(self.config / "settings.json", json.dumps({"env": {"TOKEN": SECRET}, "hooks": None}))
+        before = self.snapshot()
+        code, _, err = self.run_setup()
+        self.assertEqual(code, 2)
+        self.assertIn('"hooks" is not an object', err)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.backups(), [])
+
+    def test_failed_write_removes_a_settings_json_the_run_created(self):
+        (self.config / "settings.json").unlink()
+        before = self.snapshot()
+        real_replace = os.replace
+
+        def flaky(src, dst):
+            if Path(dst).name == "config.json":  # a later target than settings.json
+                raise OSError("disk full")
+            return real_replace(src, dst)
+
+        with mock.patch.object(install.os, "replace", flaky):
+            code, _, err = self.run_setup()
+        self.assertEqual(code, 2)
+        self.assertIn("rolled back", err)
+        self.assertFalse((self.config / "settings.json").exists())
+        after = {k: v for k, v in self.snapshot().items() if not k.startswith("provost/backups/")}
+        self.assertEqual(after, before)
+
     def test_failed_write_rolls_back_settings_too(self):
         before = self.snapshot()
         real_replace = os.replace

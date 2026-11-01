@@ -930,9 +930,9 @@ migrated entries as they are.
 
 ## Install and rollout
 
-A new installation uses `python install.py setup`, which also registers all seven
-hook entries (SessionStart, PreCompact, PostCompact, PostToolUse, UserPromptSubmit,
-and Stop twice: the async declaration scan and the synchronous
+A new installation uses `python install.py setup`, which also registers all eight
+hook entries (SessionStart, PreCompact, PostCompact, PreToolUse, PostToolUse,
+UserPromptSubmit, and Stop twice: the async declaration scan and the synchronous
 [acceptance gate](#acceptance-gates)) in `settings.json` and writes
 `provost/config.json`. `python install.py install` is for upgrading an existing
 installation and never touches `settings.json`. The full
@@ -1042,36 +1042,17 @@ SessionStart (resume or compact); from then on its facts, including the
 `git log --since` window of session commits, start at its first captured event,
 not at the session's real start.
 
-`python install.py setup` registers these hooks (together with SessionStart,
-PreCompact and PostCompact); the JSON below is for registering them by hand.
-
-```json
-{
-  "hooks": {
-    "PostToolUse": [
-      {"matcher": "Edit|Write|NotebookEdit|Agent|Bash|PowerShell|EnterWorktree|ExitWorktree", "hooks": [
-        {"type": "command", "command": "bash \"<runtime>/hooks/native-facts\"", "async": true, "timeout": 20}
-      ]}
-    ],
-    "UserPromptSubmit": [
-      {"hooks": [
-        {"type": "command", "command": "bash \"<runtime>/hooks/native-facts\"", "timeout": 10}
-      ]}
-    ],
-    "Stop": [
-      {"hooks": [
-        {"type": "command", "command": "bash \"<runtime>/hooks/native-event\"", "async": true, "timeout": 20}
-      ]}
-    ]
-  }
-}
-```
+`python install.py setup` registers every hook; to register them by hand, use the
+JSON under "What setup registers, to do it by hand" in the
+[README](../README.md#install). It lists all eight entries, including the two
+acceptance-gate ones described under [Acceptance gates](#acceptance-gates).
 
 `python install.py check` reports `settings: not-registered` until the
-`SessionStart`, `PostToolUse` and both `Stop` registrations (this one and the
-synchronous [acceptance gate](#acceptance-gates)) are all present.
+`SessionStart`, `PreToolUse`, `PostToolUse` and both `Stop` registrations (the async
+declaration scan and the synchronous [acceptance gate](#acceptance-gates)) are all
+present.
 
-Do not register either hook for `SubagentStop`. That event's context is delivered
+Do not register any of these hooks for `SubagentStop`. That event's context is delivered
 to the subagent's own conversation and keeps the subagent running, so it would loop
 the worker instead of reaching main.
 
