@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 // Runs code-reviewer headless on saved eval cases (#56) and scores its Important findings.
 // Usage: node reviewer-eval.js run [--cases-dir DIR] [--ids a,b] [--label NAME] [--max-cost USD]
-//             [--claude PATH] [--tsv]
+//             [--claude PATH] [--tsv] [--inject DEST=SRC]... [--hypothesis TEXT]
+//        node reviewer-eval.js rescore --run NAME[,NAME] [--judge-model MODEL] [--claude PATH] [--max-cost USD]
+//             [--cases-dir DIR] [--hypothesis TEXT]
 // Cases: <cases-dir>/<id>/case.json (default ~/.claude/provost/evals/reviewer/cases), written by
 // reviewer-cases.js save. Per case, sorted by id: `git archive <head>` is unpacked into a fresh temp dir
-// (the source repo is never checked out or changed), `git diff <base> <head>` goes to .review/diff.patch, and
+// (the source repo is never checked out or changed), `git diff <base> <head>` goes to .changes/change.patch, and
 // `claude -p --agent code-reviewer` reviews it read-only (Read, Glob, Grep) with model and effort from
-// ~/.claude/agents/code-reviewer.md. Hit = an Important finding (I<n>) cites an expected file within ±10 lines
+// ~/.claude/agents/code-reviewer.md. The temp dir is named wt-* and the prompt does not mention evaluation.
+// --inject DEST=SRC (repeatable) copies the local file SRC to <temp dir>/DEST after unpacking (overwriting an
+// archived file), so the reviewer sees the same context as in production (e.g. REVIEW.md); DEST must be relative
+// and free of `..`. Hit = an Important finding (I<n>) cites an expected file within ±10 lines
 // of an expected line; fileHit = it cites the file at all; a clean case (expected []) with any Important is a
 // false alarm. Rows go to stdout and ~/.claude/provost/evals/reviewer/runs/<UTC>-<label>.tsv; summary on stderr.
 // The reviewer's report per case is saved in runs/<UTC>-<label>/<id>.md (CLI result text verbatim; <id>.err.txt
@@ -16,12 +21,19 @@
 // A usage-limit reply (error exit whose result text matches /hit your .*limit/i) is recorded as
 // error:usage-limit and saved as <id>.err.txt; the run stops there and stderr lists the ids not run and a
 // ready `--ids` rerun list (the limit case first).
+// rescore re-judges saved reports (runs/<name>/<id>.md): the line-window score as in run, plus, for a defect
+// case with at least one Important finding, a blind judge (CLI, no tools, empty cwd) that sees only the expected
+// defect (with the fix diff when the summary says "follow-up <hash>") and the relabelled Important findings
+// and answers yes / no / unsure. Output: runs/<first-run>.rescore.tsv and a summary on stderr.
+// Both subcommands append one row to ~/.claude/provost/evals/reviewer/decisions.tsv (verdict left empty for a
+// person to fill; --hypothesis TEXT is recorded).
 const fs = require("fs"), path = require("path"), os = require("os");
 const { execFileSync, spawnSync } = require("child_process");
 
 const args = process.argv.slice(2);
 const cmd = args[0];
 const opt = (k, d) => { const i = args.indexOf(k); return i >= 0 && i + 1 < args.length ? args[i + 1] : d; };
+const optAll = k => args.flatMap((a, i) => a === k && i + 1 < args.length ? [args[i + 1]] : []);
 const die = m => { console.error(m); process.exit(1); };
 
 const EVALS = path.join(os.homedir(), ".claude", "provost", "evals", "reviewer");
@@ -76,18 +88,14 @@ function roleConfig() {
 }
 
 const prompt = c => [
-  `Review the change ${c.base}..${c.head} in this directory, a checkout of ${c.head}. The diff under review is in .review/diff.patch; read it first, then the changed files and their callers as needed.`,
+  `Review the change ${c.base}..${c.head} in this directory, a checkout of ${c.head}. The diff under review is in .changes/change.patch; read it first, then the changed files and their callers as needed.`,
   `Claim to review: ${c.claim}`,
   "Tag every finding Important, Nit or Pre-existing. Number Important findings I1, I2, … and cite each as path:line or path:line-line, relative to this directory. Report only; do not edit.",
 ].join("\n\n");
 
-function runClaude(cli, dir, c, role) {
-  const a = ["-p", "--agent", "code-reviewer", "--tools", TOOLS, "--allowedTools", TOOLS,
-    "--permission-mode", "dontAsk", "--output-format", "json", "--no-session-persistence"];
-  if (role.model) a.push("--model", role.model);
-  if (role.effort) a.push("--effort", role.effort);
+function spawnCli(cli, cwd, a, input) {
   const [bin, pre] = /\.[cm]?js$/i.test(cli) ? [process.execPath, [cli]] : [cli, []];
-  const r = spawnSync(bin, [...pre, ...a], { cwd: dir, input: prompt(c), encoding: "utf8", maxBuffer: 1 << 28, timeout: CLI_TIMEOUT_MS, windowsHide: true });
+  const r = spawnSync(bin, [...pre, ...a], { cwd, input, encoding: "utf8", maxBuffer: 1 << 28, timeout: CLI_TIMEOUT_MS, windowsHide: true });
   if (r.error) throw new Error(r.error.code === "ETIMEDOUT" ? "cli timeout" : `cli ${r.error.code || r.error.message}`);
   let out = null;
   try { out = JSON.parse(r.stdout); } catch { /* reported below */ }
@@ -101,6 +109,14 @@ function runClaude(cli, dir, c, role) {
   if (text === undefined) return { cost, raw, error: "cli output not json" };
   if (out.is_error) return { cost, text, raw, error: "cli is_error" };
   return { cost, text, raw };
+}
+
+function runClaude(cli, dir, c, role) {
+  const a = ["-p", "--agent", "code-reviewer", "--tools", TOOLS, "--allowedTools", TOOLS,
+    "--permission-mode", "dontAsk", "--output-format", "json", "--no-session-persistence"];
+  if (role.model) a.push("--model", role.model);
+  if (role.effort) a.push("--effort", role.effort);
+  return spawnCli(cli, dir, a, prompt(c));
 }
 
 const normPath = (p, dir) => {
@@ -167,7 +183,7 @@ function saveReport(rep, id, out) {
   return name ? `${rep.name}/${name}` : "";
 }
 
-function runCase(id, file, cli, role, rep) {
+function runCase(id, file, cli, role, rep, injects) {
   const row = { id, origin: "", kind: "", important: "", hit: "", fileHit: "", falseAlarm: "", cost: 0, status: "ok", report: "" };
   let c;
   try { c = JSON.parse(fs.readFileSync(file, "utf8")); } catch { row.status = "error:bad case.json"; return row; }
@@ -175,12 +191,17 @@ function runCase(id, file, cli, role, rep) {
   const expected = Array.isArray(c.expected) ? c.expected : [];
   row.kind = expected.length ? "defect" : "clean";
   if (!c.repo || !c.base || !c.head) { row.status = "error:case.json lacks repo/base/head"; return row; }
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "provost-reval-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wt-"));
   try {
     try {
       untar(git(c.repo, ["archive", "--format=tar", c.head], "buffer"), dir);
-      fs.mkdirSync(path.join(dir, ".review"), { recursive: true });
-      fs.writeFileSync(path.join(dir, ".review", "diff.patch"), git(c.repo, ["diff", "--no-color", c.base, c.head], "buffer"));
+      for (const [dest, src] of injects) {
+        const t = path.join(dir, dest);
+        fs.mkdirSync(path.dirname(t), { recursive: true });
+        fs.copyFileSync(src, t);
+      }
+      fs.mkdirSync(path.join(dir, ".changes"), { recursive: true });
+      fs.writeFileSync(path.join(dir, ".changes", "change.patch"), git(c.repo, ["diff", "--no-color", c.base, c.head], "buffer"));
     } catch (e) { row.status = "error:git " + String(e.stderr || e.message).trim().split("\n")[0]; return row; }
     let out;
     try { out = runClaude(cli, dir, c, role); } catch (e) { row.status = "error:" + e.message; return row; }
@@ -194,7 +215,8 @@ function runCase(id, file, cli, role, rep) {
     else row.falseAlarm = yn(s.falseAlarm);
     return row;
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 }); }
+    catch (e) { console.error(`temp dir not removed: ${dir}: ${e.code || e.message}`); }
   }
 }
 
@@ -207,6 +229,15 @@ function run() {
   if (maxArg !== "" && !(Number.isFinite(maxCost) && maxCost >= 0)) die("run: --max-cost must be a number >= 0");
   const cli = opt("--claude", "claude");
   if (!fs.existsSync(casesDir)) die(`run: no cases directory: ${casesDir}`);
+  const injects = optAll("--inject").map(spec => {
+    const eq = spec.indexOf("=");
+    const dest = eq > 0 ? spec.slice(0, eq) : "", src = eq > 0 ? spec.slice(eq + 1) : "";
+    if (!dest || !src) die(`run: --inject needs DEST=SRC: ${spec}`);
+    if (path.isAbsolute(dest) || /^([A-Za-z]:|[\\/])/.test(dest)) die(`run: --inject DEST must be relative: ${dest}`);
+    if (dest.split(/[\\/]+/).includes("..")) die(`run: --inject DEST must not contain "..": ${dest}`);
+    if (!fs.existsSync(src) || !fs.statSync(src).isFile()) die(`run: --inject SRC does not exist: ${src}`);
+    return [dest, path.resolve(src)];
+  });
   let ids = fs.readdirSync(casesDir).filter(d => fs.existsSync(path.join(casesDir, d, "case.json"))).sort();
   const want = opt("--ids", "");
   if (want) {
@@ -222,7 +253,7 @@ function run() {
   fs.mkdirSync(rep.dir, { recursive: true });
   let total = 0, stoppedAfter = "", limitAt = "";
   for (const id of ids) {
-    const row = runCase(id, path.join(casesDir, id, "case.json"), cli, role, rep);
+    const row = runCase(id, path.join(casesDir, id, "case.json"), cli, role, rep, injects);
     rows.push(row);
     total += row.cost;
     console.error(`${id}: ${row.status}`);
@@ -245,6 +276,7 @@ function run() {
     `stopped by ceiling: ${stoppedAfter ? `yes (after ${stoppedAfter}, ceiling $${maxCost})` : "no"}`,
     `stopped by usage limit: ${limitAt ? `yes (at ${limitAt})` : "no"}`,
     `role: code-reviewer model=${role.model || "default"} effort=${role.effort || "default"}`,
+    `injected: ${injects.length ? injects.map(i => i[0]).join(", ") : "none"}`,
   ];
 
   const cols = ["id", "origin", "kind", "important", "hit", "fileHit", "falseAlarm", "costUsd", "status", "report"];
@@ -259,8 +291,152 @@ function run() {
     rows.forEach(r => console.log("| " + cols.map(c => cell(r, c).replace(/\|/g, "\\|").replace(/[\r\n]+/g, " ")).join(" | ") + " |"));
   }
   console.error("\n" + summary.join("\n") + `\nsaved: ${out}`);
+  const nd = (n, d) => `${n}/${d}`;
+  logDecision({ command: "run", label, cases: rows.length, ok: ok.length,
+    recall: nd(defects.filter(r => r.hit === "yes").length, defects.length),
+    falseAlarm: nd(cleans.filter(r => r.falseAlarm === "yes").length, cleans.length), judgeYes: "",
+    cost: total, injected: injects.length ? injects.map(i => i[0]).join(",") : "none" });
   if (limitAt) console.error(`\nusage limit hit at ${limitAt}; not run: ${notRun.join(", ") || "(none)"}\nrerun after the limit resets: --ids ${[limitAt, ...notRun].join(",")}`);
 }
 
+// One row per finished run / rescore, so experiments can be compared later. verdict is for a person to fill in.
+function logDecision(d) {
+  const file = path.join(EVALS, "decisions.tsv");
+  const cols = ["utc", "command", "label", "hypothesis", "cases", "ok", "recall", "falseAlarm", "judgeYes", "costUsd", "injected", "verdict"];
+  const row = { utc: new Date().toISOString().replace(/\.\d+Z$/, "Z"), hypothesis: opt("--hypothesis", ""), verdict: "", ...d };
+  row.costUsd = Number(d.cost || 0).toFixed(4);
+  fs.mkdirSync(EVALS, { recursive: true });
+  const lines = [];
+  if (!fs.existsSync(file) || fs.statSync(file).size === 0) lines.push(cols.join("\t"));
+  lines.push(cols.map(c => String(row[c] ?? "").replace(/[\t\r\n]+/g, " ")).join("\t"));
+  fs.appendFileSync(file, lines.join("\n") + "\n");
+}
+
+const JUDGE_DIFF_MAX = 12000;
+const FOLLOW_UP = /follow-up ([0-9a-f]{7,40})/;
+
+function judgePrompt(c, expected, important) {
+  const defects = expected.map((e, i) => {
+    const parts = [`D${i + 1}: file ${e.file}, lines ${e.lines ?? "?"}: ${e.summary ?? ""}`];
+    const h = FOLLOW_UP.exec(String(e.summary ?? ""));
+    if (h && c.repo) {
+      try {
+        const d = git(c.repo, ["show", "--no-color", h[1], "--", e.file]);
+        parts.push(`Fix diff for ${e.file} (commit ${h[1]}):`, d.length > JUDGE_DIFF_MAX ? d.slice(0, JUDGE_DIFF_MAX) + "\n[truncated]" : d);
+      } catch { /* no diff available; the summary alone is shown */ }
+    }
+    return parts.join("\n");
+  });
+  const found = important.map((f, i) => `F${i + 1}:\n` + f.text.replace(/\bI\d+\b/, `F${i + 1}`).trim());
+  return [
+    "A code change contains the known defect(s) below. Further down are findings that someone wrote while examining the change.",
+    "Known defect(s):\n\n" + defects.join("\n\n"),
+    "Findings:\n\n" + found.join("\n\n"),
+    "Question: does any finding describe the same defect as a known defect above (the same underlying problem, even if worded differently or citing slightly different lines)? Answer unsure if you cannot tell.",
+    'Reply with a single line of JSON and nothing else: {"verdict":"yes|no|unsure","finding":"F<n>|none"}',
+  ].join("\n\n");
+}
+
+function parseVerdict(text) {
+  const objs = String(text).match(/\{[^{}]*\}/g) || [];
+  for (const o of objs.reverse()) {
+    try {
+      const j = JSON.parse(o);
+      const v = typeof j.verdict === "string" ? j.verdict.toLowerCase() : "";
+      if (["yes", "no", "unsure"].includes(v)) return { verdict: v, finding: typeof j.finding === "string" ? j.finding : "none" };
+    } catch { /* try the previous object */ }
+  }
+  return null;
+}
+
+function runJudge(cli, model, p) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wt-"));
+  try {
+    return spawnCli(cli, dir, ["-p", "--model", model, "--tools", "", "--output-format", "json", "--no-session-persistence", "--permission-mode", "dontAsk"], p);
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 }); }
+    catch (e) { console.error(`temp dir not removed: ${dir}: ${e.code || e.message}`); }
+  }
+}
+
+function rescore() {
+  const casesDir = path.resolve(opt("--cases-dir", path.join(EVALS, "cases")));
+  const runNames = opt("--run", "").split(",").map(s => s.trim()).filter(Boolean);
+  if (!runNames.length) die("rescore: --run NAME[,NAME] is required");
+  const maxArg = opt("--max-cost", "");
+  const maxCost = maxArg === "" ? Infinity : Number(maxArg);
+  if (maxArg !== "" && !(Number.isFinite(maxCost) && maxCost >= 0)) die("rescore: --max-cost must be a number >= 0");
+  const cli = opt("--claude", "claude"), model = opt("--judge-model", "sonnet");
+  const runsDir = path.join(EVALS, "runs");
+  const work = [];
+  for (const name of runNames) {
+    if (!/^[A-Za-z0-9._-]+$/.test(name)) die(`rescore: invalid run name: ${name}`);
+    const dir = path.join(runsDir, name);
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) die(`rescore: no such run: ${dir}`);
+    for (const f of fs.readdirSync(dir).filter(f => f.endsWith(".md")).sort()) {
+      const id = f.slice(0, -3);
+      if (fs.existsSync(path.join(casesDir, id, "case.json"))) work.push({ run: name, id, file: path.join(dir, f) });
+    }
+  }
+  const rows = [];
+  let total = 0, stoppedAfter = "", limitAt = "";
+  for (const w of work) {
+    const row = { run: w.run, id: w.id, kind: "", important: "", lineHit: "", fileHit: "", judge: "", finding: "", cost: 0, status: "ok" };
+    rows.push(row);
+    let c;
+    try { c = JSON.parse(fs.readFileSync(path.join(casesDir, w.id, "case.json"), "utf8")); } catch { row.status = "error:bad case.json"; continue; }
+    const expected = Array.isArray(c.expected) ? c.expected : [];
+    row.kind = expected.length ? "defect" : "clean";
+    const found = findings(fs.readFileSync(w.file, "utf8"), "");
+    const s = score(found, expected, "");
+    row.important = String(s.important);
+    if (row.kind === "clean") continue;
+    row.lineHit = s.hit ? "yes" : "no";
+    row.fileHit = s.fileHit ? "yes" : "no";
+    if (!found.length) { row.judge = "no"; row.finding = "none"; continue; }
+    let out;
+    try { out = runJudge(cli, model, judgePrompt(c, expected, found)); } catch (e) { row.judge = "error"; row.status = "error:" + e.message; continue; }
+    row.cost = out.cost;
+    total += out.cost;
+    if (out.error) { row.judge = "error"; row.status = "error:" + out.error; }
+    else {
+      const v = parseVerdict(out.text);
+      if (v) { row.judge = v.verdict; row.finding = v.finding; } else row.judge = "error";
+    }
+    console.error(`${w.run}/${w.id}: judge ${row.judge}`);
+    if (row.status === "error:usage-limit") { limitAt = `${w.run}/${w.id}`; break; }
+    if (total > maxCost) { stoppedAfter = `${w.run}/${w.id}`; break; }
+  }
+  const notRun = (limitAt || stoppedAfter) ? work.slice(rows.length).map(w => `${w.run}/${w.id}`) : [];
+
+  const ok = rows.filter(r => r.status === "ok");
+  const defects = rows.filter(r => r.kind === "defect"), cleans = rows.filter(r => r.kind === "clean");
+  const table = lh => {
+    const sel = defects.filter(r => r.lineHit === lh);
+    return `lineHit=${lh} (${sel.length}): ` + ["yes", "no", "unsure", "error"].map(j => `judge ${j} ${sel.filter(r => r.judge === j).length}`).join(", ");
+  };
+  const summary = [
+    `reports: ${rows.length} (ok ${ok.length}, error ${rows.length - ok.length})`,
+    table("yes"), table("no"),
+    `clean cases with Important: ${cleans.filter(r => Number(r.important) > 0).length}/${cleans.length}`,
+    `total cost: $${total.toFixed(4)}`,
+    `judge model: ${model}`,
+    `stopped by ceiling: ${stoppedAfter ? `yes (after ${stoppedAfter}, ceiling $${maxCost})` : "no"}`,
+    `stopped by usage limit: ${limitAt ? `yes (at ${limitAt})` : "no"}`,
+  ];
+  const cols = ["run", "id", "kind", "important", "lineHit", "fileHit", "judge", "finding", "costUsd", "status"];
+  const cell = (r, c) => c === "costUsd" ? r.cost.toFixed(4) : String(r[c] ?? "");
+  const out = path.join(runsDir, `${runNames[0]}.rescore.tsv`);
+  fs.writeFileSync(out, [cols.join("\t"), ...rows.map(r => cols.map(c => cell(r, c).replace(/[\t\r\n]+/g, " ")).join("\t")), "# " + summary.join("; ")].join("\n") + "\n");
+  console.error("\n" + summary.join("\n") + `\nsaved: ${out}`);
+  const nd = (n, d) => `${n}/${d}`;
+  logDecision({ command: "rescore", label: runNames.join(","), cases: rows.length, ok: ok.length,
+    recall: nd(defects.filter(r => r.lineHit === "yes").length, defects.length),
+    falseAlarm: nd(cleans.filter(r => Number(r.important) > 0).length, cleans.length),
+    judgeYes: nd(defects.filter(r => r.judge === "yes").length, defects.length), cost: total, injected: "" });
+  if (limitAt || stoppedAfter) console.error(`\nnot judged: ${notRun.join(", ") || "(none)"}`);
+}
+
 if (cmd === "run") run();
-else die("usage: reviewer-eval.js run [--cases-dir DIR] [--ids a,b] [--label NAME] [--max-cost USD] [--claude PATH] [--tsv]");
+else if (cmd === "rescore") rescore();
+else die("usage: reviewer-eval.js run [--cases-dir DIR] [--ids a,b] [--label NAME] [--max-cost USD] [--claude PATH] [--tsv] [--inject DEST=SRC]... [--hypothesis TEXT]\n       reviewer-eval.js rescore --run NAME[,NAME] [--judge-model MODEL] [--claude PATH] [--max-cost USD] [--cases-dir DIR] [--hypothesis TEXT]");
