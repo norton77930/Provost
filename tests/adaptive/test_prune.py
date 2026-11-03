@@ -1,4 +1,5 @@
 import json
+import shutil
 import os
 import subprocess
 import sys
@@ -919,6 +920,42 @@ class PruneCliTests(FixtureCase):
         bind(self.root, session, {})
         stamp = time.time() - age_days * DAY
         os.utime(session_dir(self.root, session) / "binding.json", (stamp, stamp))
+
+    def handoff_off(self, cfg):
+        self.config_path.write_text(json.dumps(cfg), encoding="utf-8")
+        counters = self.config_path.parent / "cache" / "acceptance"
+        counters.mkdir(parents=True)
+        stale, fresh, kept = counters / "old.pushes", counters / "fresh.pushes", counters / "current.pushes"
+        for path in (stale, fresh, kept):
+            path.write_text("2", encoding="utf-8")
+        age(stale, 40)
+        age(kept, 40)
+        return stale, fresh, kept
+
+    def test_cli_prune_with_handoff_off_prunes_only_acceptance_counters(self):
+        for name, cfg in [("handoff false", dict(self.cfg, handoff=False)),
+                          ("legacy workspace", dict(self.cfg, workspace_roots=[]))]:
+            with self.subTest(name):
+                stale, fresh, kept = self.handoff_off(cfg)
+                code, dry = self.run_cli("prune", "--workspace", str(self.root), "--session", "current")
+                self.assertEqual(code, 0, dry)
+                self.assertEqual((dry["handoff"], dry["applied"]), (False, False))
+                self.assertEqual([c["path"] for c in dry["stale_acceptance_pushes"]["candidates"]], [str(stale)])
+                self.assertTrue(stale.exists())
+                code, done = self.run_cli("prune", "--workspace", str(self.root), "--session", "current", "--apply")
+                self.assertEqual((code, done["stale_acceptance_pushes"]["removed"]), (0, 1))
+                self.assertEqual([stale.exists(), fresh.exists(), kept.exists()], [False, True, True])
+                code, again = self.run_cli("prune", "--workspace", str(self.root), "--session", "current",
+                                         "--apply")
+                self.assertEqual(code, 0)
+                self.assertNotIn("stale_acceptance_pushes", again)
+                self.assertNoStore()
+                shutil.rmtree(self.config_path.parent / "cache")
+
+    def test_cli_prune_with_handoff_off_still_checks_ages(self):
+        self.handoff_off(dict(self.cfg, handoff=False))
+        code, data = self.run_cli("prune", "--workspace", str(self.root), "--expired-older-than-days", "0")
+        self.assertEqual((code, data.get("error")), (1, "INVALID_ARGUMENTS"))
 
     def test_cli_prune_is_dry_run_unless_apply(self):
         self.aged("old", 30)

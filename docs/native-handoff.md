@@ -662,6 +662,9 @@ entries (`LINKED_STORAGE`) are skipped. The acceptance gate's push counters
 lists the ones not written for the expiry age (`--expired-older-than-days`, default 30)
 under `stale_acceptance_pushes` (`candidates`, `removed`, `skipped`, `errors`; present
 only when non-empty) and deletes them with `--apply`, even when no handoff store exists.
+With handoff off for the workspace, `prune` does only this: it returns `handoff: false`,
+`expired_older_than_days`, `applied` and `stale_acceptance_pushes`, and reads or creates no
+handoff store (the other store commands still return `HANDOFF_DISABLED`).
 Only regular files named `<session_id>.pushes` directly in that folder are touched; the
 `--session` counter, other files and linked entries are kept. `--older-than-days` (default 14) applies
 to binding-only dirs only. `doctor` reports `expired_sessions` at the default age.

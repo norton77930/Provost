@@ -695,10 +695,7 @@ class PolicySectionTests(InstallCase):
 
 class SettingsTests(InstallCase):
     def settings(self, value):
-        if value is None:
-            (self.config / "settings.json").unlink()
-        else:
-            write(self.config / "settings.json", value if isinstance(value, str) else json.dumps(value))
+        write(self.config / "settings.json", value if isinstance(value, str) else json.dumps(value))
         code, out, err = self.run_cli("check", "--json")
         self.assertNotIn(SECRET, out + err)
         text_out = self.run_cli("check")

@@ -265,6 +265,9 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Fixed
 
+- `prune` with handoff off (#50) no longer fails with `HANDOFF_DISABLED`: it
+  lists, and with `--apply` removes, the acceptance gate's stale
+  `cache/acceptance/*.pushes` counters and touches nothing else.
 - `tools/reviewer-cases.js candidates` (#56) takes the reviewed head from the first
   commit hash in the dispatch claim that resolves in the repo (new `headFrom` column:
   `claim`), and only falls back to the first commit within 3h after the dispatch
