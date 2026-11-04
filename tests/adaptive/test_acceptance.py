@@ -600,6 +600,8 @@ class TreeDigestCase(AcceptanceCase):
         self.repo.mkdir()
         self.git("init", "-q", cwd=self.repo)
         self.git("config", "core.autocrlf", "false", cwd=self.repo)
+        # A commit starts background maintenance, whose lock file can come and go while a test lists .git.
+        self.git("config", "maintenance.auto", "false", cwd=self.repo)
         self.write("src/app.py", b"print('one')\n")
         self.write("README.md", b"# readme\n")
         self.commit()
@@ -746,8 +748,10 @@ class TreeDigestTests(TreeDigestCase):
         self.git("checkout", "-q", base, cwd=self.repo)
         ours()
         self.commit()
-        merged = subprocess.run(["git", "merge", "side"], cwd=self.repo, capture_output=True)
+        merged = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "merge", "side"],
+                                cwd=self.repo, capture_output=True)
         self.assertNotEqual(merged.returncode, 0)
+        self.assertIn(b"CONFLICT", merged.stdout)  # a merge that failed for another reason proves nothing
 
     def test_a_merge_conflict_counts_the_work_tree_file(self):
         self.merge_conflict(lambda: self.write("src/app.py", b"print('base')\n"),
