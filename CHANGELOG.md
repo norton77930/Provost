@@ -134,6 +134,11 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- Policy prompt-audit follow-ups: §6 describes the Stop hook as it behaves since
+  #96 (a malformed file blocks, an unchanged all-stale state is not repeated after
+  a prompt); §4 sends a `live` gate to `acceptance-verifier` only when its result
+  needs interpretation; the pixel-compare rule moves from the §3 negative list to
+  the §6 gate rules; §3 drops "as before".
 - Reviewer noise is now measurable (#56): `code-reviewer` numbers each `Important`
   finding `I1`, `I2`, …; policy §3 asks main to write a `Dispositions:` line
   (`fixed`, `rejected`, `intentional` or `moot`, with a reason unless `fixed`)
