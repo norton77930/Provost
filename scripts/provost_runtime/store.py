@@ -1643,6 +1643,25 @@ def _stale_pushes(counters, cutoff, keep_session, apply):
     return out
 
 
+def prune_counters(acceptance_cache, *, older_than_days=None, expired_older_than_days=None, keep_session=None,
+                   apply=False, now=None):
+    """prune with handoff off: only the acceptance gate's push counters, which the gate keeps with handoff off.
+
+    Lists (with apply, removes) the counters `prune` lists under `stale_acceptance_pushes`, by the same
+    rules and expiry age; no handoff store is read or created. The result says `handoff: false` and holds
+    `stale_acceptance_pushes` only when there is something to report."""
+    for days in (older_than_days, expired_older_than_days):
+        if days is not None and (not isinstance(days, int) or isinstance(days, bool) or days < 1):
+            raise StoreError("INVALID_ARGUMENTS")
+    expiry_days = expired_older_than_days or EXPIRY_DAYS
+    clock = now if now is not None else datetime.now(timezone.utc).timestamp()
+    result = {"handoff": False, "expired_older_than_days": expiry_days, "applied": bool(apply)}
+    stale = _stale_pushes(acceptance_cache, clock - expiry_days * 86400, keep_session, apply)
+    if stale["candidates"] or stale["skipped"] or stale["errors"]:
+        result["stale_acceptance_pushes"] = stale
+    return result
+
+
 LOG_IDLE_DAYS = 180  # idle days after which a done or orphan work's decision log is a prune candidate
 
 
