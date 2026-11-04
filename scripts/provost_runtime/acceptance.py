@@ -3,18 +3,22 @@
 A main session that wrote an acceptance file for its task (<cwd>/.claude/acceptance/*.json, schema in
 <runtime root>/docs/native-handoff.md, "Acceptance gates"; the file is the session's own when its transcript
 holds a successful Write, Edit or NotebookEdit of it, see session_files()) cannot end its turn while a non-human gate is pending,
-failed or stale (a machine, live or visual pass older than the last main-session edit; a review pass whose
-reviewed files no longer match its digest, or, without files/digest, any main-session edit; see unmet_state()):
-check() returns a block decision naming every unmet gate id and its file. Without a session
-acceptance file, or with only human gates unmet, it returns {}. A malformed file is named in the block
-reason, so a typo cannot switch enforcement off unnoticed. A subagent's Stop, running background work
-and a stated blocker line end the turn, and it blocks at most three times per episode (see check()).
+failed or stale. A verdict covers content, not a time: a pass is stale when its files no longer match its
+digest, or when the code tree differs from its tree (tree_digest()); without either, a machine, live or visual
+pass goes by the time rule (older than the last main-session edit), and a review pass by any main-session edit;
+see unmet_state(). check() returns a block decision naming every unmet gate id and its file. Without a session
+acceptance file, with only closed ones, or with only human gates unmet, it returns {}. A malformed file is named
+in the block reason, so a typo cannot switch enforcement off unnoticed. A subagent's Stop, running background work
+and a stated blocker line end the turn, it blocks at most three times per episode, and it does not repeat an
+unchanged stale block after the person's prompt (see check()).
 Any internal error returns {}: a broken check must never trap a session.
 """
 import hashlib
 import json
 import os
 import re
+import subprocess
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -22,6 +26,7 @@ DIRECTORY = (".claude", "acceptance")
 PUSH_BUDGET = 3        # blocks per episode; the next unmet Stop ends the turn
 COUNTER_DIR = "acceptance"  # under <config dir>/cache, beside facts/ and notifications/
 COUNTER_SUFFIX = ".pushes"  # hooks/native-facts empties <session>.pushes on the person's prompt
+SEEN_SUFFIX = ".seen"  # <session>.seen holds a hash of the unmet state that last blocked
 SESSION = re.compile(r"^[A-Za-z0-9-]+$")  # store.CACHE_SESSION: ids the cache files may be named by
 # A blocker line: optional bullet (- or *), quote (>) and bold (** or __) before `needs input:` or `failed:`.
 BLOCKER = re.compile(r"^[ \t]*(?:[-*][ \t]+|>[ \t]*)*(?:\*\*|__)?(?:needs input|failed)(?:\*\*|__)?:",
@@ -33,6 +38,13 @@ FILE_LIMIT = 1024 * 1024           # an acceptance file larger than this is repo
 EDIT_SCAN_BYTES = 8 * 1024 * 1024  # most transcript bytes (the newest) read to find the last edit
 STALE_KINDS = ("machine", "live", "visual")  # a pass of these goes stale after an edit
 FUTURE_SLACK = timedelta(minutes=5)  # a zoned ranAt further ahead of now than this is a mislabelled local time
+SHORT_DIGEST = 12  # characters of a digest named in a stale reason
+TREE_BUDGET = 15  # seconds for all git calls of one tree_digest(); the hook's own timeout is 30
+DOC_SUFFIXES = (".md", ".mdx", ".markdown", ".rst", ".txt")  # not code, tracked or not (lower case)
+ARTIFACT_SUFFIXES = (".log", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".webm", ".mp4")  # untracked: a check's output
+CONFLICTS = ("DD", "AU", "UD", "UA", "DU", "AA", "UU")  # the unmerged XY codes of `git status --porcelain`
+GITLINK_MODE = b"160000"  # a submodule's index entry
+NO_COMMITS = (b"## No commits yet", b"## Initial commit")  # the status --branch header of a repo without commits
 # Cheap byte filter before parsing a line for last_edit(): an edit tool call or a failed tool result.
 EDIT_TOKENS = (b'"Edit"', b'"Write"', b'"NotebookEdit"', b'"is_error"')
 # The runtime root is the parent of scripts/, in the repo checkout and in the installed runtime alike.
@@ -44,15 +56,21 @@ class Malformed(ValueError):
 
 
 def check(event, config_path=None):
-    """Stop (sync): {"decision": "block", "reason": ...} while a session acceptance file has an unmet gate
-    or is malformed, else {}. Never raises.
+    """Stop (sync): {"decision": "block", "reason": ...} while an open session acceptance file (one without
+    a top-level closed reason) has an unmet gate, or any session acceptance file is malformed, else {}.
+    Never raises.
 
     Exempt, with no decision and no push spent: a subagent's Stop (agent_id), running background work
     (a non-empty background_tasks) and a stated blocker (a `needs input:` or `failed:` line in
     last_assistant_message). At most PUSH_BUDGET blocks per episode; the per-session counter lives in
     <config dir>/cache/acceptance/<session>.pushes (config_path is the Provost config file). A Stop with no
     unmet gate deletes it; hooks/native-facts empties it on the person's next prompt. A counter that cannot
-    be read or written ends the turn: an uncountable push could loop forever."""
+    be read or written ends the turn: an uncountable push could loop forever.
+
+    An unchanged stale block is not repeated across the person's prompts: every block writes a hash of the
+    unmet state to <session>.seen, and a Stop whose unmet items are all stale, with that same hash and a
+    counter reading zero (a new episode since that block) is exempt too. Pending and failed gates and malformed
+    files always block. A clean Stop deletes the file; one that cannot be read or written only loses the dedupe."""
     try:
         if "agent_id" in event:  # only the main session's turn end is gated
             return {}
@@ -62,7 +80,7 @@ def check(event, config_path=None):
         files = session_files(event, directory)
         if files is None:  # unknown transcript: whose files these are cannot be told, so no decision
             return {}
-        unmet, malformed, memo = [], [], []
+        unmet, malformed, memo, tree_memo = [], [], [], []
 
         def edited():  # read the transcript once, and only when a passed gate could be stale
             if not memo:
@@ -72,31 +90,44 @@ def check(event, config_path=None):
                     memo.append(None)
             return memo[0]
 
+        def tree():  # run git once, and only when a passed gate carries a tree
+            if not tree_memo:
+                tree_memo.append(tree_digest(event["cwd"]))
+            return tree_memo[0]
+
         for path in files:
             try:
-                gates = load(path)["gates"]
+                data = load(path)
             except FileNotFoundError:  # deleted since the listing
                 continue
             except Malformed as exc:
                 malformed.append((path, str(exc)))
                 continue
-            held = [(item["id"], state) for item in gates
-                    for state in (unmet_state(item, edited, event["cwd"]),) if state]
+            if "closed" in data:  # finished work: load() guarantees the reason
+                continue
+            held = [(item["id"], state) for item in data["gates"]
+                    for state in (unmet_state(item, edited, event["cwd"], tree),) if state]
             if held:
                 unmet.append((path, held))
         counter = _counter(event, config_path)
+        seen = None if counter is None else counter.with_suffix(SEEN_SUFFIX)
         if not unmet and not malformed:  # a clean state ends the episode
-            if counter is not None:
-                try:
-                    counter.unlink(missing_ok=True)
-                except OSError:
-                    pass
+            for leftover in (counter, seen):
+                if leftover is not None:
+                    try:
+                        leftover.unlink(missing_ok=True)
+                    except OSError:
+                        pass
             return {}
         if event.get("background_tasks") or _blocker(event.get("last_assistant_message")):
+            return {}
+        key = _state_key(unmet, malformed)
+        if _already_seen(unmet, malformed, key, counter, seen):
             return {}
         push = _spend(counter)
         if push is None:  # budget spent, or the counter is unusable
             return {}
+        _remember(seen, key)
         return {"decision": "block", "reason": _reason(unmet, malformed, push)}
     except Exception:  # fail-soft: the turn ends
         return {}
@@ -115,25 +146,58 @@ def _counter(event, config_path):
     return cache.joinpath(COUNTER_DIR, session + COUNTER_SUFFIX)
 
 
+def _state_key(unmet, malformed):
+    """A hash of everything a block reports but the clock of the block itself: stale states name the current
+    digest or edit time, so it changes whenever the content under a stale gate does."""
+    state = [[[str(path), held] for path, held in unmet], [[str(path), problem] for path, problem in malformed]]
+    return hashlib.sha256(json.dumps(state, ensure_ascii=True).encode("ascii")).hexdigest()
+
+
+def _already_seen(unmet, malformed, key, counter, seen):
+    """True when this all-stale state already blocked and the person has prompted since (the counter reads
+    zero), so a repeat would only ask again what the last block asked. A `.seen` that cannot be read means no."""
+    from .store import encoded
+    if malformed or seen is None or _pushes(counter) != 0:
+        return False
+    if not all(state.startswith("stale") for _, held in unmet for _, state in held):
+        return False
+    try:
+        return seen.read_bytes() == encoded(key)
+    except OSError:
+        return False
+
+
+def _remember(seen, key):
+    """Record the state of this block; a failure only loses the dedupe."""
+    from .store import StoreError, atomic_write
+    if seen is not None:
+        try:
+            atomic_write(seen.parent.parent, seen, key)
+        except (StoreError, OSError):
+            pass
+
+
+def _pushes(counter):
+    """The pushes counted in this episode; None when the counter holds no count or cannot be read."""
+    try:
+        text = counter.read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        return 0
+    except (OSError, UnicodeError):
+        return None
+    if not text:  # missing, or emptied by the person's prompt
+        return 0
+    return int(text) if text.isdigit() else None
+
+
 def _spend(counter):
     """Count one more push in this episode and return its number (1..PUSH_BUDGET); None when the budget is
     spent or the counter cannot be read or written atomically."""
     from .store import StoreError, atomic_write
     if counter is None:
         return None
-    try:
-        text = counter.read_text(encoding="ascii").strip()
-    except FileNotFoundError:
-        text = ""
-    except (OSError, UnicodeError):
-        return None
-    if not text:  # missing, or emptied by the person's prompt
-        pushes = 0
-    elif text.isdigit():
-        pushes = int(text)
-    else:
-        return None
-    if pushes >= PUSH_BUDGET:
+    pushes = _pushes(counter)
+    if pushes is None or pushes >= PUSH_BUDGET:
         return None
     try:
         atomic_write(counter.parent.parent, counter, pushes + 1)
@@ -142,33 +206,48 @@ def _spend(counter):
     return pushes + 1
 
 
-def unmet_state(gate, edited=None, cwd=None):
+def unmet_state(gate, edited=None, cwd=None, tree=None):
     """Why a gate holds the turn ("pending", "fail" or "stale: ..."), or None when it does not; human gates
     never do.
 
-    edited is the session's last main-session edit (an aware datetime, see last_edit()), or a callable
-    returning it, called only for a gate that could be stale. A machine, live or visual gate with status
-    pass is stale when its ranAt is before edited, or when it has no usable ranAt (missing, or without a
+    A verdict covers content. Any passed gate but a human one with files and digest is judged by them alone:
+    it is stale when digest() of its files (relative ones read from cwd, the event cwd) no longer matches,
+    whoever changed them: a subagent, Bash or the main session; an unreadable or deleted file counts as
+    changed; ranAt is not used.
+
+    Without them, a machine, live or visual gate with a tree field is compared with tree, the current
+    tree_digest() of the work tree (or a callable returning it, called only for such a gate): equal is fresh
+    and different is stale, regardless of ranAt. When tree is None (unknown) the gate is stale too: the time rule
+    cannot see a subagent's edits, so it must not vouch for a gate git cannot confirm. A review gate ignores
+    the field.
+
+    The time rule: edited is the session's last main-session edit (an aware datetime, see last_edit()), or a
+    callable returning it, called only for a gate that could be stale. A machine, live or visual gate with
+    status pass is stale when its ranAt is before edited, or when it has no usable ranAt (missing, or without a
     time zone, which cannot be compared with the transcript's UTC) and edited is not None. Independent of
     any edit, a zoned ranAt more than FUTURE_SLACK after the current UTC time is stale too: it is local time
     labelled UTC (Windows PowerShell's `date -u`), which would always look later than the last edit.
-
-    A passed review gate with files and digest is stale when digest() of its files (relative ones read
-    from cwd, the event cwd) no longer matches, whoever changed them: a subagent, Bash or the main session;
-    an unreadable or deleted file counts as changed. Without them it is stale whenever edited is not None,
-    like a machine gate without ranAt (its ranAt is not used). Human gates are never stale."""
+    A review gate without files and digest is stale whenever edited is not None, like a machine gate without
+    ranAt (its ranAt is not used). Human gates are never stale."""
     if gate["kind"] == "human":
         return None
     if gate["status"] in ("pending", "fail"):
         return gate["status"]
+    if "files" in gate:  # load() guarantees digest beside it
+        return _files_changed(gate, cwd)
     if gate["kind"] == "review":
-        if "files" in gate:  # load() guarantees digest beside it
-            return _review_changed(gate, cwd)
         if callable(edited):
             edited = edited()
         return None if edited is None else "stale: review gate has no files/digest, last edit at %s" % _clock(edited)
     if gate["kind"] not in STALE_KINDS:
         return None
+    if "tree" in gate:
+        current = tree() if callable(tree) else tree
+        if current == gate["tree"]:
+            return None
+        if current is None:
+            return "stale: the code's current state is unknown (git gave no usable answer)"
+        return "stale: code changed since the check (now %s)" % current[:SHORT_DIGEST]
     ran = _when(gate.get("ranAt"))
     if ran is not None and _zoned(gate["ranAt"]) and ran > datetime.now(timezone.utc) + FUTURE_SLACK:
         return "stale: ranAt %s is later than now, likely local time labelled UTC" % _clock(ran)
@@ -185,18 +264,31 @@ def unmet_state(gate, edited=None, cwd=None):
     return None
 
 
-def _review_changed(gate, cwd):
-    """The stale reason of a passed review gate whose files no longer match its digest, else None."""
-    reason = "stale: reviewed files changed since the review"
+def _files_changed(gate, cwd):
+    """The stale reason of a passed gate whose files no longer match its digest, else None. It carries a
+    prefix of the files' current digest, so that the reason changes whenever their content does (see check())."""
+    reason = ("stale: reviewed files changed since the review" if gate["kind"] == "review"
+              else "stale: files changed since the check")
     try:
         current = digest(gate["files"], cwd)
     except OSError as exc:  # deleted or unreadable: changed, and named
-        return "%s (%s unreadable)" % (reason, exc.filename or "a file")
+        return "%s (%s unreadable, now %s)" % (reason, exc.filename or "a file", _readable_digest(gate["files"], cwd))
     except Exception:
         # Fail-open, as for an unreadable edit history: a digest that cannot be computed for any other
         # reason is an unknown state, and an unknown state never holds the turn.
         return None
-    return None if current == gate["digest"] else reason
+    return None if current == gate["digest"] else "%s (now %s)" % (reason, current[:SHORT_DIGEST])
+
+
+def _readable_digest(files, cwd):
+    """A short digest of those of files that can still be read: what `now` says when one of them cannot."""
+    entries = []
+    for name in files:
+        try:
+            entries.append(digest([name], cwd))
+        except OSError:
+            entries.append(None)
+    return hashlib.sha256(json.dumps(entries).encode("ascii")).hexdigest()[:SHORT_DIGEST]
 
 
 def last_edit(event):
@@ -263,6 +355,100 @@ def digest(files, cwd=None):
             body = handle.read().replace(b"\r\n", b"\n")
         entries.append([name, hashlib.sha256(body).hexdigest()])
     return hashlib.sha256(json.dumps(entries, ensure_ascii=True, separators=(",", ":")).encode("ascii")).hexdigest()
+
+
+def tree_digest(cwd):
+    """The content identity of the code in cwd's git work tree (64 hex characters), or None when it is unknown:
+    not a work tree, no git, a git failure, timeout or empty answer, a file that vanished while hashing, or a new
+    or modified file whose name holds a newline. Never raises, never writes to the repository.
+
+    sha256 of the compact ASCII JSON of the sorted [path, blob id] pairs, from the repo top: the index's blobs,
+    overlaid with the work tree's dirty files as read by `git status`. A worktree-deleted path drops out; a
+    modified, conflicted or untracked one gets the id `git hash-object` gives it, filters applied and nothing
+    written, which is the blob the same content has once committed: a check run on a dirty tree stays fresh
+    after the commit. No file time is read. Left out: docs (DOC_SUFFIXES, whatever their state), anything under
+    .claude/acceptance/, untracked files with ARTIFACT_SUFFIXES (a check's own output must not stale it) and
+    nested repos. A submodule counts by the commit its index entry records, not by its own work tree."""
+    try:
+        return _tree_digest(cwd)
+    except Exception:
+        return None
+
+
+def _tree_digest(cwd):
+    deadline = time.monotonic() + TREE_BUDGET
+
+    def git(directory, *args, stdin=None):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError()
+        return subprocess.run(["git", "-C", directory, *args], input=stdin, capture_output=True, check=True,
+                              timeout=remaining, env=dict(os.environ, GIT_OPTIONAL_LOCKS="0"),
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+
+    # A loaded Windows machine was seen to have git exit 0 with an empty stdout. Read as "nothing is dirty" or
+    # "nothing is tracked" that would be a wrong digest, not an unknown one, so an empty answer is checked for:
+    # --branch makes status always print its ## header, and only a repo without commits has an empty index
+    # (one whose commits track nothing, which is rare, then reads as unknown). -z ends every record with a NUL,
+    # so output without a final one was cut short.
+    top = _git_path(git(cwd, "rev-parse", "--show-toplevel").rstrip(b"\r\n"))
+    if not top:
+        return None
+    index = git(top, "ls-files", "-s", "-z")
+    raw_status = git(top, "--no-optional-locks", "status", "--porcelain=v1", "-z", "--branch",
+                     "--untracked-files=all", "--no-renames")
+    if not raw_status.endswith(b"\0") or (index and not index.endswith(b"\0")):
+        return None
+    status = raw_status.split(b"\0")
+    if not status[0].startswith(b"## ") or not (index or status[0].startswith(NO_COMMITS)):
+        return None
+    blobs, gitlinks = {}, set()
+    for entry in index.split(b"\0"):
+        if entry:
+            meta, _, name = entry.partition(b"\t")
+            mode, blob, _ = meta.split(b" ")
+            path = _git_path(name)
+            if not _left_out(path):
+                blobs[path] = blob.decode("ascii")
+                if mode == GITLINK_MODE:
+                    gitlinks.add(path)
+    dirty = []
+    for entry in status[1:]:
+        code, path = entry[:2].decode("ascii"), _git_path(entry[3:])
+        if not path or path.endswith("/") or _left_out(path):
+            continue
+        if code == "??":
+            if not path.lower().endswith(ARTIFACT_SUFFIXES):
+                dirty.append(path)
+        elif code in CONFLICTS:
+            if os.path.lexists(os.path.join(top, path)):
+                dirty.append(path)
+            else:
+                blobs.pop(path, None)
+        elif code[1] == "D":
+            blobs.pop(path, None)
+        elif code[1] != " " and path not in gitlinks:
+            dirty.append(path)
+    if any("\n" in path for path in dirty):  # --stdin-paths reads one path per line
+        return None
+    if dirty:
+        names = b"".join(path.encode("utf-8", "surrogateescape") + b"\n" for path in dirty)
+        ids = git(top, "hash-object", "--stdin-paths", stdin=names).decode("ascii").split()
+        if len(ids) != len(dirty):
+            return None
+        blobs.update(zip(dirty, ids))
+    pairs = sorted([path, blob] for path, blob in blobs.items())
+    return hashlib.sha256(json.dumps(pairs, ensure_ascii=True, separators=(",", ":")).encode("ascii")).hexdigest()
+
+
+def _git_path(raw):
+    """A path as git printed it: UTF-8, with any other byte kept reversibly (a name need not be valid UTF-8)."""
+    return raw.decode("utf-8", "surrogateescape")
+
+
+def _left_out(path):
+    """True for a path no tree digest covers: a doc, or an acceptance file."""
+    return path.lower().endswith(DOC_SUFFIXES) or _acceptance_path(path)
 
 
 def _reviewed_path(name, cwd):
@@ -374,6 +560,8 @@ def load(path):
         raise Malformed("not a JSON object")
     if not isinstance(data.get("task"), str):
         raise Malformed("task must be a string")
+    if "closed" in data and not (isinstance(data["closed"], str) and data["closed"].strip()):
+        raise Malformed("closed must be a non-empty string")
     gates = data.get("gates")
     if not isinstance(gates, list):
         raise Malformed("gates must be a list")
@@ -394,7 +582,9 @@ def load(path):
                 raise Malformed("%s.%s must be a string" % (where, key))
         if "ranAt" in item and _when(item["ranAt"]) is None:
             raise Malformed(where + ".ranAt must be an ISO 8601 time")
-        if item["kind"] == "review" and ("files" in item or "digest" in item):
+        if item["kind"] in STALE_KINDS and "tree" in item and not isinstance(item["tree"], str):
+            raise Malformed(where + ".tree must be a string (runtime digest --tree prints it)")
+        if item["kind"] != "human" and ("files" in item or "digest" in item):
             if "files" not in item or "digest" not in item:
                 raise Malformed(where + ".files and .digest go together (runtime digest prints both)")
             files = item["files"]
@@ -429,7 +619,10 @@ def _reason(unmet, malformed, push):
                      "stale gate passed before the last edit, has a ranAt without a time zone, or has a ranAt later than now, and must be "
                      "re-run; a stale review gate needs a re-review of the changed files and fresh files and "
                      "digest from the runtime `digest` command (human gates are the owner's decision and never "
-                     "hold the turn). ranAt must be "
+                     "hold the turn). Stamp `tree` from the runtime `digest --tree`, read before the check starts; "
+                     "when the code's current state is unknown, rerun `digest --tree`, and if git still fails, use "
+                     "`files` and `digest` or say so on a `needs input:` line; "
+                     "a finished task's file takes a top-level `closed` reason. ranAt must be "
                      "the clock read from a command, in UTC: now %s; Bash `date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ`, "
                      "PowerShell `(Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')` (its `date -u` "
                      "prints local time labelled Z, which is stale). Guide: %s. Unmet gates:" % (now, GUIDE))

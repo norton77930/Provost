@@ -1585,18 +1585,19 @@ def _orphan_cache(home, cache, cutoff, keep_session, claimed, apply):
     return out
 
 
-# A push counter of hooks/acceptance-gate (<config dir>/cache/acceptance/<session>.pushes): the only
-# file name the counter prune may delete.
-ACCEPTANCE_PUSHES = re.compile(r"[A-Za-z0-9-]+\.pushes")
+# A push counter or last-block hash of hooks/acceptance-gate (<config dir>/cache/acceptance/<session>.pushes
+# or .seen): the only file names the counter prune may delete.
+ACCEPTANCE_PUSHES = re.compile(r"[A-Za-z0-9-]+\.(?:pushes|seen)")
 
 
 def _stale_pushes(counters, cutoff, keep_session, apply):
-    """Push counters of the acceptance gate in the folder counters whose last write is older than cutoff.
+    """Push counters and last-block hashes of the acceptance gate in the folder counters whose last write is
+    older than cutoff.
 
-    Only regular files named <session id>.pushes directly in that folder are considered; anything else
-    in it, and linked entries, are left alone. A counter is rewritten on every push and emptied on the
-    person's prompt, so an old one belongs to an episode that is long over. The kept session's counter is
-    never listed. Under apply, each file is re-checked (still a plain file, still older than cutoff)
+    Only regular files named <session id>.pushes or <session id>.seen directly in that folder are considered;
+    anything else in it, and linked entries, are left alone. Both are rewritten on every push and a counter is
+    emptied on the person's prompt, so an old one belongs to an episode that is long over. The kept session's
+    files are never listed. Under apply, each file is re-checked (still a plain file, still older than cutoff)
     right before it is deleted."""
     out = {"candidates": [], "removed": 0, "skipped": [], "errors": []}
     counters = Path(counters)
@@ -1607,7 +1608,7 @@ def _stale_pushes(counters, cutoff, keep_session, apply):
             return out
         for path in sorted(counters.iterdir()):
             match = ACCEPTANCE_PUSHES.fullmatch(path.name)
-            if not match or (keep_session and path.name == keep_session + ".pushes"):
+            if not match or (keep_session and path.name in (keep_session + ".pushes", keep_session + ".seen")):
                 continue
             try:
                 guard(counters.parent.parent, path)
@@ -1865,9 +1866,9 @@ def prune(root, *, older_than_days=None, expired_older_than_days=None, keep_sess
     Cache files of sessions with no dir anywhere in the store are listed under
     `orphan_facts_cache` (only when there is something to report) once their newest
     file is older than the expiry age; under apply they are deleted.
-    With acceptance_cache (the acceptance gate's folder, <config dir>/cache/acceptance), push counters
-    (`<session id>.pushes` files, nothing else) not written for the expiry age are listed under
-    `stale_acceptance_pushes` (only when there is something to report) and deleted under apply; this
+    With acceptance_cache (the acceptance gate's folder, <config dir>/cache/acceptance), push counters and
+    last-block hashes (`<session id>.pushes` and `.seen` files, nothing else) not written for the expiry age
+    are listed under `stale_acceptance_pushes` (only when there is something to report) and deleted under apply; this
     does not depend on a session dir or on the handoff store existing.
     """
     for days in (older_than_days, expired_older_than_days):

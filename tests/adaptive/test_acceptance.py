@@ -3,7 +3,9 @@ import io
 import json
 import os
 import re
+import subprocess
 import time
+import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -582,3 +584,667 @@ class AcceptanceReviewTests(AcceptanceCase):
         self.acceptance("feature.json", [self.reviewed()])
         with mock.patch("provost_runtime.acceptance.digest", side_effect=RuntimeError("boom")):
             self.assertEqual(self.stop(), {})
+
+
+class TreeDigestCase(AcceptanceCase):
+    """A real temporary git repo in a folder of its own, because the config, transcript and push counters of
+    the fixture live in self.root and would otherwise show up as untracked files of the tree they judge."""
+
+    def setUp(self):
+        super().setUp()
+        budget = mock.patch("provost_runtime.acceptance.TREE_BUDGET", 300)  # a loaded machine must not read as unknown
+        budget.start()
+        self.addCleanup(budget.stop)
+        self.isolate_user_git_config()
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        self.git("init", "-q", cwd=self.repo)
+        self.git("config", "core.autocrlf", "false", cwd=self.repo)
+        self.write("src/app.py", b"print('one')\n")
+        self.write("README.md", b"# readme\n")
+        self.commit()
+        self.directory = self.repo / ".claude" / "acceptance"
+
+    def write(self, name, body):
+        path = self.repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+        return path
+
+    def commit(self):
+        self.git("add", "-A", cwd=self.repo)
+        self.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "c",
+                 cwd=self.repo)
+
+    def tree(self):
+        from provost_runtime.acceptance import tree_digest
+        return tree_digest(str(self.repo))
+
+
+class TreeDigestTests(TreeDigestCase):
+    """tree_digest(): the identity of the code in a work tree, from git's own blob ids (never file times)."""
+
+    def test_digest_is_64_hex_stable_and_independent_of_the_subdirectory(self):
+        from provost_runtime.acceptance import tree_digest
+        first = self.tree()
+        self.assertRegex(first, r"^[0-9a-f]{64}$")
+        self.assertEqual(self.tree(), first)
+        self.assertEqual(tree_digest(str(self.repo / "src")), first)
+
+    def test_a_touched_file_with_the_same_content_is_the_same_tree(self):
+        before = self.tree()
+        os.utime(self.repo / "src" / "app.py", (time.time() + 100, time.time() + 100))
+        self.assertEqual(self.tree(), before)
+
+    def test_doc_edits_do_not_change_it_in_any_case_or_state(self):
+        before = self.tree()
+        self.write("README.md", b"# changed\n")
+        for name in ("new.md", "guide.MDX", "x.markdown", "docs/y.rst", "notes.TXT"):
+            self.write(name, b"text\n")
+        self.assertEqual(self.tree(), before)
+        self.git("add", "-A", cwd=self.repo)
+        self.assertEqual(self.tree(), before)
+
+    def test_a_source_edit_changes_it_and_a_revert_restores_it(self):
+        before = self.tree()
+        self.write("src/app.py", b"print('two')\n")
+        self.assertNotEqual(self.tree(), before)
+        self.write("src/app.py", b"print('one')\n")
+        self.assertEqual(self.tree(), before)
+
+    def test_committing_the_same_content_keeps_it(self):
+        self.write("src/app.py", b"print('two')\n")
+        self.write("src/new.py", b"x = 1\n")
+        dirty = self.tree()
+        self.git("add", "src/app.py", cwd=self.repo)
+        self.assertEqual(self.tree(), dirty)  # staged, not yet committed
+        self.commit()
+        self.assertEqual(self.tree(), dirty)
+
+    def test_a_crlf_work_tree_file_hashes_as_the_blob_it_commits_to(self):
+        self.git("config", "core.autocrlf", "true", cwd=self.repo)
+        self.write("src/app.py", b"print('two')\r\n")  # CRLF in the work tree, LF once committed
+        dirty = self.tree()
+        self.commit()
+        self.assertEqual(self.tree(), dirty)
+        self.assertNotIn(b"\r", subprocess.run(["git", "show", "HEAD:src/app.py"], cwd=self.repo,
+                                               capture_output=True).stdout)
+        self.write("src/app.py", b"print('three')\r\n")
+        self.assertNotEqual(self.tree(), dirty)
+
+    def test_an_untracked_source_file_counts(self):
+        before = self.tree()
+        self.write("src/new.py", b"x = 1\n")
+        with_new = self.tree()
+        self.assertNotEqual(with_new, before)
+        self.write("src/new.py", b"x = 2\n")
+        self.assertNotEqual(self.tree(), with_new)
+
+    def test_untracked_artifacts_do_not_count_but_tracked_ones_do(self):
+        before = self.tree()
+        for name in ("run.log", "shot.PNG", "a.jpg", "b.jpeg", "c.gif", "d.webp", "e.webm", "out/f.mp4"):
+            self.write(name, b"output\n")
+        self.assertEqual(self.tree(), before)
+        self.git("add", "-f", "run.log", cwd=self.repo)
+        tracked = self.tree()
+        self.assertNotEqual(tracked, before)
+        self.write("run.log", b"changed\n")
+        self.assertNotEqual(self.tree(), tracked)
+
+    def test_acceptance_files_do_not_count_even_tracked_ones(self):
+        before = self.tree()
+        self.write(".claude/acceptance/feature.json", b"{}\n")
+        self.write("sub/.claude/acceptance/other.json", b"{}\n")
+        self.assertEqual(self.tree(), before)
+        self.commit()
+        self.assertEqual(self.tree(), before)
+        self.write(".claude/acceptance/feature.json", b"{\"task\": \"x\"}\n")
+        self.assertEqual(self.tree(), before)
+
+    def test_a_deleted_file_changes_it_staged_or_not(self):
+        before = self.tree()
+        (self.repo / "src" / "app.py").unlink()
+        gone = self.tree()
+        self.assertRegex(gone, r"^[0-9a-f]{64}$")
+        self.assertNotEqual(gone, before)
+        self.git("add", "-A", cwd=self.repo)
+        self.assertEqual(self.tree(), gone)
+        self.commit()
+        self.assertEqual(self.tree(), gone)
+
+    def test_a_nested_repo_is_skipped(self):
+        before = self.tree()
+        self.write("nested/inner.py", b"x = 1\n")
+        self.git("init", "-q", cwd=self.repo / "nested")
+        self.git("add", "-A", cwd=self.repo / "nested")
+        self.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "c",
+                 cwd=self.repo / "nested")
+        self.assertIn("?? nested/", self.git("status", "--porcelain", "--untracked-files=all", cwd=self.repo))
+        self.assertEqual(self.tree(), before)
+
+    def test_a_dirty_submodule_keeps_a_known_digest(self):
+        inner = self.root / "inner"
+        inner.mkdir()
+        self.git("init", "-q", cwd=inner)
+        (inner / "lib.py").write_bytes(b"x = 1\n")
+        self.git("add", "-A", cwd=inner)
+        self.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "c", cwd=inner)
+        self.git("-c", "protocol.file.allow=always", "submodule", "add", "-q", str(inner), "vendored", cwd=self.repo)
+        self.commit()
+        before = self.tree()
+        self.assertRegex(before, r"^[0-9a-f]{64}$")
+        self.write("vendored/lib.py", b"x = 2\n")
+        self.assertIn("M vendored", self.git("status", "--porcelain", cwd=self.repo))
+        self.assertRegex(self.tree(), r"^[0-9a-f]{64}$")
+
+    def merge_conflict(self, ours, theirs):
+        """Run ours(), commit, and theirs() on a side branch, commit, then merge side into the base branch."""
+        base = self.git("rev-parse", "--abbrev-ref", "HEAD", cwd=self.repo)
+        self.git("checkout", "-q", "-b", "side", cwd=self.repo)
+        theirs()
+        self.commit()
+        self.git("checkout", "-q", base, cwd=self.repo)
+        ours()
+        self.commit()
+        merged = subprocess.run(["git", "merge", "side"], cwd=self.repo, capture_output=True)
+        self.assertNotEqual(merged.returncode, 0)
+
+    def test_a_merge_conflict_counts_the_work_tree_file(self):
+        self.merge_conflict(lambda: self.write("src/app.py", b"print('base')\n"),
+                            lambda: self.write("src/app.py", b"print('side')\n"))
+        self.assertIn("UU src/app.py", self.git("status", "--porcelain", cwd=self.repo))
+        conflicted = self.tree()
+        self.assertRegex(conflicted, r"^[0-9a-f]{64}$")
+        self.write("src/app.py", b"print('resolved')\n")
+        self.assertNotEqual(self.tree(), conflicted)
+
+    def test_both_sides_deleting_a_file_in_a_conflict_is_a_deletion(self):
+        self.merge_conflict(lambda: self.git("mv", "src/app.py", "src/ours.py", cwd=self.repo),
+                            lambda: self.git("mv", "src/app.py", "src/theirs.py", cwd=self.repo))
+        self.assertIn("DD src/app.py", self.git("status", "--porcelain", "--no-renames", cwd=self.repo))
+        self.assertRegex(self.tree(), r"^[0-9a-f]{64}$")
+
+    def test_deleted_by_them_keeps_counting_our_work_tree_file(self):
+        self.merge_conflict(lambda: self.write("src/app.py", b"print('ours')\n"),
+                            lambda: self.git("rm", "-q", "src/app.py", cwd=self.repo))
+        self.assertIn("UD src/app.py", self.git("status", "--porcelain", cwd=self.repo))
+        conflicted = self.tree()
+        self.write("src/app.py", b"print('edited')\n")
+        self.assertNotEqual(self.tree(), conflicted)
+
+    def test_unknown_states_answer_none_and_never_raise(self):
+        from provost_runtime import acceptance
+        outside = self.root / "not-a-repo"
+        outside.mkdir()
+        self.assertIsNone(acceptance.tree_digest(str(outside)))
+        self.assertIsNone(acceptance.tree_digest(str(self.root / "missing")))
+        self.assertIsNone(acceptance.tree_digest(str(self.repo / ".git")))
+        self.assertIsNone(acceptance.tree_digest(None))
+        self.write("src/new.py", b"x = 1\n")
+        for failure in (FileNotFoundError("git"), PermissionError("git"), RuntimeError("boom"),
+                        subprocess.TimeoutExpired("git", 1)):
+            with self.subTest(failure), mock.patch("provost_runtime.acceptance.subprocess.run", side_effect=failure):
+                self.assertIsNone(self.tree())
+
+    def test_a_failing_git_command_answers_none(self):
+        real = subprocess.run
+        self.write("src/new.py", b"x = 1\n")
+        for command in ("ls-files", "status", "hash-object"):
+            def failing(args, command=command, **kwargs):
+                return real(["git", "no-such-command"] if command in args else args, **kwargs)
+            with self.subTest(command), mock.patch("provost_runtime.acceptance.subprocess.run", side_effect=failing):
+                self.assertIsNone(self.tree())
+
+    def test_nul_terminated_output_cut_short_answers_none(self):
+        real = subprocess.run
+        self.write("src/new.py", b"x = 1\n")
+        for command in ("ls-files", "status"):
+            def cut(args, command=command, **kwargs):
+                done = real(args, **kwargs)
+                if command in args:
+                    done.stdout = done.stdout[:-1]
+                return done
+            with self.subTest(command), mock.patch("provost_runtime.acceptance.subprocess.run", side_effect=cut):
+                self.assertIsNone(self.tree())
+
+    def test_a_git_command_that_exits_zero_without_output_answers_none(self):
+        # Seen on a loaded Windows machine: git exits 0 with an empty stdout. A status read as "nothing is dirty"
+        # or an index read as "nothing is tracked" would be a wrong digest, and so a false fresh or stale verdict.
+        real = subprocess.run
+        self.write("src/new.py", b"x = 1\n")
+        for command in ("rev-parse", "ls-files", "status", "hash-object"):
+            def silent(args, command=command, **kwargs):
+                result = real(args, **kwargs)
+                return subprocess.CompletedProcess(args, 0, b"", b"") if command in args else result
+            with self.subTest(command), mock.patch("provost_runtime.acceptance.subprocess.run", side_effect=silent):
+                self.assertIsNone(self.tree())
+
+    def test_a_repo_without_a_commit_or_a_tracked_file_has_a_digest(self):
+        empty = self.root / "empty"
+        empty.mkdir()
+        self.git("init", "-q", cwd=empty)
+        (empty / "app.py").write_bytes(b"x = 1\n")
+        from provost_runtime.acceptance import tree_digest
+        first = tree_digest(str(empty))
+        self.assertRegex(first, r"^[0-9a-f]{64}$")
+        (empty / "app.py").write_bytes(b"x = 2\n")
+        self.assertNotEqual(tree_digest(str(empty)), first)
+
+    def test_a_file_vanishing_between_status_and_hashing_answers_none(self):
+        real = subprocess.run
+        target = self.write("src/new.py", b"x = 1\n")
+
+        def vanish(args, **kwargs):
+            if "hash-object" in args:
+                target.unlink()
+            return real(args, **kwargs)
+        with mock.patch("provost_runtime.acceptance.subprocess.run", side_effect=vanish):
+            self.assertIsNone(self.tree())
+
+    def test_the_whole_digest_shares_one_time_budget(self):
+        from provost_runtime import acceptance
+        with mock.patch.object(acceptance, "TREE_BUDGET", 0):
+            self.assertIsNone(self.tree())
+
+    def test_git_runs_read_only_and_never_opens_a_window(self):
+        real = subprocess.run
+        calls = []
+
+        def spy(args, **kwargs):
+            calls.append((args, kwargs))
+            return real(args, **kwargs)
+        self.write("src/new.py", b"x = 1\n")
+        before = sorted((self.repo / ".git").rglob("*"))
+        with mock.patch("provost_runtime.acceptance.subprocess.run", side_effect=spy):
+            self.assertIsNotNone(self.tree())
+        self.assertTrue(calls)
+        for args, kwargs in calls:
+            self.assertEqual(kwargs["env"]["GIT_OPTIONAL_LOCKS"], "0")
+            self.assertGreater(kwargs["timeout"], 0)
+            self.assertNotIn("-w", args)
+            if os.name == "nt":
+                self.assertEqual(kwargs["creationflags"], subprocess.CREATE_NO_WINDOW)
+        self.assertEqual(sorted((self.repo / ".git").rglob("*")), before)  # no object written
+
+    @unittest.skipIf(os.name == "nt", "Windows file names cannot hold a newline")
+    def test_a_new_file_with_a_newline_in_its_name_answers_none(self):
+        self.write("odd\nname.py", b"x = 1\n")
+        self.assertIsNone(self.tree())
+
+    def test_a_non_ascii_path_is_hashed(self):
+        before = self.tree()
+        self.write("src/模組.py", b"x = 1\n")
+        with_new = self.tree()
+        self.assertNotEqual(with_new, before)
+        self.commit()
+        self.assertEqual(self.tree(), with_new)
+
+
+class TreeGateCase(TreeDigestCase):
+    edit = AcceptanceStaleTests.edit
+    prompt = AcceptanceExemptionTests.prompt
+
+    def setUp(self):
+        super().setUp()
+        self.now = int(time.time())
+        self.calls = 0
+        self.counter = self.config_path.parent / "cache" / "acceptance" / (SESSION + ".pushes")
+        self.seen = self.counter.with_suffix(".seen")
+
+    def stop(self, acceptance=True, **extra):
+        return super().stop(acceptance, **{"cwd": str(self.repo), **extra})
+
+    def stamped(self, gate_id="unit-tests", kind="machine", **extra):
+        return gate(gate_id, "pass", kind=kind, tree=self.tree(), **extra)
+
+
+class TreeGateTests(TreeGateCase):
+    """A machine, live or visual pass with `tree` covers the code it ran on, whatever the clocks say and
+    whoever changed the files; `files` + `digest` narrow it to named files."""
+
+    def test_a_doc_edit_stays_fresh_even_after_a_later_main_session_edit(self):
+        self.acceptance("feature.json", [self.stamped(ranAt=iso(self.now - 40 * 60))])
+        self.write("README.md", b"# changed\n")
+        self.edit(self.now - 30 * 60, str(self.repo / "README.md"))
+        self.assertEqual(self.stop(), {})
+
+    def test_a_source_edit_by_any_process_is_stale_and_shows_the_current_tree(self):
+        path = self.acceptance("feature.json", [self.stamped(), self.stamped("cli", "live"),
+                                                self.stamped("ui", "visual"), gate("merge", "pass", kind="human")])
+        self.assertEqual(self.stop(), {})
+        self.write("src/app.py", b"print('two')\n")  # no transcript entry: a subagent or Bash
+        result = self.stop()
+        self.assertEqual(result.get("decision"), "block", result)
+        self.assertIn(str(path), result["reason"])
+        for gate_id in ("unit-tests", "cli", "ui"):
+            self.assertIn(gate_id + " (stale", result["reason"])
+        self.assertIn(self.tree()[:12], result["reason"])
+        self.assertNotIn("merge", result["reason"])
+
+    def test_committing_the_checked_content_stays_fresh(self):
+        self.write("src/app.py", b"print('two')\n")
+        self.acceptance("feature.json", [self.stamped()])
+        self.commit()
+        self.assertEqual(self.stop(), {})
+
+    def test_reverting_an_edit_is_fresh_again(self):
+        self.acceptance("feature.json", [self.stamped()])
+        self.write("src/app.py", b"print('two')\n")
+        self.assertEqual(self.stop().get("decision"), "block")
+        self.write("src/app.py", b"print('one')\n")
+        self.assertEqual(self.stop(), {})
+
+    def test_untracked_source_is_stale_and_an_untracked_log_is_not(self):
+        self.acceptance("feature.json", [self.stamped()])
+        self.write("run.log", b"output\n")
+        self.assertEqual(self.stop(), {})
+        self.write("src/new.py", b"x = 1\n")
+        self.assertIn("unit-tests (stale", self.stop()["reason"])
+
+    def test_a_deletion_is_stale(self):
+        self.acceptance("feature.json", [self.stamped()])
+        (self.repo / "src" / "app.py").unlink()
+        self.assertIn("unit-tests (stale", self.stop()["reason"])
+
+    def test_a_matching_tree_ignores_every_ran_at_rule(self):
+        self.edit(self.now - 30 * 60)
+        self.acceptance("feature.json", [self.stamped("old", ranAt=iso(self.now - 40 * 60)), self.stamped("none"),
+                                         self.stamped("future", ranAt=iso(self.now + 8 * HOUR))])
+        self.assertEqual(self.stop(), {})
+
+    def test_a_different_tree_is_stale_whatever_the_ran_at(self):
+        self.acceptance("feature.json", [self.stamped(ranAt=iso(self.now + 60))])
+        self.write("src/app.py", b"print('two')\n")
+        self.assertIn("unit-tests (stale", self.stop()["reason"])
+
+    def test_an_unknown_tree_is_stale_whatever_the_ran_at(self):
+        # The time rule cannot see a subagent's edits, so it must not vouch for a tree gate git cannot confirm.
+        self.acceptance("feature.json", [gate("unit-tests", "pass", tree=self.tree(), ranAt=iso(self.now + 60))])
+        with mock.patch("provost_runtime.acceptance.tree_digest", return_value=None):
+            self.assertIn("unit-tests (stale: the code's current state is unknown", self.stop()["reason"])
+
+    def test_a_non_git_cwd_makes_a_tree_gate_stale(self):
+        self.directory = self.root / ".claude" / "acceptance"
+        self.acceptance("feature.json", [gate("unit-tests", "pass", tree="0" * 64, ranAt=iso(self.now - 20 * 60))])
+        self.assertIn("unit-tests (stale: the code's current state is unknown", self.stop(cwd=str(self.root))["reason"])
+
+    def test_gates_without_tree_keep_the_time_rule_and_never_run_git(self):
+        self.acceptance("feature.json", [gate("unit-tests", "pass", ranAt=iso(self.now - 20 * 60))])
+        with mock.patch("provost_runtime.acceptance.tree_digest") as digest:
+            self.assertEqual(self.stop(), {})
+        digest.assert_not_called()
+
+    def test_the_tree_is_computed_once_per_stop_and_only_for_a_passed_tree_gate(self):
+        from provost_runtime.acceptance import tree_digest
+        tree = self.tree()
+        self.acceptance("a.json", [gate("a1", "pass", tree=tree), gate("a2", "pass", tree=tree, kind="live")])
+        self.acceptance("b.json", [gate("b1", "pass", tree=tree)])
+        with mock.patch("provost_runtime.acceptance.tree_digest", side_effect=tree_digest) as digest:
+            self.assertEqual(self.stop(), {})
+        self.assertEqual(digest.call_count, 1)
+        self.acceptance("a.json", [gate("a1", tree=tree)])  # pending: nothing to compare
+        self.acceptance("b.json", [gate("b1", "fail", tree=tree)])
+        with mock.patch("provost_runtime.acceptance.tree_digest") as digest:
+            self.assertEqual(self.stop().get("decision"), "block")
+        digest.assert_not_called()
+
+    def test_review_and_human_gates_ignore_tree(self):
+        reviewed = {"kind": "review", "id": "code-review", "check": "c", "status": "pass"}
+        self.acceptance("feature.json", [dict(reviewed, tree="0" * 64), dict(reviewed, id="typed", tree=7),
+                                         gate("merge", "pass", kind="human", tree=7)])
+        with mock.patch("provost_runtime.acceptance.tree_digest") as digest:
+            self.assertEqual(self.stop(), {})  # no edit, so a review gate without files is not stale
+        digest.assert_not_called()
+
+    def test_a_tree_that_is_not_a_string_is_malformed(self):
+        for kind in ("machine", "live", "visual"):
+            with self.subTest(kind):
+                path = self.acceptance("feature.json", [gate("g", "pass", kind=kind, tree=7)])
+                result = self.stop(session_id="tree-" + kind)
+                self.assertEqual(result.get("decision"), "block", result)
+                self.assertIn(str(path), result["reason"])
+                self.assertIn("tree must be a string", result["reason"])
+
+    def covered(self, *names, gate_id="docs-check", kind="machine", **extra):
+        from provost_runtime.acceptance import digest
+        names = list(names)
+        return gate(gate_id, "pass", kind=kind, files=names, digest=digest(names, str(self.repo)), **extra)
+
+    def test_files_and_digest_cover_docs_and_ignore_the_rest_of_the_tree(self):
+        for kind in ("machine", "live", "visual"):
+            with self.subTest(kind):
+                self.write("README.md", b"# readme\n")
+                self.write("src/other.py", b"x = %d\n" % len(kind))
+                self.acceptance("feature.json", [self.covered("README.md", kind=kind)])
+                self.write("src/other.py", b"changed\n")  # outside the gate's scope
+                self.assertEqual(self.stop(session_id="files-" + kind), {})
+                self.write("README.md", b"# changed\n")
+                reason = self.stop(session_id="files-" + kind)["reason"]
+                self.assertIn("docs-check (stale: files changed since the check", reason)
+
+    def test_files_and_digest_win_over_tree_and_ran_at(self):
+        self.edit(self.now - 30 * 60)
+        self.acceptance("feature.json", [self.covered("src/app.py", tree="0" * 64, ranAt=iso(self.now - 40 * 60))])
+        with mock.patch("provost_runtime.acceptance.tree_digest") as digest:
+            self.assertEqual(self.stop(), {})
+        digest.assert_not_called()
+        self.write("src/app.py", b"print('two')\n")
+        self.acceptance("feature.json", [dict(self.covered("src/app.py"), tree=self.tree(),
+                                              ranAt=iso(self.now), digest="0" * 64)])
+        self.assertIn("docs-check (stale: files changed", self.stop()["reason"])
+
+    def test_a_deleted_covered_file_is_stale_and_named(self):
+        target = self.repo / "src" / "app.py"
+        self.acceptance("feature.json", [self.covered(str(target))])
+        target.unlink()
+        reason = self.stop()["reason"]
+        self.assertIn("docs-check (stale: files changed since the check", reason)
+        self.assertIn(str(target), reason)
+
+    def test_half_a_files_digest_pair_on_the_wider_kinds_is_malformed(self):
+        for kind in ("machine", "live", "visual"):
+            for field in ("files", "digest"):
+                with self.subTest(kind=kind, field=field):
+                    item = self.covered("README.md", kind=kind)
+                    del item[field]
+                    self.acceptance("feature.json", [item])
+                    result = self.stop(session_id="half-%s-%s" % (kind, field))
+                    self.assertIn("malformed", result["reason"].lower())
+
+    def test_files_on_a_human_gate_stay_ignored(self):
+        self.acceptance("feature.json", [gate("merge", "pass", kind="human", files="anything")])
+        self.assertEqual(self.stop(), {})
+
+
+class AcceptanceDedupeTests(TreeGateCase):
+    """An unchanged stale block is not repeated across the person's prompts; a change of the state is."""
+
+    def block(self, push, **extra):
+        result = self.stop(**extra)
+        self.assertEqual(result.get("decision"), "block", result)
+        self.assertIn("push %d/3" % push, result["reason"])
+        return result
+
+    def test_an_unchanged_stale_state_does_not_block_after_a_prompt(self):
+        self.acceptance("feature.json", [self.stamped()])
+        self.write("src/app.py", b"print('two')\n")
+        self.block(1)
+        self.prompt()
+        self.assertEqual(self.stop(), {})
+        self.assertEqual(self.counter.read_text(encoding="ascii").strip(), "")  # no push spent
+        self.prompt()
+        self.assertEqual(self.stop(), {})
+
+    def test_a_new_source_edit_blocks_again_after_the_dedupe(self):
+        self.acceptance("feature.json", [self.stamped()])
+        self.write("src/app.py", b"print('two')\n")
+        self.block(1)
+        self.prompt()
+        self.assertEqual(self.stop(), {})
+        self.write("src/app.py", b"print('three')\n")
+        self.block(1)
+        self.assertEqual(self.counter.read_text(encoding="ascii").strip(), "1")
+        self.prompt()
+        self.assertEqual(self.stop(), {})
+
+    def test_the_budget_within_an_episode_works_as_before(self):
+        self.acceptance("feature.json", [self.stamped()])
+        self.write("src/app.py", b"print('two')\n")
+        for push in (1, 2, 3):
+            self.block(push)
+        self.assertEqual(self.stop(), {})
+        self.assertEqual(self.counter.read_text(encoding="ascii").strip(), "3")
+        self.prompt()
+        self.assertEqual(self.stop(), {})
+
+    def test_pending_failed_and_malformed_always_block_after_a_prompt(self):
+        cases = {"pending": [gate("g")], "fail": [gate("g", "fail")], "malformed": None}
+        for index, (name, gates) in enumerate(cases.items()):
+            with self.subTest(name):
+                raw = "{" if gates is None else None
+                self.acceptance("feature.json", gates, raw=raw)
+                self.counter = self.counter.with_name("case-%d.pushes" % index)
+                session = {"session_id": "case-%d" % index}
+                self.block(1, **session)
+                self.counter.write_text("", encoding="ascii")  # what the person's prompt does
+                self.block(1, **session)
+
+    def test_a_stale_gate_beside_a_pending_one_is_not_deduped(self):
+        self.acceptance("feature.json", [self.stamped(), gate("cli", kind="live")])
+        self.write("src/app.py", b"print('two')\n")
+        self.block(1)
+        self.prompt()
+        self.block(1)
+
+    def test_a_time_rule_stale_state_is_deduped_until_the_next_edit(self):
+        self.edit(self.now - 30 * 60)
+        self.acceptance("feature.json", [gate("unit-tests", "pass", ranAt=iso(self.now - 40 * 60))])
+        self.block(1)
+        self.prompt()
+        self.assertEqual(self.stop(), {})
+        self.edit(self.now - 20 * 60)
+        self.block(1)
+
+    def test_a_stale_review_gate_is_deduped_until_its_files_change_again(self):
+        from provost_runtime.acceptance import digest
+        names = ["src/app.py"]
+        self.acceptance("feature.json", [gate("code-review", "pass", kind="review", files=names,
+                                              digest=digest(names, str(self.repo)))])
+        self.write("src/app.py", b"print('two')\n")
+        first = self.block(1)["reason"]
+        self.assertIn("code-review (stale: reviewed files changed since the review", first)
+        self.prompt()
+        self.assertEqual(self.stop(), {})
+        self.write("src/app.py", b"print('three')\n")
+        self.assertNotEqual(self.block(1)["reason"], first)
+
+    def test_a_second_change_is_noticed_while_a_reviewed_file_stays_deleted(self):
+        from provost_runtime.acceptance import digest
+        self.write("src/other.py", b"x = 1\n")
+        names = ["src/app.py", "src/other.py"]
+        self.acceptance("feature.json", [gate("code-review", "pass", kind="review", files=names,
+                                              digest=digest(names, str(self.repo)))])
+        (self.repo / "src" / "app.py").unlink()
+        self.block(1)
+        self.prompt()
+        self.assertEqual(self.stop(), {})
+        self.write("src/other.py", b"x = 2\n")
+        self.block(1)
+
+    def test_a_clean_stop_deletes_the_seen_file_with_the_counter(self):
+        self.acceptance("feature.json", [self.stamped()])
+        self.write("src/app.py", b"print('two')\n")
+        self.block(1)
+        self.assertTrue(self.seen.exists())
+        self.write("src/app.py", b"print('one')\n")
+        self.assertEqual(self.stop(), {})
+        self.assertFalse(self.seen.exists())
+        self.assertFalse(self.counter.exists())
+        self.write("src/app.py", b"print('two')\n")  # the same state as before, but a new episode
+        self.block(1)
+
+    def test_exempt_stops_leave_the_seen_file_alone(self):
+        self.acceptance("feature.json", [self.stamped()])
+        self.write("src/app.py", b"print('two')\n")
+        self.assertEqual(self.stop(last_assistant_message="needs input: which one?"), {})
+        self.assertEqual(self.stop(background_tasks=[{"id": "b1"}]), {})
+        self.assertFalse(self.seen.exists())
+        self.block(1)
+
+    def test_an_unwritable_seen_file_never_raises_and_only_loses_the_dedupe(self):
+        self.acceptance("feature.json", [self.stamped()])
+        self.write("src/app.py", b"print('two')\n")
+        self.seen.mkdir(parents=True)  # neither readable nor replaceable
+        self.block(1)
+        self.prompt()
+        self.block(1)
+        self.assertTrue(self.seen.is_dir())
+
+    def test_a_garbled_seen_file_only_loses_the_dedupe(self):
+        self.acceptance("feature.json", [self.stamped()])
+        self.write("src/app.py", b"print('two')\n")
+        self.seen.parent.mkdir(parents=True)
+        self.seen.write_bytes(b"\xff garbage")
+        self.block(1)
+        self.prompt()
+        self.assertEqual(self.stop(), {})  # replaced by that block
+
+    def test_an_unreadable_counter_keeps_ending_the_turn(self):
+        self.acceptance("feature.json", [self.stamped()])
+        self.write("src/app.py", b"print('two')\n")
+        self.counter.parent.mkdir(parents=True)
+        self.counter.write_text("garbage", encoding="utf-8")
+        self.assertEqual(self.stop(), {})
+        self.assertFalse(self.seen.exists())
+
+
+class AcceptanceClosedTests(AcceptanceCase):
+    """A file with a top-level `closed` reason is finished work: its gates no longer hold the turn."""
+
+    def closed(self, name, gates, reason="merged in #95", **extra):
+        return self.acceptance(name, None, raw=json.dumps({"task": "t", "closed": reason, "gates": gates}), **extra)
+
+    def test_a_closed_file_never_blocks_and_a_clean_state_ends_the_episode(self):
+        self.acceptance("feature.json", [gate("g")])
+        counter = self.config_path.parent / "cache" / "acceptance" / (SESSION + ".pushes")
+        self.assertEqual(self.stop().get("decision"), "block")
+        self.closed("feature.json", [gate("g"), gate("h", "fail"), gate("i", "pass", ranAt="2020-01-01T00:00:00Z")])
+        self.assertEqual(self.stop(), {})
+        self.assertFalse(counter.exists())
+
+    def test_an_open_file_beside_a_closed_one_still_blocks(self):
+        self.closed("old.json", [gate("old-gate")])
+        self.acceptance("new.json", [gate("new-gate")])
+        reason = self.stop()["reason"]
+        self.assertIn("new-gate", reason)
+        self.assertNotIn("old-gate", reason)
+
+    def test_a_closed_value_that_is_not_a_non_empty_string_is_malformed(self):
+        for index, value in enumerate(("", "   ", True, 7, None, ["#95"])):
+            with self.subTest(value):
+                path = self.closed("feature.json", [gate("g", "pass")], reason=value)
+                result = self.stop(session_id="closed-%d" % index)
+                self.assertEqual(result.get("decision"), "block", result)
+                self.assertIn(str(path), result["reason"])
+                self.assertIn("closed must be a non-empty string", result["reason"])
+
+    def test_a_closed_file_is_not_the_task_a_brief_must_cite(self):
+        from provost_runtime.hooks import handle_event
+        self.closed("old.json", [gate("old-gate")])
+
+        def dispatch():
+            return handle_event({"session_id": SESSION, "transcript_path": str(self.transcript), "cwd": str(self.root),
+                                 "hook_event_name": "PreToolUse", "tool_name": "Agent",
+                                 "tool_input": {"subagent_type": "implementer", "prompt": "Build it."}},
+                                self.config_path, acceptance=True)
+        self.assertEqual(dispatch(), {})
+        self.acceptance("new.json", [gate("new-gate")])
+        context = dispatch()["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("new.json", context)
+        self.assertNotIn("old.json", context)
+
+    def test_the_block_reason_names_tree_and_closed(self):
+        self.acceptance("feature.json", [gate("g")])
+        reason = self.stop()["reason"]
+        self.assertIn("digest --tree", reason)
+        self.assertIn("`closed`", reason)

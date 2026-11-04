@@ -81,7 +81,10 @@ class Parser(argparse.ArgumentParser):
 
 
 def digest_command(args):
-    """`digest [--cwd DIR] PATH...`: the files and digest of a passed review gate, as JSON to paste into it.
+    """`digest [--cwd DIR] PATH...`: the files and digest of a passed gate, as JSON to paste into it.
+    `digest --tree [--cwd DIR]`: the tree of a machine, live or visual gate (acceptance.tree_digest()), printed
+    as {"tree": ...} and read before its check starts; outside a git work tree it is an error. Paths and --tree
+    exclude each other, and one of them is required.
 
     Needs no config or handoff: acceptance gates work without them. Each path is made absolute against --cwd
     (default: the current directory) and normalised, so the gate does not depend on the cwd it is checked
@@ -91,9 +94,18 @@ def digest_command(args):
     try:
         parser = Parser(prog="digest")
         parser.add_argument("--cwd", default=None)
-        parser.add_argument("paths", nargs="+")
+        parser.add_argument("--tree", action="store_true")
+        parser.add_argument("paths", nargs="*")
         options = parser.parse_args(args)
+        if options.tree == bool(options.paths):
+            raise StoreError("INVALID_ARGUMENTS")
         cwd = os.path.abspath(options.cwd or os.getcwd())
+        if options.tree:
+            tree = acceptance.tree_digest(cwd)
+            if tree is None:
+                raise StoreError("TREE_UNKNOWN", detail="not a git work tree, or git could not read it in time")
+            print(json.dumps({"tree": tree}, ensure_ascii=True))
+            return 0
         files = sorted({os.path.normpath(os.path.join(cwd, path)) for path in options.paths})
         try:
             value = acceptance.digest(files)

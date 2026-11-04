@@ -193,6 +193,36 @@ class CliTests(FixtureCase):
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertIn("error", json.loads(result.stdout))
 
+    def test_digest_tree_prints_the_tree_the_stop_check_compares(self):
+        from provost_runtime.acceptance import tree_digest, unmet_state
+        self.isolate_user_git_config()
+        self.git("init", "-q")
+        (self.root / "app.py").write_bytes(b"x = 1\n")
+        self.config_path.unlink()  # no config, no handoff: the digest still works
+        result = self.run_cli("digest", "--tree", "--cwd", str(self.root))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(set(data), {"tree"})
+        self.assertRegex(data["tree"], r"^[0-9a-f]{64}$")
+        self.assertEqual(data["tree"], tree_digest(str(self.root)))
+        passed = {"id": "unit-tests", "kind": "machine", "check": "c", "status": "pass", **data}
+        self.assertIsNone(unmet_state(passed, None, str(self.root), tree_digest(str(self.root))))
+        (self.root / "app.py").write_bytes(b"x = 2\n")
+        self.assertIn("stale", unmet_state(passed, None, str(self.root), tree_digest(str(self.root))))
+
+    def test_digest_tree_outside_a_work_tree_is_an_error(self):
+        result = self.run_cli("digest", "--tree", "--cwd", str(self.root))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout)["error"], "TREE_UNKNOWN")
+
+    def test_digest_takes_paths_or_tree_never_both_or_neither(self):
+        (self.root / "app.py").write_bytes(b"x = 1\n")
+        for args in (("--tree", "--cwd", str(self.root), "app.py"), ("--cwd", str(self.root)), ()):
+            with self.subTest(args):
+                result = self.run_cli("digest", *args)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertEqual(json.loads(result.stdout)["error"], "INVALID_ARGUMENTS")
+
     def test_record_after_transcript_moved_carries_a_cursor(self):
         bound = self.root / "projects" / "D--Repo" / "sess.jsonl"
         bind(self.root, "s1", {"transcript_path": str(bound)})
