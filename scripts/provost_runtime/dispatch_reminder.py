@@ -2,7 +2,7 @@
 
 When the main session dispatches implementer, implementer-sonnet or mech-executor while it has an
 acceptance file (<cwd>/.claude/acceptance/*.json that its own transcript shows it wrote, found by
-acceptance.session_files; another session's file in the same directory does not count) and the brief
+acceptance.session_files; another session's file in the same directory and a closed file do not count) and the brief
 (tool_input.prompt) cites none of the session's files, remind() returns additional context asking main to
 cite them. It is advisory: never a permission decision, and any error or doubt returns {}.
 
@@ -31,7 +31,7 @@ def remind(event):
         directory = acceptance_directory(event)
         if directory is None:
             return {}
-        files = session_files(event, directory)
+        files = [path for path in session_files(event, directory) or () if not _closed(path)]
         if not files or any(_cites(prompt, path.name) for path in files):
             return {}
         return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
@@ -43,6 +43,14 @@ def remind(event):
 def _cites(prompt, name):
     text = prompt.replace("\\", "/")
     return re.search(r"(?<![\w.-])" + re.escape(name) + r"(?![\w-]|\.\w)", text, re.IGNORECASE) is not None
+
+
+def _closed(path):
+    """True for a finished task's file: it is no longer the acceptance file a new brief builds against."""
+    try:
+        return "closed" in load(path)
+    except (Malformed, OSError):  # a malformed file is the Stop check's to report, and keeps counting here
+        return False
 
 
 def _visual(path):

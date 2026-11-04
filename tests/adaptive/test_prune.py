@@ -851,6 +851,20 @@ class AcceptancePushesPruneTests(FixtureCase):
         self.assertEqual([p for p in stale if p.exists()], [])
         self.assertTrue(all(p.exists() for p in [fresh, kept_session, *others, self.counters / "dir.pushes"]))
 
+    def test_stale_seen_files_are_handled_like_counters(self):
+        stale = self.put(self.counters / "old-1.seen", 40)
+        fresh = self.put(self.counters / "fresh.seen", 2)
+        kept_session = self.put(self.counters / "current.seen", 40)
+        others = [self.put(self.counters / "old.seen.bak", 40), self.put(self.counters / "bad name.seen", 40),
+                  self.put(self.counters / ".seen", 40), self.put(self.cache / "root.seen", 40)]
+        dry = prune(self.root, acceptance_cache=self.counters, keep_session="current")
+        self.assertEqual(self.listed(dry), ["old-1.seen"])
+        self.assertTrue(stale.exists())
+        result = prune(self.root, acceptance_cache=self.counters, keep_session="current", apply=True)
+        self.assertEqual(result["stale_acceptance_pushes"]["removed"], 1)
+        self.assertFalse(stale.exists())
+        self.assertTrue(all(p.exists() for p in [fresh, kept_session, *others]))
+
     def test_nothing_stale_reports_nothing(self):
         self.put(self.counters / "fresh.pushes", 2)
         self.assertNotIn("stale_acceptance_pushes", prune(self.root, acceptance_cache=self.counters, apply=True))

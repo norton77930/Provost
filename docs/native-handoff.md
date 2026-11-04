@@ -657,16 +657,16 @@ session has no directory anywhere in the store are listed per session under
 `orphan_facts_cache` (`candidates`, `removed`, `skipped`, `errors`; present only when
 non-empty) once their newest file is older than the expiry age, and deleted only with
 `--apply`; names without a `[A-Za-z0-9-]+` session id (`UNEXPECTED_NAME`) and linked
-entries (`LINKED_STORAGE`) are skipped. The acceptance gate's push counters
-(`<provost dir>/cache/acceptance/<session_id>.pushes`) belong to no session dir; `prune`
+entries (`LINKED_STORAGE`) are skipped. The acceptance gate's push counters and last-block
+hashes (`<provost dir>/cache/acceptance/<session_id>.pushes` and `.seen`) belong to no session dir; `prune`
 lists the ones not written for the expiry age (`--expired-older-than-days`, default 30)
 under `stale_acceptance_pushes` (`candidates`, `removed`, `skipped`, `errors`; present
 only when non-empty) and deletes them with `--apply`, even when no handoff store exists.
 With handoff off for the workspace, `prune` does only this: it returns `handoff: false`,
 `expired_older_than_days`, `applied` and `stale_acceptance_pushes`, and reads or creates no
 handoff store (the other store commands still return `HANDOFF_DISABLED`).
-Only regular files named `<session_id>.pushes` directly in that folder are touched; the
-`--session` counter, other files and linked entries are kept. `--older-than-days` (default 14) applies
+Only regular files named `<session_id>.pushes` or `<session_id>.seen` directly in that folder are touched; the
+`--session` files, other files and linked entries are kept. `--older-than-days` (default 14) applies
 to binding-only dirs only. `doctor` reports `expired_sessions` at the default age.
 `--apply` removes expired sessions (counted in `expired_removed`) with the same
 move, re-check and delete steps as below; a session that became fresh or locked in
@@ -1097,6 +1097,7 @@ task), commit the acceptance file deliberately or attach it to the PR.
 |---|---|---|
 | `task` | yes | string: the task the gates accept |
 | `gates` | yes | list of gate objects (may be empty) |
+| `closed` | no | non-empty string: why the task is finished (the merge commit or PR, or the owner's decision to abandon it); the Stop check skips the file's gates and the dispatch reminder ignores the file |
 | `gates[].id` | yes | non-empty string, named in the block reason |
 | `gates[].kind` | yes | `machine`, `live`, `visual`, `review` or `human` |
 | `gates[].check` | yes | string: what closes the gate (command, steps, state and fixture data) |
@@ -1104,8 +1105,9 @@ task), commit the acceptance file deliberately or attach it to the PR.
 | `gates[].ranAt` | no | ISO 8601 time the check last ran, read from the clock in UTC with a zone: `date -u +%Y-%m-%dT%H:%M:%SZ` in Bash, `(Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')` in PowerShell (where `date -u` prints local time labelled `Z`); a time without a zone makes a passed gate stale once the session has edited, and a zoned time more than 5 minutes ahead of now is stale too |
 | `gates[].evidence` | no | string: result summary, observed output, screenshot path or verdict |
 | `gates[].source` | no | string: path or URL of the mockup, spec or issue the gate is judged against |
-| `gates[].files` | no, `review` only | non-empty list of the paths the review covered (absolute, or relative to `cwd`); only together with `digest`, both printed by the `digest` command below |
-| `gates[].digest` | no, `review` only | string: the digest of `files` when the review passed; only together with `files` |
+| `gates[].tree` | no, `machine`, `live`, `visual` | string: the code tree the check ran on, printed by `digest --tree` (below) and read before the check starts; ignored on `review` and `human` gates |
+| `gates[].files` | no, not `human` | non-empty list of the paths the review or check covered (absolute, or relative to `cwd`); only together with `digest`, both printed by the `digest` command below |
+| `gates[].digest` | no, not `human` | string: the digest of `files` when the gate passed; only together with `files` |
 
 Other keys are ignored. `human` gates (release, tag, merge and other outward
 actions) are the owner's decision and never hold the turn.
@@ -1134,10 +1136,13 @@ answers at every main-turn end:
   path. Claude Code shows the reason to the main session, which keeps working instead
   of ending the turn.
 - A file that does not match the schema (not UTF-8 JSON, larger than 1 MB, a missing
-  or mistyped field, an unknown `kind` or `status`, an unparsable `ranAt`, a `review`
-  gate with only one of `files` and `digest`) also
+  or mistyped field, an unknown `kind` or `status`, an unparsable `ranAt`, a non-`human`
+  gate with only one of `files` and `digest`, a `tree` that is not a string on a `machine`,
+  `live` or `visual` gate, a `closed` that is not a non-empty string) also
   blocks; the reason names the file and its first problem, so a typo cannot switch
   enforcement off unnoticed.
+- A file with `closed` is finished work: its gates are skipped, so a session with only
+  closed files is in a clean state. The file still has to match the schema.
 - Legitimate pauses end the turn with no decision and spend no push: a `Stop` event
   that carries `agent_id` (a subagent's; only the main session is gated); a non-empty
   `background_tasks` (a test run or other work still running in the background; checked
@@ -1156,6 +1161,16 @@ answers at every main-turn end:
   `cache/notifications`; `<provost dir>` is the folder of `provost/config.json`, or of
   `PROVOST_CONFIG`), replaced atomically on each push. A counter that cannot be read
   or written, or a session id that cannot name it, ends the turn instead of blocking.
+- **No repeat of an unchanged stale block.** Each block replaces
+  `<provost dir>/cache/acceptance/<session_id>.seen`, a hash of the unmet state it
+  reported. A later `Stop` returns no decision and spends no push when every unmet item is
+  stale (no `pending`, no `fail`, no malformed file), the state hashes the same, and the
+  push count reads zero, that is, the person sent a prompt since that block. Stale reasons
+  carry a short prefix of the current digest or the clock times involved, so any change of
+  the content (or of the last edit, under the time rule) blocks again. Within one episode
+  the budget above applies as before, and pending gates, failed gates and malformed
+  files always block. A clean `Stop` deletes the file with the counter. A `.seen` that
+  cannot be read or written only means no dedupe.
 - Otherwise, and on any internal error (an unreadable transcript, an unexpected
   exception, invalid hook input), it returns no decision and the turn ends: a broken
   check never traps a session. It needs no `provost/config.json` and works with
@@ -1178,7 +1193,47 @@ survives until the person's next prompt. The bash part of the gate exits before 
 runs when that directory is gone, so a clean `Stop` cannot delete the counter; the
 prompt reset empties it, and `prune` removes it once it is stale.
 
-A `machine`, `live` or `visual` gate with status `pass` goes **stale** when the main
+**A verdict covers content, not a time.** A `machine`, `live` or `visual` gate with
+status `pass` is judged by the first of these that applies:
+
+1. `files` and `digest`: the digest of those files, as for a `review` gate below;
+   `ranAt` and `tree` are not used. This is the scope for a check that depends on a doc
+   or on a narrow set of files.
+2. `tree`: equal to the current tree digest is fresh and different is stale, whatever
+   `ranAt` says and whoever changed the files. Read it before the check starts and never
+   stamp it without running the check. A current digest that is unknown is stale too,
+   because the time rule cannot see a subagent's edits: no git, not a work tree, a git
+   failure, an empty or cut-short answer or a 15-second budget spent, commits that track
+   no file, a file that vanished while hashing, a new or modified file with a newline in
+   its name. Rerun `digest --tree`; if git still fails, use `files` and `digest` or raise
+   `needs input:`.
+3. The time rule below, for a gate with neither.
+
+Print the tree from the working tree the check runs on:
+
+```bash
+bash "<runtime>/hooks/runtime" digest --tree [--cwd "<dir>"]
+# {"tree": "<64 hex characters>"}
+```
+
+Outside a git work tree it is an error (`{"error": "TREE_UNKNOWN", ...}`, exit 1), and
+`digest` with neither paths nor `--tree`, or with both, is `INVALID_ARGUMENTS`. The tree
+digest is SHA-256 over the sorted `[path, blob id]` pairs from the repository top: the
+index's blob ids, with each modified, conflicted or untracked file's id from
+`git hash-object` (filters applied, nothing written), so a run on a dirty tree stays
+fresh after the same content is committed, and a revert is fresh again. A deleted path
+drops out. No file time is read. Left out: docs by case-insensitive suffix (`.md`,
+`.mdx`, `.markdown`, `.rst`, `.txt`, tracked or not), anything under
+`.claude/acceptance/`, untracked files with a check's usual output suffixes (`.log`,
+`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.webm`, `.mp4`; once tracked they count) and
+nested repositories. A submodule counts by the commit in its index entry, not by its own
+work tree.
+
+**Limit of the doc exclusion.** A gate whose check depends on a doc or prompt file (for
+example this repository's `native/CLAUDE.native.md`, or a `requirements.txt`) must use
+`files` and `digest` instead of `tree`, because `tree` does not see that file change.
+
+The time rule: a gate goes **stale** when the main
 session edits a file after it: its `ranAt` is before the session's last edit, or it
 has no `ranAt`, or a `ranAt` without a time zone (it cannot be compared with the
 transcript's UTC), and the session has edited anything. A stale gate holds the turn like
@@ -1192,7 +1247,7 @@ not count, and neither do subagent edits, which are recorded in their own
 transcripts. If the edit history cannot be read, only pending and failed gates hold
 the turn.
 
-A `review` gate with status `pass` is checked against the files it reviewed, not
+A `review` gate with status `pass` keeps its own rule (`tree` is ignored on it) and is checked against the files it reviewed, not
 against edit times. With `files` and `digest`, it goes **stale** when the digest of
 those files no longer matches, whoever changed them (the main session, a subagent, a
 Bash or PowerShell command); a deleted or unreadable file counts as changed and is
@@ -1250,7 +1305,7 @@ adds context at dispatch time and never denies, asks or blocks one:
 - It speaks only when `tool_input.subagent_type` is `implementer`,
   `implementer-sonnet` or `mech-executor`, the session has an acceptance file (the
   same session-written files as the `Stop` check, another session's file in the same
-  directory does not count; a malformed file still counts),
+  directory does not count; a malformed file still counts; a `closed` one does not),
   and `tool_input.prompt` cites none of them.
 - **Citing** means the prompt contains a session file's name, for example
   `feature.json`. That also matches `.claude/acceptance/feature.json` and an absolute
