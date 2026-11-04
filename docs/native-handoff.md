@@ -662,6 +662,9 @@ hashes (`<provost dir>/cache/acceptance/<session_id>.pushes` and `.seen`) belong
 lists the ones not written for the expiry age (`--expired-older-than-days`, default 30)
 under `stale_acceptance_pushes` (`candidates`, `removed`, `skipped`, `errors`; present
 only when non-empty) and deletes them with `--apply`, even when no handoff store exists.
+With handoff off for the workspace, `prune` does only this: it returns `handoff: false`,
+`expired_older_than_days`, `applied` and `stale_acceptance_pushes`, and reads or creates no
+handoff store (the other store commands still return `HANDOFF_DISABLED`).
 Only regular files named `<session_id>.pushes` or `<session_id>.seen` directly in that folder are touched; the
 `--session` files, other files and linked entries are kept. `--older-than-days` (default 14) applies
 to binding-only dirs only. `doctor` reports `expired_sessions` at the default age.
@@ -1142,7 +1145,10 @@ answers at every main-turn end:
   closed files is in a clean state. The file still has to match the schema.
 - Legitimate pauses end the turn with no decision and spend no push: a `Stop` event
   that carries `agent_id` (a subagent's; only the main session is gated); a non-empty
-  `background_tasks` (a test run or other work still running in the background); and
+  `background_tasks` (a test run or other work still running in the background; checked
+  against Claude Code 2.1.318, which sends `[]` when nothing runs and one
+  `{"id", "type", "status": "running", "description", "command"}` entry per running
+  task, dropping a task once it has finished); and
   a stated blocker, a line of `last_assistant_message` that starts with
   `needs input:` or `failed:` (any case, optionally behind a `-` or `*` bullet, a `>`
   quote or `**`/`__` bold). A mention inside a sentence is not a blocker line.

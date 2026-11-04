@@ -12,7 +12,7 @@ from .hooks import (binding, cursor, handle_event, last_binding_at, recovery_con
                     resolve_transcript, workspace_root)
 from .facts import SPOOL_SESSION
 from .store import (DECLARE_FLAGS, FACTS_FLAGS, StoreError, broken_works, cards, guard, is_done, list_snapshots,
-                    newest_entries, prune, read_log, resume, snapshot, storage_ready)
+                    newest_entries, prune, prune_counters, read_log, resume, snapshot, storage_ready)
 
 
 RUNTIME_ROOT = Path(__file__).resolve().parents[2]
@@ -194,6 +194,12 @@ def main(argv=None):
                       "stale_sessions": stale, "expired_sessions": expired,
                       "store_home": str(handoff_home()), "repo_key": root.repo_key,
                       "runtime_root": str(RUNTIME_ROOT), "runtime_hash": runtime_hash(RUNTIME_ROOT)}
+        elif options.command == "prune" and (mode != "adaptive" or not cfg.get("handoff")):
+            # The acceptance gate keeps its counters with handoff off; nothing else is pruned then.
+            result = prune_counters(config_path().parent / "cache" / "acceptance",
+                                    older_than_days=options.older_than_days,
+                                    expired_older_than_days=options.expired_older_than_days,
+                                    keep_session=options.session, apply=options.apply)
         else:
             if mode != "adaptive" or not cfg.get("handoff"):
                 raise StoreError("HANDOFF_DISABLED")

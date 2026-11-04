@@ -282,7 +282,10 @@ class AcceptanceExemptionTests(AcceptanceCase):
         self.assertEqual(self.stop(), {})  # and the budget stays spent until a new episode
 
     def test_background_tasks_end_the_turn_without_spending_a_push(self):
-        running = [{"id": "b1", "type": "bash", "status": "running"}]
+        # The shape Claude Code 2.1.318 sends (captured from a real Stop with `sleep 45` running in the
+        # background); the next Stop, after the task finished, carried background_tasks: [].
+        running = [{"id": "bat1p4cpz", "type": "shell", "status": "running",
+                    "description": "Sleep for 45 seconds", "command": "sleep 45"}]
         self.assertEqual(self.stop(background_tasks=running), {})
         self.assertFalse(self.counter.exists())
         self.assertBlocks(1, background_tasks=[])
