@@ -130,7 +130,7 @@ A hard-tier task starts with an approved written spec or PRD before implementati
 
 ## 8. Skills
 
-`/grill-with-docs` and `/grill-me` are user-invoked; the rest load on task semantics: `grilling` to pressure-test a design one question at a time; `tdd` for behavior changes with an agreed test seam (each slice: one focused RED, minimal GREEN); `diagnosing-bugs` for hard bugs — build the red-capable feedback loop first, no root-cause guesses before it exists; Matt's `code-review` (not the built-in `/code-review`) only when the user explicitly requests standards-vs-spec review; `verification-before-completion` calibrates the final claim against the one planned verification — it is not a trigger to invent extra quality work.
+`/grill-with-docs`, `/grill-me`, `/to-spec`, `/to-tickets`, `/implement` and `/implement-spec` are user-invoked, so ask the user to run one when the flow reaches it; the rest load on task semantics: `grilling` to pressure-test a design one question at a time; `tdd` for behavior changes with an agreed test seam (each slice: one focused RED, minimal GREEN); `diagnosing-bugs` for hard bugs — build the red-capable feedback loop first, no root-cause guesses before it exists; Matt's `code-review` (not the built-in `/code-review`) only when the user explicitly requests standards-vs-spec review; `verification-before-completion` calibrates the final claim against the one planned verification — it is not a trigger to invent extra quality work.
 
 ## 9. Role boundaries
 
