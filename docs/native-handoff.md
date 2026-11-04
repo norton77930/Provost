@@ -1140,7 +1140,10 @@ answers at every main-turn end:
   enforcement off unnoticed.
 - Legitimate pauses end the turn with no decision and spend no push: a `Stop` event
   that carries `agent_id` (a subagent's; only the main session is gated); a non-empty
-  `background_tasks` (a test run or other work still running in the background); and
+  `background_tasks` (a test run or other work still running in the background; checked
+  against Claude Code 2.1.318, which sends `[]` when nothing runs and one
+  `{"id", "type", "status": "running", "description", "command"}` entry per running
+  task, dropping a task once it has finished); and
   a stated blocker, a line of `last_assistant_message` that starts with
   `needs input:` or `failed:` (any case, optionally behind a `-` or `*` bullet, a `>`
   quote or `**`/`__` bold). A mention inside a sentence is not a blocker line.

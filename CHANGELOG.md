@@ -268,6 +268,10 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 - `prune` with handoff off (#50) no longer fails with `HANDOFF_DISABLED`: it
   lists, and with `--apply` removes, the acceptance gate's stale
   `cache/acceptance/*.pushes` counters and touches nothing else.
+- The acceptance gate's background-work exemption (#50 item 6) is checked
+  against real Stop payloads from Claude Code 2.1.318: `background_tasks` is
+  `[]` when nothing runs and lists only running tasks, so the non-empty check
+  is unchanged; the test now uses the captured entry shape.
 - `tools/reviewer-cases.js candidates` (#56) takes the reviewed head from the first
   commit hash in the dispatch claim that resolves in the repo (new `headFrom` column:
   `claim`), and only falls back to the first commit within 3h after the dispatch
