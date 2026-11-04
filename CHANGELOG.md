@@ -134,6 +134,10 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- Second prompt-audit pass: §8 names the Matt skills only the user can invoke
+  (`/to-spec`, `/to-tickets`, `/implement`, `/implement-spec`), `architecture-reviewer`
+  tags and numbers findings as §3 expects, and both implementers also stop on
+  crypto, payments and cross-repo work.
 - Policy prompt-audit follow-ups: §6 describes the Stop hook as it behaves since
   #96 (a malformed file blocks, an unchanged all-stale state is not repeated after
   a prompt); §4 sends a `live` gate to `acceptance-verifier` only when its result
