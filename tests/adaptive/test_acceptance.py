@@ -852,6 +852,59 @@ class TreeDigestTests(TreeDigestCase):
         with mock.patch.object(acceptance, "TREE_BUDGET", 0):
             self.assertIsNone(self.tree())
 
+    def test_a_child_of_git_holding_the_output_pipe_cannot_outlast_the_limit(self):
+        # On Windows subprocess.run follows kill() with a communicate() that waits for the pipe to close, so a
+        # child of git that keeps the pipe open blocks it for the child's whole life.
+        import sys
+        from provost_runtime import acceptance
+        real = subprocess.run
+        life = 20
+        marker = self.root / "holder.pid"
+        holder = ("import os, time\n"
+                  "open(%r, 'w').write(str(os.getpid()))\n"
+                  "time.sleep(%d)\n" % (str(marker), life))
+        git = self.root / "fake_git.py"
+        git.write_text("import subprocess, sys, time\n"
+                       "subprocess.Popen([sys.executable, '-c', %r], stdout=sys.stdout.fileno())\n"
+                       "time.sleep(%d)\n" % (holder, life * 5), encoding="utf-8")
+
+        def stand_in(args, **kwargs):
+            return real([sys.executable, str(git)], **kwargs)
+
+        def release():
+            try:
+                os.kill(int(marker.read_text()), 15)
+            except (OSError, ValueError):
+                pass
+        self.addCleanup(release)
+        with mock.patch.object(acceptance, "TREE_BUDGET", 4), mock.patch.object(acceptance, "TREE_GRACE", 1), \
+                mock.patch("provost_runtime.acceptance.subprocess.run", side_effect=stand_in):
+            started = time.monotonic()
+            result = self.tree()
+            elapsed = time.monotonic() - started
+        self.assertTrue(marker.exists(), "the holder never started")
+        self.assertIsNone(result)
+        self.assertLess(elapsed, life / 2)
+
+    def test_a_digest_that_never_returns_answers_none_within_the_limit(self):
+        import threading
+        from provost_runtime import acceptance
+        stuck = threading.Event()
+        self.addCleanup(stuck.set)
+        with mock.patch.object(acceptance, "TREE_BUDGET", 0.2), mock.patch.object(acceptance, "TREE_GRACE", 0.2), \
+                mock.patch.object(acceptance, "_tree_digest", side_effect=lambda cwd: stuck.wait(30)):
+            started = time.monotonic()
+            self.assertIsNone(self.tree())
+            self.assertLess(time.monotonic() - started, 5)
+
+    def test_an_exception_in_the_digest_answers_none_and_prints_nothing(self):
+        from contextlib import redirect_stderr
+        from provost_runtime import acceptance
+        errors = io.StringIO()
+        with redirect_stderr(errors), mock.patch.object(acceptance, "_tree_digest", side_effect=RuntimeError("boom")):
+            self.assertIsNone(self.tree())
+        self.assertEqual(errors.getvalue(), "")
+
     def test_git_runs_read_only_and_never_opens_a_window(self):
         real = subprocess.run
         calls = []
