@@ -18,6 +18,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -40,6 +41,7 @@ STALE_KINDS = ("machine", "live", "visual")  # a pass of these goes stale after 
 FUTURE_SLACK = timedelta(minutes=5)  # a zoned ranAt further ahead of now than this is a mislabelled local time
 SHORT_DIGEST = 12  # characters of a digest named in a stale reason
 TREE_BUDGET = 15  # seconds for all git calls of one tree_digest(); the hook's own timeout is 30
+TREE_GRACE = 1  # tree_digest() answers None at most TREE_BUDGET + TREE_GRACE seconds in, even if git's thread is stuck
 DOC_SUFFIXES = (".md", ".mdx", ".markdown", ".rst", ".txt")  # not code, tracked or not (lower case)
 ARTIFACT_SUFFIXES = (".log", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".webm", ".mp4")  # untracked: a check's output
 CONFLICTS = ("DD", "AU", "UD", "UA", "DU", "AA", "UU")  # the unmerged XY codes of `git status --porcelain`
@@ -368,11 +370,26 @@ def tree_digest(cwd):
     written, which is the blob the same content has once committed: a check run on a dirty tree stays fresh
     after the commit. No file time is read. Left out: docs (DOC_SUFFIXES, whatever their state), anything under
     .claude/acceptance/, untracked files with ARTIFACT_SUFFIXES (a check's own output must not stale it) and
-    nested repos. A submodule counts by the commit its index entry records, not by its own work tree."""
+    nested repos. A submodule counts by the commit its index entry records, not by its own work tree.
+
+    Answers within TREE_BUDGET + TREE_GRACE seconds, whatever git or its children do: the work runs in a daemon
+    thread that is joined for that long, and None is the answer when it is still running. On Windows
+    subprocess.run waits for the output pipe to close after killing git, so a child of git holding the pipe can
+    outlive the timeout; such a thread is abandoned until the process exits (it never blocks the exit)."""
+    answer = []
+
+    def work():
+        try:
+            answer.append(_tree_digest(cwd))
+        except Exception:
+            pass
     try:
-        return _tree_digest(cwd)
+        thread = threading.Thread(target=work, name="tree-digest", daemon=True)
+        thread.start()
+        thread.join(TREE_BUDGET + TREE_GRACE)
     except Exception:
         return None
+    return answer[0] if answer and not thread.is_alive() else None
 
 
 def _tree_digest(cwd):
