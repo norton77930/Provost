@@ -9,7 +9,7 @@ The expanded pane in a real session:
 The same pane as text:
 
 ```
-board  ███████░░░ 3/5 · gates 2/4 · needs you: merge   [Collapse]
+needs you: merge · ███████░░░ 3/5 · gates 2/4   [Collapse]
 ── Steps ──────────────────────────────────────────────────────
  ✓ 1  Move board mod into Provost repo
  ✓ 2  Write acceptance file for board round 1

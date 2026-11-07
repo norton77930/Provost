@@ -175,10 +175,10 @@ test('a foreground dispatch runs until its result, then counts as done', { optio
   agent.foreground(5 * MIN, 'a-1')
   const call = dispatch($, { description: 'Read the code', prompt: 'Read every file.', subagent_type: 'Explore' })
   await w.clock.settle()
-  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/1 完成 · 1 執行中')
+  expect(w.status()).toBe('░░░░░░░░░░ 0/1 完成 · 1 執行中')
   await w.clock.advance(5 * MIN)
   await call
-  expect(w.status()).toBe('board  ██████████ 1/1 完成 · 0 執行中')
+  expect(w.status()).toBe('██████████ 1/1 完成 · 0 執行中')
 })
 
 test('a background dispatch ends at the turn.complete carrying its agentId', { options: ZH }, async ($, on) => {
@@ -187,12 +187,12 @@ test('a background dispatch ends at the turn.complete carrying its agentId', { o
   await start($)
   agent.background('bg-1')
   await dispatch($, { description: 'Run tests', prompt: 'Run them.', subagent_type: 'test-analyst' })
-  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/1 完成 · 1 執行中')
+  expect(w.status()).toBe('░░░░░░░░░░ 0/1 完成 · 1 執行中')
   await turnDone($, 'someone-else')
-  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/1 完成 · 1 執行中')
+  expect(w.status()).toBe('░░░░░░░░░░ 0/1 完成 · 1 執行中')
   await w.clock.advance(3 * MIN)
   await turnDone($, 'bg-1')
-  expect(w.status()).toBe('board  ██████████ 1/1 完成 · 0 執行中')
+  expect(w.status()).toBe('██████████ 1/1 完成 · 0 執行中')
 })
 
 test('a background dispatch ends when the polled agent list says completed', { options: ZH }, async ($, on) => {
@@ -204,11 +204,11 @@ test('a background dispatch ends when the polled agent list says completed', { o
   w.agents.push({ id: 'bg-2', description: 'Survey', type: 'Explore', status: 'running' })
   await w.clock.advance(30_000)
   expect(w.listCalls()).toBe(1)
-  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/1 完成 · 1 執行中')
+  expect(w.status()).toBe('░░░░░░░░░░ 0/1 完成 · 1 執行中')
   w.agents[0]!.status = 'completed'
   await w.clock.advance(30_000)
   expect(w.listCalls()).toBe(2)
-  expect(w.status()).toBe('board  ██████████ 1/1 完成 · 0 執行中')
+  expect(w.status()).toBe('██████████ 1/1 完成 · 0 執行中')
 })
 
 test('polling stops once nothing runs, and starts again with the next background dispatch', async ($, on) => {
@@ -237,11 +237,11 @@ test('a denied dispatch fails with the reason', { options: ZH }, async ($, on) =
   await start($)
   agent.answer({ deny: 'subagents are off here' })
   await dispatch($, { description: 'Nope', prompt: 'n' })
-  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/1 完成 · 0 執行中 · 1 失敗')
+  expect(w.status()).toBe('░░░░░░░░░░ 0/1 完成 · 0 執行中 · 1 失敗')
   expect(w.listCalls()).toBe(0)
 })
 
-test('an errored dispatch fails; so do an aborted turn and a killed agent', { options: ZH }, async ($, on) => {
+test('an errored dispatch fails; an aborted turn and a killed agent are stopped, not failed, and leave the count', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -254,7 +254,7 @@ test('an errored dispatch fails; so do an aborted turn and a killed agent', { op
   await turnDone($, 'bg-4', 'aborted')
   w.agents.push({ id: 'bg-5', description: 'Killed', type: 'general-purpose', status: 'killed' })
   await w.clock.advance(30_000)
-  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/3 完成 · 0 執行中 · 3 失敗')
+  expect(w.status()).toBe('░░░░░░░░░░ 0/1 完成 · 0 執行中 · 1 失敗')
 })
 
 // Three runs of one role, 4, 6 and 8 minutes long: with them the role has an estimate (median 6).
@@ -284,11 +284,11 @@ test('ETA: needs three finished rows of the same role; concurrent agents combine
     await w.clock.advance(ms)
     await call
   }
-  expect(w.status()).toBe('board  ██████████ 5/5 完成 · 0 執行中')
+  expect(w.status()).toBe('██████████ 5/5 完成 · 0 執行中')
   agent.background('bg-e')
   await dispatch($, { description: 'e', prompt: 'p', subagent_type: 'Explore' })
-  expect(w.status()).toBe('board  ████████▓░ 5/6 完成 · 1 執行中')
-  await turnDone($, 'bg-e', 'aborted')
+  expect(w.status()).toBe('████████▓░ 5/6 完成 · 1 執行中')
+  await turnDone($, 'bg-e', 'error')
   // A third Explore run gives the role its estimate (4, 8, 6 → 6 minutes).
   agent.foreground(6 * MIN, 'fg-6')
   const third = dispatch($, { description: 'd', prompt: 'p', subagent_type: 'Explore' })
@@ -296,18 +296,18 @@ test('ETA: needs three finished rows of the same role; concurrent agents combine
   await third
   agent.background('bg-1')
   await dispatch($, { description: 'one', prompt: 'p', subagent_type: 'Explore' })
-  expect(w.status()).toBe('board  ███████▓░░ 6/8 完成 · 1 執行中 · 1 失敗 · ~6 分')
+  expect(w.status()).toBe('███████▓░░ 6/8 完成 · 1 執行中 · 1 失敗 · ~6 分')
   await w.clock.advance(4 * MIN)
   // The second agent starts with 6 minutes left, the first has 2: the longest, not 8.
   agent.background('bg-2')
   await dispatch($, { description: 'two', prompt: 'p', subagent_type: 'Explore' })
-  expect(w.status()).toBe('board  ██████▓░░░ 6/9 完成 · 2 執行中 · 1 失敗 · ~6 分')
+  expect(w.status()).toBe('██████▓░░░ 6/9 完成 · 2 執行中 · 1 失敗 · ~6 分')
   // The first is past its estimate and adds nothing; the second has a minute left.
   await w.clock.advance(5 * MIN)
-  expect(w.status()).toBe('board  ██████▓░░░ 6/9 完成 · 2 執行中 · 1 失敗 · ~1 分')
+  expect(w.status()).toBe('██████▓░░░ 6/9 完成 · 2 執行中 · 1 失敗 · ~1 分')
   // Every agent past its estimate: no ETA to give.
   await w.clock.advance(5 * MIN)
-  expect(w.status()).toBe('board  ██████▓░░░ 6/9 完成 · 2 執行中 · 1 失敗')
+  expect(w.status()).toBe('██████▓░░░ 6/9 完成 · 2 執行中 · 1 失敗')
 })
 
 test('ETA is left out while nothing has finished', { options: ZH }, async ($, on) => {
@@ -316,7 +316,7 @@ test('ETA is left out while nothing has finished', { options: ZH }, async ($, on
   await start($)
   agent.background('bg-x')
   await dispatch($, { description: 'x', prompt: 'x' })
-  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/1 完成 · 1 執行中')
+  expect(w.status()).toBe('░░░░░░░░░░ 0/1 完成 · 1 執行中')
 })
 
 // ---------------------------------------------------------------- pane
@@ -362,7 +362,7 @@ test('collapsed: the summary and an expand button on hotkey b', { options: ZH },
   await dispatch($, { description: 'one', prompt: 'p' })
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await mountPane($, surface)
-    expect(await ui.find({ type: 'Text', text: 'board  ░░░░░░░░░░ 0/1 完成 · 1 執行中' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '░░░░░░░░░░ 0/1 完成 · 1 執行中' })).toBeDefined()
     const expand = await ui.find({ type: 'Button', key: 'expand' })
     expect(expand?.text).toBe('展開')
     expect(expand?.props.hotkey).toBe('b')
@@ -425,12 +425,30 @@ test('expanded rows: icon, role, task and elapsed, told apart by a middle dot, u
 // Terminal cells of a string, wide glyphs counting two.
 const cells = (s: string) => [...s].reduce((n, c) => n + ((c.codePointAt(0) ?? 0) >= 0x2e80 ? 2 : 1), 0)
 // A section rule as the pane draws it: `── label ───…` out to the pane's width.
-const rule = (label: string) => {
+const rule = (label: string, columns: number = PANE_PROPS.bodyColumns) => {
   const head = `── ${label} `
-  return head + '─'.repeat(PANE_PROPS.bodyColumns - cells(head))
+  return head + '─'.repeat(columns - cells(head))
 }
 
-test('active row: an 8-cell bar of elapsed over the role median; 超時 +N 分 past it; — under three samples', { options: ZH }, async ($, on) => {
+type UiNode = { type?: string; props?: Record<string, unknown>; children?: (string | UiNode)[] }
+// The words a node draws on its line: a Button draws its label.
+const textOfNode = (n: string | UiNode): string =>
+  typeof n === 'string' ? n : n.type === 'Button' ? String(n.props?.label ?? '') : (n.children ?? []).map(textOfNode).join('')
+// The lines of the pane, one per child of its column: a row with the button is one line.
+const paneLines = async (ui: Awaited<ReturnType<typeof mountPane>>) => {
+  const root = (await ui.find({ type: 'Box' })) as unknown as UiNode | undefined
+  return (root?.children ?? []).map(textOfNode)
+}
+const mountAt = ($: Engine, columns: number) =>
+  $.ui.mount({
+    plugin: 'board',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'board',
+    props: { ...PANE_PROPS, bodyColumns: columns },
+  })
+
+test('active row: an 8-cell bar of elapsed over the role median; past it only the minutes, no bar and no overrun text; — under three samples', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -448,11 +466,12 @@ test('active row: an 8-cell bar of elapsed over the role median; 超時 +N 分 p
   // Two thirds: 5 and a half cells.
   await w.clock.advance(MIN)
   expect((await shown())[0]).toBe(' » Explore · Map more · 4 分 █████▓░░')
-  // Past the estimate: the overrun in minutes, rounded up, not a bar and not "~1 分".
+  // Past the estimate: the elapsed minutes and nothing else, no bar and no overrun text.
   await w.clock.advance(4.5 * MIN)
-  expect(await shown()).toEqual([' » Explore · Map more · 8 分 超時 +3 分', ' » Plan · Draft plan · 8 分 —'])
+  expect(await shown()).toEqual([' » Explore · Map more · 8 分', ' » Plan · Draft plan · 8 分 —'])
   await w.clock.advance(5.5 * MIN)
-  expect((await shown())[0]).toBe(' » Explore · Map more · 14 分 超時 +8 分')
+  expect((await shown())[0]).toBe(' » Explore · Map more · 14 分')
+  expect((await shown())[0]).not.toMatch(/超時|[█▓░]/)
   await ui.unmount()
 })
 
@@ -475,7 +494,7 @@ test('a long description is cut so a row stays inside the pane width; role and t
     const long = rows[1]?.text ?? ''
     expect(long.startsWith(' » Plan · 派一個')).toBe(true)
     expect(long).toContain('… · ')
-    expect(long).toMatch(/ · \d+ 分 (—|超時 \+\d+ 分)$/)
+    expect(long).toMatch(/ · \d+ 分( —)?$/)
   }
   await ui.unmount()
 })
@@ -634,12 +653,14 @@ test('acceptance files the main loop wrote show as gates; malformed ones are not
   await turnDone($)
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await mountPane($, surface)
-    expect((await ui.find({ type: 'Text', text: /^Ship v2/ }))?.text).toBe('Ship v2  A1✓ A2✗ A3!')
+    // Collapsed: one line of exceptions (the human gate waiting, the failed gate, the running agent); the passed A1 and the file name stay out.
+    expect((await paneLines(ui))[1]).toBe('!A3  ✗A2  » general-purpose  broken.json  格式錯誤')
+    expect(await ui.find({ type: 'Text', text: /Ship v2|A1/ })).toBeUndefined()
     // A human gate still pending is the one that waits for the person: warning color, not dim.
-    expect((await ui.find({ type: 'Text', text: /^A3!$/ }))?.props.color).toBe('warning')
-    expect((await ui.find({ type: 'Text', text: /^A3!$/ }))?.props.dimColor).toBeFalsy()
-    expect((await ui.find({ type: 'Text', text: /^A1✓$/ }))?.props.dimColor).toBeFalsy()
-    expect((await ui.find({ type: 'Text', text: 'broken.json  格式錯誤' }))?.props.dimColor).toBe(true)
+    expect((await ui.find({ type: 'Text', text: /^!A3$/ }))?.props.color).toBe('warning')
+    expect((await ui.find({ type: 'Text', text: /^!A3$/ }))?.props.dimColor).toBeFalsy()
+    expect((await ui.find({ type: 'Text', text: /^✗A2$/ }))?.props.color).toBe('error')
+    expect((await ui.find({ type: 'Text', text: /^broken.json  格式錯誤$/ }))?.props.dimColor).toBe(true)
     expect(await ui.find({ type: 'Text', text: /Old task/ })).toBeUndefined()
     await ui.press({ key: 'expand' })
     expect(await ui.find({ type: 'Text', text: rule('驗收 · Ship v2') })).toBeDefined()
@@ -675,8 +696,8 @@ test('live and visual gates count; a gate of an unknown kind is skipped without 
   await writeAcceptance($, 'bad.json')
   await turnDone($)
   const ui = await mountPane($, 'terminal')
-  expect((await ui.find({ type: 'Text', text: /^Kinds/ }))?.text).toBe('Kinds  L1✓ V1· M1✗')
-  expect(await ui.find({ type: 'Text', text: 'bad.json  格式錯誤' })).toBeDefined()
+  // The live gate counts as passed, the pending visual gate is no exception, the failed machine gate is; the unknown kind is skipped.
+  expect((await paneLines(ui))[1]).toBe('✗M1  » general-purpose  bad.json  格式錯誤')
   await ui.unmount()
 })
 
@@ -709,7 +730,8 @@ test('only the acceptance files the main loop wrote count, read by absolute path
   await writeAcceptance($, 'readme.md')
   await turnDone($)
   const ui = await mountPane($, 'terminal')
-  const shown = (await ui.findAll({ type: 'Text', text: /^(Alpha|Beta|Gamma|Zeta|Other|Sub|Notes)  / })).map(t => t.text.split(' ')[0])
+  await ui.press({ key: 'expand' })
+  const shown = (await ui.findAll({ type: 'Text', text: /^── 驗收 · / })).map(t => t.text.split(' ')[3])
   expect(shown).toEqual(['Alpha', 'Beta', 'Gamma', 'Zeta'])
   expect(await ui.find({ type: 'Text', text: /格式錯誤/ })).toBeUndefined()
   expect([...new Set(w.reads)].sort()).toEqual(
@@ -729,7 +751,7 @@ test('a write the tool refused does not own the file', async ($, on) => {
   await writeAcceptance($, 'ship.json')
   await turnDone($)
   const ui = await mountPane($, 'terminal')
-  expect(await ui.find({ type: 'Text', text: /^Ship v2/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /A3/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -744,10 +766,10 @@ test('acceptance files are read again on the 30 s tick', async ($, on) => {
   await writeAcceptance($, 'ship.json')
   await turnDone($)
   const ui = await mountPane($, 'terminal')
-  expect(await ui.find({ type: 'Text', text: /^Ship v2/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /A3/ })).toBeUndefined()
   w.file('ship.json', GATES)
   await w.clock.advance(30_000)
-  expect((await ui.find({ type: 'Text', text: /^Ship v2/ }))?.text).toBe('Ship v2  A1✓ A2✗ A3!')
+  expect((await paneLines(ui))[1]).toBe('!A3  ✗A2  » general-purpose')
   await ui.unmount()
 })
 
@@ -963,25 +985,25 @@ test('collapsed with a plan: a bar of steps (one in progress counts half), steps
   await create($, 'A')
   await create($, 'B')
   await create($, 'C')
-  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/3')
+  expect(w.status()).toBe('░░░░░░░░░░ 0/3')
   await setStatus($, '1', 'in_progress')
-  expect(w.status()).toBe('board  █▓░░░░░░░░ 0/3')
+  expect(w.status()).toBe('█▓░░░░░░░░ 0/3')
   await w.clock.advance(4 * MIN)
   await setStatus($, '1', 'completed')
   await setStatus($, '2', 'in_progress')
-  expect(w.status()).toBe('board  █████░░░░░ 1/3')
+  expect(w.status()).toBe('█████░░░░░ 1/3')
   await setStatus($, '3', 'in_progress')
-  expect(w.status()).toBe('board  ██████▓░░░ 1/3')
+  expect(w.status()).toBe('██████▓░░░ 1/3')
   agent.background('bg-1')
   await dispatch($, { description: 'B work', prompt: 'p' })
-  expect(w.status()).toBe('board  ██████▓░░░ 1/3 · 1 agent 執行中')
+  expect(w.status()).toBe('██████▓░░░ 1/3 · 1 agent 執行中')
   await w.clock.advance(30 * MIN)
   const ui = await mountPane($, 'terminal')
-  expect(await ui.find({ type: 'Text', text: 'board  ██████▓░░░ 1/3 · 1 agent 執行中' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '██████▓░░░ 1/3 · 1 agent 執行中' })).toBeDefined()
   // The step in progress is the » line's to name, not the headline's.
   expect(await ui.find({ type: 'Text', text: /進行中/ })).toBeUndefined()
   await ui.unmount()
-  expect(w.status()).toBe('board  ██████▓░░░ 1/3 · 1 agent 執行中')
+  expect(w.status()).toBe('██████▓░░░ 1/3 · 1 agent 執行中')
 })
 
 test('a plan whose steps are all done fills the bar', async ($, on) => {
@@ -990,7 +1012,7 @@ test('a plan whose steps are all done fills the bar', async ($, on) => {
   await start($)
   await create($, 'A')
   await setStatus($, '1', 'completed') // never started: still done
-  expect(w.status()).toBe('board  ██████████ 1/1')
+  expect(w.status()).toBe('██████████ 1/1')
 })
 
 const gateFile = (task: string, statuses: ('pass' | 'fail' | 'pending')[]) =>
@@ -1008,21 +1030,21 @@ test('the plan headline adds the gates passed over every acceptance file; none, 
   await create($, 'B')
   await setStatus($, '1', 'completed')
   await turnDone($)
-  expect(w.status()).toBe('board  █████░░░░░ 1/2')
+  expect(w.status()).toBe('█████░░░░░ 1/2')
   w.file('a.json', gateFile('One', ['pass', 'pass', 'pass', 'fail', 'pending']))
   w.file('b.json', gateFile('Two', ['pass', 'pass', 'pending', 'pending', 'pending']))
   w.file('c.json', '{ "task": "Half", "gates": [ { "id": 1 } ] }')
   for (const name of ['a.json', 'b.json', 'c.json']) await writeAcceptance($, name)
   await turnDone($)
-  expect(w.status()).toBe('board  █████░░░░░ 1/2 · 驗收 5/10')
+  expect(w.status()).toBe('█████░░░░░ 1/2 · 驗收 5/10')
   const ui = await mountPane($, 'terminal')
-  expect(await ui.find({ type: 'Text', text: 'board  █████░░░░░ 1/2 · 驗收 5/10' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '█████░░░░░ 1/2 · 驗收 5/10' })).toBeDefined()
   await ui.unmount()
   // Only malformed files: nothing to count, so no bar.
   w.file('a.json', '[]')
   w.file('b.json', '[]')
   await turnDone($)
-  expect(w.status()).toBe('board  █████░░░░░ 1/2')
+  expect(w.status()).toBe('█████░░░░░ 1/2')
 })
 
 const humanFile = (task: string, gates: [string, 'pass' | 'fail' | 'pending', 'human' | 'machine'][]) =>
@@ -1046,13 +1068,13 @@ test('the plan headline names the pending human gate, and how many wait when sev
   )
   await writeAcceptance($, 'h.json')
   await turnDone($)
-  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/2 · 驗收 1/4 · 等你 H1 等 2 項')
+  expect(w.status()).toBe('等你 H1 等 2 項 · ░░░░░░░░░░ 0/2 · 驗收 1/4')
   w.file('h.json', humanFile('H', [['H1', 'pass', 'human'], ['H2', 'pending', 'human']]))
   await turnDone($)
-  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/2 · 驗收 1/2 · 等你 H2')
+  expect(w.status()).toBe('等你 H2 · ░░░░░░░░░░ 0/2 · 驗收 1/2')
   w.file('h.json', humanFile('H', [['H1', 'pass', 'human'], ['H2', 'fail', 'human'], ['M1', 'pending', 'machine']]))
   await turnDone($)
-  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/2 · 驗收 1/3')
+  expect(w.status()).toBe('░░░░░░░░░░ 0/2 · 驗收 1/3')
 })
 
 test('the headline without a plan names the pending human gate too', { options: ZH }, async ($, on) => {
@@ -1065,7 +1087,7 @@ test('the headline without a plan names the pending human gate too', { options: 
   w.file('h.json', humanFile('H', [['H1', 'pending', 'human'], ['H2', 'pending', 'human']]))
   await writeAcceptance($, 'h.json')
   await turnDone($)
-  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/1 完成 · 1 執行中 · 等你 H1 等 2 項')
+  expect(w.status()).toBe('等你 H1 等 2 項 · ░░░░░░░░░░ 0/1 完成 · 1 執行中')
 })
 
 test('gates alone: the status line and both pane summaries lead with the gates', { options: ZH }, async ($, on) => {
@@ -1079,7 +1101,7 @@ test('gates alone: the status line and both pane summaries lead with the gates',
   w.file('h.json', humanFile('H', [['H1', 'pending', 'human'], ['M1', 'pass', 'machine']]))
   await writeAcceptance($, 'h.json')
   await turnDone($)
-  const headline = 'board  驗收 ██▓░░ 1/2 · 等你 H1'
+  const headline = '等你 H1 · 驗收 ██▓░░ 1/2'
   expect(w.status()).toBe(headline)
   const ui = await mountPane($, 'terminal')
   expect(await ui.find({ type: 'Text', text: headline })).toBeDefined()
@@ -1090,7 +1112,7 @@ test('gates alone: the status line and both pane summaries lead with the gates',
   await ui.unmount()
 })
 
-test('in the pane a pending human gate is warning-colored; a settled human gate stays dim', async ($, on) => {
+test('in the collapsed pane a pending human gate is warning-colored; a settled human gate and a pending machine gate are not named', async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   writeTools(on)
@@ -1101,15 +1123,11 @@ test('in the pane a pending human gate is warning-colored; a settled human gate 
   await writeAcceptance($, 'h.json')
   await turnDone($)
   const ui = await mountPane($, 'terminal')
-  const pending = await ui.find({ type: 'Text', text: /^H1!$/ })
+  const pending = await ui.find({ type: 'Text', text: /^!H1$/ })
   expect(pending?.props.color).toBe('warning')
   expect(pending?.props.dimColor).toBeFalsy()
-  const settled = await ui.find({ type: 'Text', text: /^H2✓$/ })
-  expect(settled?.props.dimColor).toBe(true)
-  expect(settled?.props.color).toBeUndefined()
-  const machine = await ui.find({ type: 'Text', text: /^M1·$/ })
-  expect(machine?.props.color).toBeUndefined()
-  expect(machine?.props.dimColor).toBeFalsy()
+  expect((await paneLines(ui))[1]).toBe('!H1  » general-purpose')
+  expect(await ui.find({ type: 'Text', text: /H2|M1/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -1123,7 +1141,7 @@ test('without a plan the bar counts the dispatches done', { options: ZH }, async
   await first
   agent.background('bg-1')
   await dispatch($, { description: 'two', prompt: 'p' })
-  expect(w.status()).toBe('board  █████░░░░░ 1/2 完成 · 1 執行中')
+  expect(w.status()).toBe('█████░░░░░ 1/2 完成 · 1 執行中')
 })
 
 test('the 30 s tick runs for a foreground dispatch too, and does not poll the agent list for it', { plugins: [READER], options: ZH }, async ($, on) => {
@@ -1204,9 +1222,9 @@ test('expanded with a plan: numbered steps, their dispatches beneath, then the o
   await dispatch($, { description: 'Build parts', prompt: 'parts prompt', subagent_type: 'implementer' })
   const ui = await mountPane($, 'terminal')
   await ui.press({ key: 'expand' })
-  const shown = (await ui.findAll({ text: /board|步驟|Design|Build|Early|派工/ })).filter(n => n.type === 'Text' || n.type === 'Button')
+  const shown = (await ui.findAll({ text: /執行中|步驟|Design|Build|Early|派工/ })).filter(n => n.type === 'Text' || n.type === 'Button')
   expect(shown.map(n => n.text)).toEqual([
-    'board  ███████▓░░ 1/2 · 2 agent 執行中',
+    '███████▓░░ 1/2 · 2 agent 執行中',
     rule('步驟'),
     ' ✓ 1  Design',
     ' » 2  Build',
@@ -1255,7 +1273,7 @@ test('state written by an older version (no new fields) is read as null, not a c
   agent.background('bg-1')
   await dispatch($, { description: 'New dispatch', prompt: 'p' })
   expect((await peek($)).rows.map(r => r.todoId)).toEqual([null, '7'])
-  expect(w.status()).toBe('board  █████░░░░░ 0/1 · 1 agent 執行中')
+  expect(w.status()).toBe('█████░░░░░ 0/1 · 1 agent 執行中')
   await setStatus($, '7', 'completed')
   expect((await peek($)).todos[0]).toMatchObject({ status: 'completed', startedAt: null, endedAt: T0, activeAt: null })
   const ui = await mountPane($, 'terminal')
@@ -1272,7 +1290,7 @@ const layoutOf = async (ui: Awaited<ReturnType<typeof mountPane>>) =>
   (await ui.findAll({ text: /./ }))
     .filter(n => n.type === 'Text' || n.type === 'Button')
     .map(n => n.text)
-    .filter(t => /^(board|──| [✓»✗!·] |      ↳ )/.test(t))
+    .filter(t => /^(等你|needs you|[█▓░]+ |驗收 |gates |──| [✓»✗✕!·] |      ↳ )/.test(t))
     // A failed row is a Button around a Text of the same words: once.
     .filter((t, i, all) => t !== all[i - 1])
 
@@ -1313,7 +1331,7 @@ test('the mockup fixture: rules, ✓ » · steps, a ↳ row, one gate per line w
   w.file('board-ui.json', BOARD_ROUND_1)
   await writeAcceptance($, 'board-ui.json')
   await turnDone($)
-  const headline = 'board  ███████░░░ 3/5 · 驗收 2/4 · 等你 merge'
+  const headline = '等你 merge · ███████░░░ 3/5 · 驗收 2/4'
   expect(w.status()).toBe(headline)
   const ui = await mountPane($, 'terminal')
   await ui.press({ key: 'expand' })
@@ -1381,7 +1399,7 @@ test('without a plan the dispatches sit under a 派工 rule, each field apart; a
   const ui = await mountPane($, 'terminal')
   await ui.press({ key: 'expand' })
   expect(await layoutOf(ui)).toEqual([
-    'board  █████░░░░░ 1/2 完成 · 1 執行中',
+    '█████░░░░░ 1/2 完成 · 1 執行中',
     rule('派工'),
     ' ✓ implementer-sonnet · Map the repo · 4 分',
     ` » ${'x'.repeat(18)} · Run tests · <1 分 —`,
@@ -1406,27 +1424,19 @@ test('collapsed: the headline is cut before the button instead of running into i
   w.file('board-ui.json', BOARD_ROUND_1)
   await writeAcceptance($, 'board-ui.json')
   await turnDone($)
-  const full = 'board  █████░░░░░ 0/1 · 驗收 2/4 · 1 agent 執行中 · 等你 merge'
+  const full = '等你 merge · █████░░░░░ 0/1 · 驗收 2/4 · 1 agent 執行中'
   expect(w.status()).toBe(full)
-  const narrow = await $.ui.mount({
-    plugin: 'board',
-    surface: 'terminal',
-    component: 'Pane',
-    requestId: 'board',
-    props: { ...PANE_PROPS, bodyColumns: 40 },
-  })
-  const cut = (await narrow.find({ type: 'Text', text: /^board/ }))?.text ?? ''
+  const narrow = await mountAt($, 40)
+  const cut = (await narrow.find({ type: 'Text', text: /^等你/ }))?.text ?? ''
   expect(cells(cut)).toBeLessThanOrEqual(40 - 8)
   expect(cut.endsWith('…')).toBe(true)
   expect(full.startsWith(cut.slice(0, -1))).toBe(true)
   expect((await narrow.find({ type: 'Button', key: 'expand' }))?.text).toBe('展開')
-  // The compact gate line stays: ! for the human gate waiting on the person.
-  expect((await narrow.find({ type: 'Text', text: /^board round 1/ }))?.text).toBe(
-    'board round 1  tests✓ validate✓ live-new-reset· merge!',
-  )
+  // The second line names the exceptions: ! for the human gate waiting on the person, the running agent.
+  expect((await paneLines(narrow))[1]).toBe('!merge  » general-purpose')
   await narrow.unmount()
   const wide = await mountPane($, 'terminal')
-  expect((await wide.find({ type: 'Text', text: /^board/ }))?.text).toBe(full)
+  expect((await wide.find({ type: 'Text', text: /^等你/ }))?.text).toBe(full)
   await wide.unmount()
 })
 
@@ -1453,7 +1463,7 @@ test('a step subject and a gate text longer than the pane are cut to its width',
 
 // Geometric Shapes glyphs (▶ ○ ● ◆) are East Asian Ambiguous: some terminals draw them two cells
 // wide and shift the line. Every step icon and gate mark stays in this narrow set.
-const NARROW = new Set(['!', '·', '»', '✓', '✗', ...Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i))])
+const NARROW = new Set(['!', '·', '»', '✓', '✗', '✕',...Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i))])
 
 test('every step icon, dispatch icon and gate mark the pane draws is a one-cell glyph', async ($, on) => {
   const w = world(on)
@@ -1461,7 +1471,7 @@ test('every step icon, dispatch icon and gate mark the pane draws is a one-cell 
   taskTools(on)
   writeTools(on)
   await start($)
-  // One dispatch of each status, under no step: done, running, waiting, failed.
+  // One dispatch of each status, under no step: done, running, waiting, failed, stopped.
   agent.foreground(MIN, 'fg-1')
   const first = dispatch($, { description: 'd1', prompt: 'p', subagent_type: 'Explore' })
   await w.clock.advance(MIN)
@@ -1472,6 +1482,9 @@ test('every step icon, dispatch icon and gate mark the pane draws is a one-cell 
   await dispatch($, { description: 'd3', prompt: 'p', subagent_type: 'Explore' })
   agent.answer({ deny: 'no' })
   await dispatch($, { description: 'd4', prompt: 'p', subagent_type: 'Explore' })
+  agent.background('bg-3')
+  await dispatch($, { description: 'd5', prompt: 'p', subagent_type: 'Explore' })
+  await turnDone($, 'bg-3', 'aborted')
   w.agents.push({ id: 'bg-2', description: 'd3', type: 'Explore', status: 'waiting' })
   await w.clock.advance(30_000)
   for (const subject of ['A', 'B', 'C']) await create($, subject)
@@ -1492,14 +1505,14 @@ test('every step icon, dispatch icon and gate mark the pane draws is a one-cell 
   await writeAcceptance($, 'all.json')
   await turnDone($)
   const ui = await mountPane($, 'terminal')
-  // Collapsed: the mark ends each id.
-  const compact = (await ui.find({ type: 'Text', text: /^All {2}/ }))?.text ?? ''
-  const compactMarks = compact.replace(/^All {2}/, '').split(' ').map(t => t.slice(-1))
-  expect(compactMarks).toEqual(['✓', '✗', '·', '!'])
+  // Collapsed: the mark leads each exception (the human gate, the failed gate, the two agents still going).
+  const compact = (await paneLines(ui))[1] ?? ''
+  const compactMarks = compact.split('  ').map(t => [...t][0] ?? '')
+  expect(compactMarks).toEqual(['!', '✗', '»', '»'])
   await ui.press({ key: 'expand' })
   // Steps and dispatch rows lead with their icon, gate lines with their mark: the character after the first space.
   const marks = (await layoutOf(ui)).filter(l => /^ [^ ] /.test(l)).map(l => [...l][1] ?? '')
-  expect(marks).toEqual(['✓', '»', '·', '✓', '»', '·', '✗', '✓', '✗', '·', '!'])
+  expect(marks).toEqual(['✓', '»', '·', '✓', '»', '·', '✗', '✕', '✓', '✗', '·', '!'])
   for (const mark of [...compactMarks, ...marks]) expect(NARROW.has(mark)).toBe(true)
   await ui.unmount()
 })
@@ -1526,9 +1539,9 @@ test('gates saved without check or evidence still load: the text is empty, nothi
   w.file('old.json', JSON.stringify({ task: 'OLD: becomes the old file', gates: [{ id: 'x', kind: 'machine', check: 'c', status: 'fail' }] }))
   await writeAcceptance($, 'old.json')
   await turnDone($)
-  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/1 完成 · 1 執行中 · 等你 o2')
+  expect(w.status()).toBe('等你 o2 · ░░░░░░░░░░ 0/1 完成 · 1 執行中')
   const ui = await mountPane($, 'terminal')
-  expect((await ui.find({ type: 'Text', text: /^Old task/ }))?.text).toBe('Old task  o1✓ o2!')
+  expect((await paneLines(ui))[1]).toBe('!o2  » general-purpose')
   await ui.press({ key: 'expand' })
   expect(await ui.find({ type: 'Text', text: rule('驗收 · Old task') })).toBeDefined()
   expect(await gateLinesOf(ui)).toEqual([' ✓ o1', ' ! o2  等你核可'])
@@ -1556,17 +1569,17 @@ test('/clear empties the board, gates and status line, and lets the pane open ag
   expect(w.opened).toHaveLength(1)
   const listed = w.listCalls()
   const before = await mountPane($, 'terminal')
-  expect(await before.find({ type: 'Text', text: /^Ship v2/ })).toBeDefined()
+  expect(await before.find({ type: 'Text', text: /^!A3/ })).toBeDefined()
   await before.unmount()
   await endSession($, 'clear')
   expect(w.status()).toBeUndefined()
-  expect(await peek($)).toMatchObject({ rows: [], todos: [], tick: 0, view: { isAutoOpened: false, isExpanded: false, selected: null } })
+  expect(await peek($)).toMatchObject({ rows: [], todos: [], tick: 0, view: { isAutoOpened: false, isExpanded: false, selected: null, opened: [] } })
   // The poll timer is gone.
   await w.clock.advance(5 * MIN)
   expect(w.listCalls()).toBe(listed)
   // The file the old conversation wrote is no longer the board's, even though it is still on disk.
   const after = await mountPane($, 'terminal')
-  expect(await after.find({ type: 'Text', text: /^Ship v2/ })).toBeUndefined()
+  expect(await after.find({ type: 'Text', text: /A3/ })).toBeUndefined()
   await after.unmount()
   // The next plan opens the pane again.
   await create($, 'B')
@@ -1580,7 +1593,7 @@ test('other session end reasons change nothing', { plugins: [READER], options: Z
   agent.background('bg-1')
   await dispatch($, { description: 'one', prompt: 'p' })
   for (const reason of ['resume', 'logout', 'prompt_input_exit', 'other'] as const) await endSession($, reason)
-  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/1 完成 · 1 執行中')
+  expect(w.status()).toBe('░░░░░░░░░░ 0/1 完成 · 1 執行中')
   expect((await peek($)).rows).toHaveLength(1)
 })
 
@@ -1604,21 +1617,21 @@ test('English headline: counts, failures, ETA and the person being waited on', a
   agent.foreground(5 * MIN, 'a-1')
   const call = dispatch($, { description: 'Read the code', prompt: 'p', subagent_type: 'Explore' })
   await w.clock.settle()
-  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/1 done · 1 running')
+  expect(w.status()).toBe('░░░░░░░░░░ 0/1 done · 1 running')
   await w.clock.advance(5 * MIN)
   await call
-  expect(w.status()).toBe('board  ██████████ 1/1 done · 0 running')
+  expect(w.status()).toBe('██████████ 1/1 done · 0 running')
   agent.answer({ deny: 'no' })
   await dispatch($, { description: 'Nope', prompt: 'p' })
-  expect(w.status()).toBe('board  █████░░░░░ 1/2 done · 0 running · 1 failed')
+  expect(w.status()).toBe('█████░░░░░ 1/2 done · 0 running · 1 failed')
   await finishThree($, w, agent, 'Plan')
   agent.background('bg-1')
   await dispatch($, { description: 'one', prompt: 'p', subagent_type: 'Plan' })
-  expect(w.status()).toBe('board  ██████▓░░░ 4/6 done · 1 running · 1 failed · ~6 min')
+  expect(w.status()).toBe('██████▓░░░ 4/6 done · 1 running · 1 failed · ~6 min')
   w.file('h.json', humanFile('H', [['H1', 'pending', 'human'], ['H2', 'pending', 'human']]))
   await writeAcceptance($, 'h.json')
   await turnDone($)
-  expect(w.status()).toBe('board  ██████▓░░░ 4/6 done · 1 running · 1 failed · ~6 min · needs you: H1 (2 waiting)')
+  expect(w.status()).toBe('needs you: H1 (2 waiting) · ██████▓░░░ 4/6 done · 1 running · 1 failed · ~6 min')
 })
 
 test('English plan headline: gates passed, agents running (singular and plural), the pending human gate', async ($, on) => {
@@ -1634,10 +1647,10 @@ test('English plan headline: gates passed, agents running (singular and plural),
   w.file('board-ui.json', BOARD_ROUND_1)
   await writeAcceptance($, 'board-ui.json')
   await turnDone($)
-  expect(w.status()).toBe('board  █████░░░░░ 0/1 · gates 2/4 · 1 agent running · needs you: merge')
+  expect(w.status()).toBe('needs you: merge · █████░░░░░ 0/1 · gates 2/4 · 1 agent running')
   agent.background('bg-2')
   await dispatch($, { description: 'two', prompt: 'p' })
-  expect(w.status()).toBe('board  █████░░░░░ 0/1 · gates 2/4 · 2 agents running · needs you: merge')
+  expect(w.status()).toBe('needs you: merge · █████░░░░░ 0/1 · gates 2/4 · 2 agents running')
 })
 
 test('English gates-only headline', async ($, on) => {
@@ -1647,7 +1660,7 @@ test('English gates-only headline', async ($, on) => {
   w.file('h.json', humanFile('H', [['H1', 'pending', 'human'], ['M1', 'pass', 'machine']]))
   await writeAcceptance($, 'h.json')
   await turnDone($)
-  expect(w.status()).toBe('board  gates ██▓░░ 1/2 · needs you: H1')
+  expect(w.status()).toBe('needs you: H1 · gates ██▓░░ 1/2')
 })
 
 test('gates-only headline with no gate to count names the malformed files instead of 0/0', async ($, on) => {
@@ -1657,14 +1670,14 @@ test('gates-only headline with no gate to count names the malformed files instea
   w.file('a.json', '[]')
   await writeAcceptance($, 'a.json')
   await turnDone($)
-  expect(w.status()).toBe('board  gates · 1 malformed')
+  expect(w.status()).toBe('gates · 1 malformed')
   w.file('b.json', '{ "task": "Empty", "gates": [] }')
   await writeAcceptance($, 'b.json')
   await turnDone($)
-  expect(w.status()).toBe('board  gates · 1 malformed')
+  expect(w.status()).toBe('gates · 1 malformed')
   w.file('a.json', gateFile('Fixed', []))
   await turnDone($)
-  expect(w.status()).toBe('board  gates —')
+  expect(w.status()).toBe('gates —')
 })
 
 test('zh-TW gates-only headline names the malformed files', { options: ZH }, async ($, on) => {
@@ -1675,7 +1688,7 @@ test('zh-TW gates-only headline names the malformed files', { options: ZH }, asy
   w.file('b.json', 'not json')
   for (const name of ['a.json', 'b.json']) await writeAcceptance($, name)
   await turnDone($)
-  expect(w.status()).toBe('board  驗收 · 2 個格式錯誤')
+  expect(w.status()).toBe('驗收 · 2 個格式錯誤')
 })
 
 test('English collapsed pane: Expand and Collapse buttons, the headline cut before the wider button', async ($, on) => {
@@ -1691,15 +1704,9 @@ test('English collapsed pane: Expand and Collapse buttons, the headline cut befo
   w.file('board-ui.json', BOARD_ROUND_1)
   await writeAcceptance($, 'board-ui.json')
   await turnDone($)
-  const full = 'board  █████░░░░░ 0/1 · gates 2/4 · 1 agent running · needs you: merge'
-  const narrow = await $.ui.mount({
-    plugin: 'board',
-    surface: 'terminal',
-    component: 'Pane',
-    requestId: 'board',
-    props: { ...PANE_PROPS, bodyColumns: 40 },
-  })
-  const cut = (await narrow.find({ type: 'Text', text: /^board/ }))?.text ?? ''
+  const full = 'needs you: merge · █████░░░░░ 0/1 · gates 2/4 · 1 agent running'
+  const narrow = await mountAt($, 40)
+  const cut = (await narrow.find({ type: 'Text', text: /^needs you/ }))?.text ?? ''
   expect(cells(cut)).toBeLessThanOrEqual(40 - 12)
   expect(cut.endsWith('…')).toBe(true)
   expect(full.startsWith(cut.slice(0, -1))).toBe(true)
@@ -1712,7 +1719,7 @@ test('English collapsed pane: Expand and Collapse buttons, the headline cut befo
   await ui.unmount()
 })
 
-test('English rows: Dispatches rule, minutes, the denial reason, the overrun and the missing estimate', async ($, on) => {
+test('English rows: Dispatches rule, minutes, the denial reason, no overrun text and the missing estimate', async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -1734,7 +1741,7 @@ test('English rows: Dispatches rule, minutes, the denial reason, the overrun and
   ])
   expect((await ui.find({ type: 'Text', text: rule('Dispatches') }))?.props.dimColor).toBe(true)
   await w.clock.advance(7.5 * MIN)
-  expect((await shown())[0]).toBe(' » Explore · Map more · 10 min over +5 min')
+  expect((await shown())[0]).toBe(' » Explore · Map more · 10 min')
   await ui.unmount()
 })
 
@@ -1764,7 +1771,7 @@ test('English detail view: Back, Role, Status, Start, End, Elapsed and the dispa
   await ui.unmount()
 })
 
-test('English failure reasons: stopped, run failed, interrupted, turn error, dispatch failed, cloud', async ($, on) => {
+test('English reasons: stopped (aborted turn and killed agent), run failed, turn error, dispatch failed, cloud', async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   await start($)
@@ -1787,9 +1794,9 @@ test('English failure reasons: stopped, run failed, interrupted, turn error, dis
   expect(rows.map(r => r.text.replace(/ · <1 min/, ''))).toEqual([
     ' ✗ general-purpose · d-bad · dispatch failed',
     ' ✓ general-purpose · d-cloud',
-    ' ✗ general-purpose · d-bg-aborted · interrupted',
+    ' ✕ general-purpose · d-bg-aborted · stopped',
     ' ✗ general-purpose · d-bg-error · turn ended with an error',
-    ' ✗ general-purpose · d-bg-killed · stopped',
+    ' ✕ general-purpose · d-bg-killed · stopped',
     ' ✗ general-purpose · d-bg-failed · run failed',
   ])
   // The cloud row's reason is long: it shows in the detail view.
@@ -1827,7 +1834,7 @@ test('English gate pane: Steps and Gates rules, malformed files, the approval te
   await writeAcceptance($, 'board-ui.json')
   await writeAcceptance($, 'broken.json')
   await turnDone($)
-  const headline = 'board  ███████░░░ 3/5 · gates 2/4 · needs you: merge'
+  const headline = 'needs you: merge · ███████░░░ 3/5 · gates 2/4'
   expect(w.status()).toBe(headline)
   const ui = await mountPane($, 'terminal')
   expect(await ui.find({ type: 'Text', text: 'broken.json  malformed' })).toBeDefined()
@@ -1858,5 +1865,252 @@ test('an unknown language value falls back to English', { options: { language: '
   expect(w.commands).toEqual(['Task board: open or close the board pane'])
   agent.background('bg-1')
   await dispatch($, { description: 'one', prompt: 'p' })
-  expect(w.status()).toBe('board  ░░░░░░░░░░ 0/1 done · 1 running')
+  expect(w.status()).toBe('░░░░░░░░░░ 0/1 done · 1 running')
+})
+
+// ---------------------------------------------------------------- status and layout
+
+type RowState = { status: string; endedAt: number | null; reason: string | null }
+const rowStates = async ($: Engine) => (await peek($)).rows as unknown as RowState[]
+
+test('resume-running: a stopped or failed background row runs again when its agent starts a turn', { plugins: [READER], options: ZH }, async ($, on) => {
+  const w = world(on)
+  const agent = agentTool(on, w)
+  await start($)
+  agent.background('bg-1')
+  await dispatch($, { description: 'Review', prompt: 'p', subagent_type: 'code-reviewer' })
+  agent.background('bg-2')
+  await dispatch($, { description: 'Check', prompt: 'p', subagent_type: 'code-reviewer' })
+  await w.clock.advance(MIN)
+  await turnDone($, 'bg-1', 'aborted')
+  await turnDone($, 'bg-2', 'error')
+  expect(await rowStates($)).toMatchObject([
+    { status: 'stopped', endedAt: T0 + MIN, reason: '已停止' },
+    { status: 'failed', endedAt: T0 + MIN },
+  ])
+  expect(w.status()).toBe('░░░░░░░░░░ 0/1 完成 · 0 執行中 · 1 失敗')
+  await w.clock.advance(MIN)
+  // SendMessage resumes the agent: no tool.call Agent, only a new turn carrying its agentId.
+  await turnStart($, 'bg-1')
+  await turnStart($, 'bg-2')
+  expect(await rowStates($)).toMatchObject([
+    { status: 'running', endedAt: null, reason: null },
+    { status: 'running', endedAt: null, reason: null },
+  ])
+  expect(w.status()).toBe('░░░░░░░░░░ 0/2 完成 · 2 執行中')
+  // The 30 s poll covers the revived rows again.
+  w.agents.push({ id: 'bg-1', description: 'Review', type: 'code-reviewer', status: 'running' })
+  w.agents.push({ id: 'bg-2', description: 'Check', type: 'code-reviewer', status: 'completed' })
+  const listed = w.listCalls()
+  await w.clock.advance(30_000)
+  expect(w.listCalls()).toBeGreaterThan(listed)
+  expect(w.status()).toBe('█████░░░░░ 1/2 完成 · 1 執行中')
+})
+
+test('stopped-not-failed: an aborted turn and a killed agent are gray ✕ rows outside the failed count and the done/total', { options: ZH }, async ($, on) => {
+  const w = world(on)
+  const agent = agentTool(on, w)
+  await start($)
+  agent.background('bg-a')
+  await dispatch($, { description: 'd-a', prompt: 'p' })
+  agent.background('bg-k')
+  await dispatch($, { description: 'd-k', prompt: 'p' })
+  await turnDone($, 'bg-a', 'aborted')
+  w.agents.push({ id: 'bg-k', description: 'd-k', type: 'general-purpose', status: 'killed' })
+  await w.clock.advance(30_000)
+  // Nothing but stopped rows: no failure and no 0/2.
+  expect(w.status()).toBe('░░░░░░░░░░ 0/0 完成 · 0 執行中')
+  agent.foreground(MIN, 'fg-1')
+  const finished = dispatch($, { description: 'd-done', prompt: 'p' })
+  await w.clock.advance(MIN)
+  await finished
+  agent.answer({ deny: 'no' })
+  await dispatch($, { description: 'd-bad', prompt: 'p' })
+  expect(w.status()).toBe('█████░░░░░ 1/2 完成 · 0 執行中 · 1 失敗')
+  const ui = await mountPane($, 'terminal')
+  await ui.press({ key: 'expand' })
+  const rows = await ui.findAll({ type: 'Button', text: /d-a|d-k|d-bad/ })
+  expect(rows.map(r => r.text)).toEqual([
+    ' ✕ general-purpose · d-a · <1 分 · 已停止',
+    ' ✕ general-purpose · d-k · <1 分 · 已停止',
+    ' ✗ general-purpose · d-bad · <1 分 · 已拒絕：no',
+  ])
+  expect(rows.map(r => r.props.dimColor)).toEqual([true, true, false])
+  // Gray, never the error color; the failed row keeps it.
+  expect((await ui.find({ type: 'Text', text: /d-a/ }))?.props.color).toBe('inactive')
+  expect((await ui.find({ type: 'Text', text: /d-k/ }))?.props.color).toBe('inactive')
+  expect((await ui.find({ type: 'Text', text: /d-bad/ }))?.props.color).toBe('error')
+  await ui.press({ key: rows[0]?.key ?? '' })
+  expect(await ui.find({ type: 'Text', text: '狀態  ✕ 已停止' })).toBeDefined()
+  await ui.unmount()
+})
+
+const passFile = (task: string, n: number) =>
+  JSON.stringify({
+    task,
+    gates: Array.from({ length: n }, (_, i) => ({ id: `g${i + 1}`, kind: 'machine', check: `check ${i + 1}`, status: 'pass' })),
+  })
+const SHIP = JSON.stringify({
+  task: 'ship',
+  gates: [
+    { id: 'tests', kind: 'machine', check: 'unit tests', status: 'pass' },
+    { id: 'manual-pr', kind: 'human', check: 'user opens the PR', status: 'pending' },
+  ],
+})
+const UIA = JSON.stringify({
+  task: 'uia',
+  gates: [
+    { id: 't03-desktop-uia-en', kind: 'machine', check: 'desktop uia', status: 'fail' },
+    { id: 't04', kind: 'machine', check: 'uia check', status: 'pass' },
+  ],
+})
+// Eight acceptance files: six all-pass (43 gates), one with the human gate manual-pr pending, one with a failed gate.
+async function eightFiles($: Engine, w: ReturnType<typeof world>) {
+  const files: [string, string][] = [
+    ['f1.json', passFile('resume', 7)],
+    ['f2.json', passFile('stopped', 7)],
+    ['f3-ship.json', SHIP],
+    ['f4.json', passFile('layout', 7)],
+    ['f5.json', passFile('headline', 7)],
+    ['f6.json', passFile('overrun', 7)],
+    ['f7-uia.json', UIA],
+    ['f8.json', passFile('tests', 8)],
+  ]
+  for (const [name, text] of files) {
+    w.file(name, text)
+    await writeAcceptance($, name)
+  }
+  await turnDone($)
+}
+
+test('collapsed-two-lines: headline and one line of exceptions, each inside the pane width', { options: ZH }, async ($, on) => {
+  const w = world(on)
+  const agent = agentTool(on, w)
+  writeTools(on)
+  await start($)
+  agent.background('bg-1')
+  await dispatch($, { description: 'review', prompt: 'p', subagent_type: 'implementer' })
+  await eightFiles($, w)
+  const ui = await mountAt($, 60)
+  const lines = await paneLines(ui)
+  expect(lines).toHaveLength(2)
+  for (const l of lines) expect(cells(l)).toBeLessThanOrEqual(60)
+  // The human gate waiting, the failed gate, the running agent: nothing else.
+  expect(lines[1]).toBe('!manual-pr  ✗t03-desktop-uia-en  » implementer')
+  for (const task of ['resume', 'stopped', 'layout', 'headline', 'overrun', '✓']) expect(lines[1]).not.toContain(task)
+  expect((await ui.find({ type: 'Text', text: /^!manual-pr$/ }))?.props.color).toBe('warning')
+  expect((await ui.find({ type: 'Text', text: /^✗t03-desktop-uia-en$/ }))?.props.color).toBe('error')
+  // More running agents than the line holds: it stays one line, cut with an ellipsis.
+  for (const role of ['a-very-long-role-name-1', 'a-very-long-role-name-2', 'a-very-long-role-name-3']) {
+    agent.background(`bg-${role}`)
+    await dispatch($, { description: role, prompt: 'p', subagent_type: role })
+  }
+  const crowded = await paneLines(ui)
+  expect(crowded).toHaveLength(2)
+  expect(cells(crowded[1] ?? '')).toBeLessThanOrEqual(60)
+  expect(crowded[1]?.startsWith('!manual-pr  ✗t03-desktop-uia-en  » implementer  » a-very')).toBe(true)
+  expect(crowded[1]?.endsWith('…')).toBe(true)
+  await ui.unmount()
+})
+
+test('collapsed line 2 with nothing to flag: all passed with the count, else the pending count; none without files and agents', { options: ZH }, async ($, on) => {
+  const w = world(on)
+  const agent = agentTool(on, w)
+  writeTools(on)
+  await start($)
+  agent.foreground(MIN, 'fg-1')
+  const call = dispatch($, { description: 'done', prompt: 'p' })
+  await w.clock.advance(MIN)
+  await call
+  const ui = await mountAt($, 60)
+  expect(await paneLines(ui)).toHaveLength(1)
+  for (const [name, n] of [['a.json', 20], ['b.json', 23]] as const) {
+    w.file(name, passFile(name, n))
+    await writeAcceptance($, name)
+  }
+  await turnDone($)
+  expect(await paneLines(ui)).toHaveLength(2)
+  expect((await paneLines(ui))[1]).toBe('✓ 全部通過 43/43')
+  w.file('c.json', gateFile('c', ['pass', 'pending', 'pending']))
+  await writeAcceptance($, 'c.json')
+  await turnDone($)
+  expect((await paneLines(ui))[1]).toBe('待驗 2')
+  await ui.unmount()
+})
+
+test('English collapsed line 2: all passed with the count, else the pending count', async ($, on) => {
+  const w = world(on)
+  writeTools(on)
+  await start($)
+  w.file('a.json', passFile('a', 3))
+  await writeAcceptance($, 'a.json')
+  await turnDone($)
+  const ui = await mountAt($, 60)
+  expect((await paneLines(ui))[1]).toBe('✓ all passed 3/3')
+  w.file('b.json', gateFile('b', ['pending', 'pending']))
+  await writeAcceptance($, 'b.json')
+  await turnDone($)
+  expect((await paneLines(ui))[1]).toBe('2 pending')
+  await ui.unmount()
+})
+
+test('expanded-order: files with an open gate first, each all-pass file one line that opens its gates', { options: ZH }, async ($, on) => {
+  const w = world(on)
+  const agent = agentTool(on, w)
+  writeTools(on)
+  await start($)
+  agent.background('bg-1')
+  await dispatch($, { description: 'review', prompt: 'p', subagent_type: 'implementer' })
+  await eightFiles($, w)
+  const ui = await mountAt($, 60)
+  await ui.press({ key: 'expand' })
+  const lines = await paneLines(ui)
+  for (const l of lines) expect(cells(l)).toBeLessThanOrEqual(60)
+  const allPass = [' ✓ resume 7/7', ' ✓ stopped 7/7', ' ✓ layout 7/7', ' ✓ headline 7/7', ' ✓ overrun 7/7', ' ✓ tests 8/8']
+  expect(lines.slice(lines.findIndex(l => l.startsWith('── 驗收')))).toEqual([
+    rule('驗收 · ship', 60),
+    ' ✓ ' + 'tests'.padEnd(11) + 'unit tests',
+    ' ! ' + 'manual-pr'.padEnd(11) + '等你核可',
+    rule('驗收 · uia', 60),
+    ' ✗ ' + 't03-desktop-uia-en'.padEnd(20) + 'desktop uia',
+    ' ✓ ' + 't04'.padEnd(20) + 'uia check',
+    ...allPass,
+  ])
+  expect(await ui.find({ type: 'Text', text: /check 1/ })).toBeUndefined()
+  const resume = await ui.find({ type: 'Button', text: ' ✓ resume 7/7' })
+  expect(resume?.props.dimColor).toBe(true)
+  // Pressing the line shows that file's gates right under it; pressing again hides them.
+  await ui.press({ key: resume?.key ?? '' })
+  const opened = await paneLines(ui)
+  const at = opened.indexOf(' ✓ resume 7/7')
+  expect(opened.slice(at, at + 9)).toEqual([
+    ' ✓ resume 7/7',
+    ...Array.from({ length: 7 }, (_, i) => ' ✓ ' + `g${i + 1}`.padEnd(4) + `check ${i + 1}`),
+    ' ✓ stopped 7/7',
+  ])
+  for (const l of opened) expect(cells(l)).toBeLessThanOrEqual(60)
+  await ui.press({ key: resume?.key ?? '' })
+  expect(await paneLines(ui)).toEqual(lines)
+  await ui.unmount()
+})
+
+test('headline-waiting-first: the waiting-for-you text leads, so a clipped headline still names the gate', { options: ZH }, async ($, on) => {
+  const w = world(on)
+  const agent = agentTool(on, w)
+  writeTools(on)
+  await start($)
+  agent.background('bg-1')
+  await dispatch($, { description: 'one', prompt: 'p' })
+  w.file('board-ui.json', BOARD_ROUND_1)
+  await writeAcceptance($, 'board-ui.json')
+  await turnDone($)
+  // The host prefixes the status line with the mod name: the text itself does not start with it.
+  expect(w.status()).toBe('等你 merge · ░░░░░░░░░░ 0/1 完成 · 1 執行中')
+  expect(w.status()?.startsWith('board')).toBe(false)
+  const narrow = await mountAt($, 40)
+  const cut = (await narrow.find({ type: 'Text', text: /^等你/ }))?.text ?? ''
+  expect(cut.startsWith('等你 merge · ')).toBe(true)
+  expect(cut.endsWith('…')).toBe(true)
+  expect(cells(cut)).toBeLessThanOrEqual(40 - 8)
+  await narrow.unmount()
 })

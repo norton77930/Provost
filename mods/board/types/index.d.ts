@@ -1,5 +1,5 @@
-// running: its loop runs a turn; waiting: pending, held or idle between turns.
-export type BoardStatus = 'running' | 'waiting' | 'done' | 'failed'
+// running: its loop runs a turn; waiting: pending, held or idle between turns; stopped: ended on purpose (an interrupt or a kill), not a failure.
+export type BoardStatus = 'running' | 'waiting' | 'done' | 'failed' | 'stopped'
 
 // One Agent dispatch, from its tool.call to its end.
 export type BoardRow = {
@@ -58,6 +58,8 @@ export type BoardView = {
   isExpanded: boolean
   // The row whose detail is shown, by key.
   selected: string | null
+  // The acceptance files (by file name) whose all-pass line is opened to show its gates.
+  opened: string[]
   // The pane opens unasked once per session, at the first dispatch or the first plan step.
   isAutoOpened: boolean
 }
