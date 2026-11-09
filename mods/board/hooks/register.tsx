@@ -31,16 +31,16 @@ const EN = {
   minutes: (n: number) => `${n} min`,
   underMinute: '<1 min',
   gates: 'gates',
+  allPassed: (passed: number, total: number) => `all passed ${passed}/${total}`,
+  pending: (n: number) => `${n} pending`,
   agentsRunning: (n: number) => `${n} agent${n === 1 ? '' : 's'} running`,
   waiting: (id: string, n: number) => `needs you: ${id}${n > 1 ? ` (${n} waiting)` : ''}`,
-  over: (n: number) => `over +${n} min`,
-  status: { done: 'done', running: 'running', waiting: 'waiting', failed: 'failed' } as Record<BoardStatus, string>,
+  status: { done: 'done', running: 'running', waiting: 'waiting', failed: 'failed', stopped: 'stopped' } as Record<BoardStatus, string>,
   stopped: 'stopped',
   runFailed: 'run failed',
   denied: (why: string) => `denied: ${why}`,
   dispatchFailed: 'dispatch failed',
   cloud: 'launched in the cloud (not tracked)',
-  interrupted: 'interrupted',
   turnError: 'turn ended with an error',
   expand: 'Expand',
   collapse: 'Collapse',
@@ -71,16 +71,16 @@ const ZH: typeof EN = {
   minutes: n => `${n} 分`,
   underMinute: '<1 分',
   gates: '驗收',
+  allPassed: (passed, total) => `全部通過 ${passed}/${total}`,
+  pending: n => `待驗 ${n}`,
   agentsRunning: n => `${n} agent 執行中`,
   waiting: (id, n) => `等你 ${id}${n > 1 ? ` 等 ${n} 項` : ''}`,
-  over: n => `超時 +${n} 分`,
-  status: { done: '完成', running: '執行中', waiting: '等待中', failed: '失敗' },
+  status: { done: '完成', running: '執行中', waiting: '等待中', failed: '失敗', stopped: '已停止' },
   stopped: '已停止',
   runFailed: '執行失敗',
   denied: why => `已拒絕：${why}`,
   dispatchFailed: '派工失敗',
   cloud: '已在雲端啟動（不再追蹤）',
-  interrupted: '已中斷',
   turnError: '回合以錯誤結束',
   expand: '展開',
   collapse: '收合',
@@ -111,7 +111,7 @@ const gates = atom({ plugin: 'board', key: 'gates' } as const, [])
 // The acceptance files the main loop wrote, by absolute path: the only ones the board reads.
 const owned = atom({ plugin: 'board', key: 'owned' } as const, [])
 const tick = atom({ plugin: 'board', key: 'tick' } as const, 0)
-const INITIAL_VIEW: BoardView = { isExpanded: false, selected: null, isAutoOpened: false }
+const INITIAL_VIEW: BoardView = { isExpanded: false, selected: null, opened: [], isAutoOpened: false }
 const view = atom({ plugin: 'board', key: 'view' } as const, INITIAL_VIEW)
 
 // State written by an older version of this module lacks the fields added since:
@@ -195,21 +195,23 @@ const ratio = (part: number, whole: number) => (whole === 0 ? 0 : part / whole)
 const isHumanPending = (g: BoardGate) => g.kind === 'human' && g.status === 'pending'
 
 // The human gates still pending, the first one named: what the person is being waited on for.
+// It leads the headline, so a headline cut to the pane's width keeps the name.
 function waitingTextOf(files: BoardGateFile[]) {
   const waiting = files.flatMap(f => f.gates).filter(isHumanPending)
-  return waiting.length === 0 ? '' : ` · ${t.waiting(waiting[0]?.id ?? '', waiting.length)}`
+  return waiting.length === 0 ? '' : t.waiting(waiting[0]?.id ?? '', waiting.length)
 }
 
-function summaryOf(list: BoardRow[], files: BoardGateFile[], now: number) {
-  const done = list.filter(r => r.status === 'done').length
-  const active = list.filter(isActive).length
-  const failed = list.filter(r => r.status === 'failed').length
+// Dispatches that were stopped on purpose are neither done nor failed: they leave the total.
+function summaryOf(list: BoardRow[], now: number) {
+  const counted = list.filter(r => r.status !== 'stopped')
+  const done = counted.filter(r => r.status === 'done').length
+  const active = counted.filter(isActive).length
+  const failed = counted.filter(r => r.status === 'failed').length
   const eta = longestRemainingMs(list, now)
   return (
-    `board  ${barOf(ratio(done, list.length), STEP_BAR_W)} ${t.done(done, list.length)} · ${t.running(active)}` +
+    `${barOf(ratio(done, counted.length), STEP_BAR_W)} ${t.done(done, counted.length)} · ${t.running(active)}` +
     (failed > 0 ? ` · ${t.failed(failed)}` : '') +
-    (eta === undefined ? '' : ` · ~${t.minutes(minutes(eta))}`) +
-    waitingTextOf(files)
+    (eta === undefined ? '' : ` · ~${t.minutes(minutes(eta))}`)
   )
 }
 
@@ -260,10 +262,9 @@ function planSummaryOf(plan: BoardTodo[], list: BoardRow[], files: BoardGateFile
   const all = files.flatMap(f => f.gates)
   const passed = all.filter(g => g.status === 'pass').length
   return (
-    `board  ${barOf(ratio(completed + running.length / 2, plan.length), STEP_BAR_W)} ${completed}/${plan.length}` +
+    `${barOf(ratio(completed + running.length / 2, plan.length), STEP_BAR_W)} ${completed}/${plan.length}` +
     (all.length === 0 ? '' : ` · ${t.gates} ${passed}/${all.length}`) +
-    (active > 0 ? ` · ${t.agentsRunning(active)}` : '') +
-    waitingTextOf(files)
+    (active > 0 ? ` · ${t.agentsRunning(active)}` : '')
   )
 }
 
@@ -273,20 +274,25 @@ function gatesSummaryOf(files: BoardGateFile[]) {
   const all = files.flatMap(f => f.gates)
   if (all.length === 0) {
     const broken = files.filter(f => f.task === null).length
-    return `board  ${t.gates}` + (broken > 0 ? ` · ${t.malformedCount(broken)}` : ' —')
+    return t.gates + (broken > 0 ? ` · ${t.malformedCount(broken)}` : ' —')
   }
   const passed = all.filter(g => g.status === 'pass').length
-  return `board  ${t.gates} ${barOf(ratio(passed, all.length), GATE_BAR_W)} ${passed}/${all.length}` + waitingTextOf(files)
+  return `${t.gates} ${barOf(ratio(passed, all.length), GATE_BAR_W)} ${passed}/${all.length}`
 }
 
 // The status line and both pane summaries: the plan leads when there is one, else the
-// dispatches; gates alone lead only when there is neither.
-const headlineOf = (list: BoardRow[], plan: BoardTodo[], files: BoardGateFile[], now: number) =>
-  plan.length > 0
-    ? planSummaryOf(plan, list, files)
-    : list.length === 0 && files.length > 0
-      ? gatesSummaryOf(files)
-      : summaryOf(list, files, now)
+// dispatches; gates alone lead only when there is neither. The host puts the mod's name before the
+// status line and the pane has its title, so the text does not. A human gate waiting leads it.
+function headlineOf(list: BoardRow[], plan: BoardTodo[], files: BoardGateFile[], now: number) {
+  const summary =
+    plan.length > 0
+      ? planSummaryOf(plan, list, files)
+      : list.length === 0 && files.length > 0
+        ? gatesSummaryOf(files)
+        : summaryOf(list, now)
+  const waiting = waitingTextOf(files)
+  return waiting === '' ? summary : `${waiting} · ${summary}`
+}
 
 const pad2 = (n: number) => String(n).padStart(2, '0')
 const clockTime = (ms: number) => {
@@ -296,9 +302,9 @@ const clockTime = (ms: number) => {
 const elapsedText = (ms: number) => (ms < MIN ? t.underMinute : t.minutes(Math.floor(ms / MIN)))
 const elapsedOf = (row: BoardRow, now: number) => (row.endedAt ?? now) - row.startedAt
 
-const ICON: Record<BoardStatus, string> = { done: '✓', running: '»', waiting: '·', failed: '✗' }
+const ICON: Record<BoardStatus, string> = { done: '✓', running: '»', waiting: '·', failed: '✗', stopped: '✕' }
 // Marks are Latin-1 or Dingbats glyphs, one cell wide in every terminal: a Geometric Shapes glyph
-// (▶ ○ ● ◆) draws two cells in some, which shifts the line it leads.
+// (▶ ○ ● ◆ ■) draws two cells in some, which shifts the line it leads. Stopped is the Dingbats ✕, not ■.
 const TODO_ICON: Record<BoardTodo['status'], string> = { completed: '✓', in_progress: '»', pending: '·' }
 // A gate's mark: a pending human gate is the one the person is waited on for.
 const gateMark = (g: BoardGate) => (isHumanPending(g) ? '!' : { pass: '✓', fail: '✗', pending: '·' }[g.status])
@@ -333,22 +339,22 @@ function ruleOf(label: string, width: number) {
   return head + '─'.repeat(Math.max(0, width - cellsOf(head)))
 }
 
-// The time-left part of an active row: elapsed over the estimate as a bar, the overrun in
-// minutes (rounded up) once past it, '—' with no estimate.
+// The time-left part of an active row: elapsed over the estimate as a bar, nothing once past
+// it (the elapsed minutes beside it say how long), '—' with no estimate.
 function leftTextOf(row: BoardRow, list: BoardRow[], now: number) {
   if (!isActive(row)) return ''
   const estimate = estimateMs(row, list)
   if (estimate === undefined) return '—'
   const ran = now - row.startedAt
-  return ran > estimate ? t.over(Math.ceil((ran - estimate) / MIN)) : barOf(ran / estimate, ROW_BAR_W)
+  return ran > estimate ? '' : barOf(ran / estimate, ROW_BAR_W)
 }
 
 // `<role> · <description> · <time>`: led by the step arrow under a plan step, else by the
-// status icon. The time is the elapsed minutes, then the bar or overrun while it runs; a
-// short failure reason ends a failed row. The description gives way first.
+// status icon. The time is the elapsed minutes, then the bar while it runs; a short
+// failure or stop reason ends a failed or stopped row. The description gives way first.
 function rowText(row: BoardRow, list: BoardRow[], now: number, columns: number, isUnderStep: boolean) {
   const left = leftTextOf(row, list, now)
-  const reason = row.status === 'failed' && row.reason !== null ? oneLine(row.reason) : ''
+  const reason = (row.status === 'failed' || row.status === 'stopped') && row.reason !== null ? oneLine(row.reason) : ''
   const tail =
     SEP + elapsedText(elapsedOf(row, now)) + (left === '' ? '' : ` ${left}`) + (reason !== '' && cellsOf(reason) <= REASON_W ? SEP + reason : '')
   const head = (isUnderStep ? STEP_LEAD : ` ${ICON[row.status]} `) + row.subagentType + SEP
@@ -360,11 +366,13 @@ function rowText(row: BoardRow, list: BoardRow[], now: number, columns: number, 
 const statusOfAgent = (status: AgentStatus): BoardStatus =>
   status === 'completed'
     ? 'done'
-    : status === 'failed' || status === 'killed'
-      ? 'failed'
-      : status === 'running'
-        ? 'running'
-        : 'waiting'
+    : status === 'killed'
+      ? 'stopped'
+      : status === 'failed'
+        ? 'failed'
+        : status === 'running'
+          ? 'running'
+          : 'waiting'
 
 const reasonOfAgent = (status: AgentStatus) =>
   status === 'killed' ? t.stopped : status === 'failed' ? t.runFailed : null
@@ -448,6 +456,59 @@ async function own($: EngineInterface, path: string | undefined) {
   await update($, owned, list => (list.includes(at) ? list : [...list, at]))
 }
 
+// A run of a line in one style: the second line of the collapsed pane is drawn from these.
+type Piece = { text: string; color?: 'warning' | 'error' | 'success'; isDim?: boolean }
+const SEPARATOR: Piece = { text: '  ' }
+
+// The longest start of `s` that fits `width` cells.
+function takeCells(s: string, width: number) {
+  let out = ''
+  for (const c of s) {
+    if (cellsOf(out + c) > width) break
+    out += c
+  }
+  return out
+}
+
+// The pieces cut to at most `width` cells, an ellipsis ending the last when something is lost.
+function clipPieces(pieces: Piece[], width: number) {
+  if (pieces.reduce((n, p) => n + cellsOf(p.text), 0) <= width) return pieces
+  const out: Piece[] = []
+  let used = 0
+  for (const p of pieces) {
+    const room = width - 1 - used
+    if (room <= 0) break
+    if (cellsOf(p.text) <= room) {
+      out.push(p)
+      used += cellsOf(p.text)
+    } else {
+      out.push({ ...p, text: takeCells(p.text, room) + '…' })
+      return out
+    }
+  }
+  const last = out[out.length - 1]
+  if (last !== undefined) out[out.length - 1] = { ...last, text: last.text.trimEnd() + '…' }
+  return out
+}
+
+// The second line of the collapsed pane: only what asks for attention, in this order: the human
+// gates waiting, the failed gates, the agents running, the malformed files. With none of them:
+// every gate passed, or how many are still to run. Nothing at all leaves it empty.
+function collapsedPieces(list: BoardRow[], files: BoardGateFile[]): Piece[] {
+  const all = files.flatMap(f => f.gates)
+  const exceptions: Piece[] = [
+    ...all.filter(isHumanPending).map(g => ({ text: `!${g.id}`, color: 'warning' })),
+    ...all.filter(g => g.status === 'fail').map(g => ({ text: `✗${g.id}`, color: 'error' })),
+    ...list.filter(isActive).map(r => ({ text: `${ICON.running} ${r.subagentType}` })),
+    ...files.filter(f => f.task === null).map(f => ({ text: `${f.file}  ${t.malformed}`, isDim: true })),
+  ]
+  if (exceptions.length > 0) return exceptions.flatMap((p, i) => (i === 0 ? [p] : [SEPARATOR, p]))
+  const passed = all.filter(g => g.status === 'pass').length
+  if (all.length === 0) return []
+  if (passed === all.length) return [{ text: '✓', color: 'success' }, { text: ` ${t.allPassed(passed, all.length)}` }]
+  return [{ text: t.pending(all.length - passed) }]
+}
+
 // ---------------------------------------------------------------- state and effects
 
 async function show($: EngineInterface) {
@@ -472,7 +533,7 @@ async function pollOnce($: EngineInterface) {
         if (info === undefined) return row
         const status = statusOfAgent(info.status)
         if (status === row.status) return row
-        const ended = status === 'done' || status === 'failed'
+        const ended = status === 'done' || status === 'failed' || status === 'stopped'
         return { ...row, status, reason: reasonOfAgent(info.status), endedAt: ended ? now : null }
       }),
     )
@@ -577,16 +638,24 @@ async function endAgent($: EngineInterface, agentId: string, reason: string) {
       row.agentId === agentId && isActive(row)
         ? reason === 'answer'
           ? { ...row, status: 'done', endedAt: now, reason: null }
-          : { ...row, status: 'failed', endedAt: now, reason: reason === 'aborted' ? t.interrupted : t.turnError }
+          : reason === 'aborted'
+            ? { ...row, status: 'stopped', endedAt: now, reason: t.stopped }
+            : { ...row, status: 'failed', endedAt: now, reason: t.turnError }
         : row,
     ),
   )
   await sync($)
 }
 
+// An agent's new turn: a waiting row runs; so does a stopped or failed one, as a SendMessage
+// resumes an agent without a new Agent call.
 async function wakeAgent($: EngineInterface, agentId: string) {
   await changeRows($, list =>
-    list.map(row => (row.agentId === agentId && row.status === 'waiting' ? { ...row, status: 'running' } : row)),
+    list.map(row =>
+      row.agentId === agentId && (row.status === 'waiting' || row.status === 'stopped' || row.status === 'failed')
+        ? { ...row, status: 'running', endedAt: null, reason: null }
+        : row,
+    ),
   )
   await sync($)
 }
@@ -610,6 +679,14 @@ async function setExpanded($: EngineInterface, isExpanded: boolean) {
 
 async function select($: EngineInterface, key: string | null) {
   await update($, view, v => ({ ...v, selected: key }))
+}
+
+// An all-pass file's line shows its gates under it, or hides them again.
+async function toggleOpened($: EngineInterface, file: string) {
+  await update($, view, v => {
+    const opened = v.opened ?? []
+    return { ...v, opened: opened.includes(file) ? opened.filter(f => f !== file) : [...opened, file] }
+  })
 }
 
 // /board: closes a drawn pane; opens (or places a waiting one) at the size last chosen.
@@ -776,26 +853,8 @@ export const register: Register = (on, options) => {
       </Text>
     )
 
-    // Collapsed: one compact line per file, `task  id✓ id✗ id!`.
-    const gatesLine = (file: BoardGateFile) =>
-      file.task === null ? (
-        <Text dimColor>{`${file.file}  ${t.malformed}`}</Text>
-      ) : (
-        <Text>
-          {`${file.task}  `}
-          {file.gates.flatMap((g, i) => [
-            ...(i > 0 ? [' '] : []),
-            <Text
-              dimColor={g.kind === 'human' && !isHumanPending(g)}
-              color={g.status === 'fail' ? 'error' : isHumanPending(g) ? 'warning' : undefined}
-            >
-              {`${g.id}${gateMark(g)}`}
-            </Text>,
-          ])}
-        </Text>
-      )
-
     if (!v.isExpanded) {
+      const pieces = collapsedPieces(list, files)
       return (
         <Box flexDirection="column">
           <Box flexDirection="row" justifyContent="space-between">
@@ -804,10 +863,16 @@ export const register: Register = (on, options) => {
               {t.expand}
             </Button>
           </Box>
-          {files.length > 0 && (
-            <Box flexDirection="row" gap={3}>
-              {files.map(gatesLine)}
-            </Box>
+          {pieces.length > 0 && (
+            <Text wrap="truncate-end">
+              {clipPieces(pieces, columns).map(p =>
+                p.color === undefined && !p.isDim ? p.text : (
+                  <Text color={p.color} dimColor={p.isDim}>
+                    {p.text}
+                  </Text>
+                ),
+              )}
+            </Text>
           )}
         </Box>
       )
@@ -826,7 +891,8 @@ export const register: Register = (on, options) => {
           </Box>
           <Text>{`${t.role}  ${picked.subagentType}${picked.background ? t.background : ''}`}</Text>
           <Text>
-            {`${t.state}  ${ICON[picked.status]} ${t.status[picked.status]}` + (picked.reason === null ? '' : `${t.colon}${picked.reason}`)}
+            {`${t.state}  ${ICON[picked.status]} ${t.status[picked.status]}` +
+              (picked.reason === null || picked.reason === t.status[picked.status] ? '' : `${t.colon}${picked.reason}`)}
           </Text>
           <Text>
             {`${t.started}  ${clockTime(picked.startedAt)}` +
@@ -848,10 +914,16 @@ export const register: Register = (on, options) => {
         <Button
           key={`row:${row.key}`}
           plain
-          dimColor={row.status === 'done'}
+          dimColor={row.status === 'done' || row.status === 'stopped'}
           onPress={() => void select($, row.key).catch(() => undefined)}
         >
-          {row.status === 'failed' ? <Text color="error">{text}</Text> : text}
+          {row.status === 'failed' ? (
+            <Text color="error">{text}</Text>
+          ) : row.status === 'stopped' ? (
+            <Text color="inactive">{text}</Text>
+          ) : (
+            text
+          )}
         </Button>
       )
     }
@@ -878,6 +950,14 @@ export const register: Register = (on, options) => {
       })
     }
 
+    // Files with a gate still to pass or fixed (and the malformed ones) come first, each with its gates;
+    // a file whose gates all passed is one line that opens to show them.
+    const isPassed = (file: BoardGateFile) =>
+      file.task !== null && file.gates.length > 0 && file.gates.every(g => g.status === 'pass')
+    const openFiles = files.filter(file => !isPassed(file))
+    const passedFiles = files.filter(isPassed)
+    const shown = v.opened ?? []
+
     return (
       <Box flexDirection="column">
         <Box flexDirection="row" justifyContent="space-between">
@@ -895,11 +975,22 @@ export const register: Register = (on, options) => {
         ])}
         {loose.length > 0 && <Text dimColor>{ruleOf(t.dispatches, columns)}</Text>}
         {loose.map(rowButton)}
-        {files.flatMap(file =>
+        {openFiles.flatMap(file =>
           file.task === null
             ? [<Text dimColor>{`${file.file}  ${t.malformed}`}</Text>]
             : [<Text dimColor>{ruleOf(`${t.gatesRule} · ${oneLine(file.task)}`, columns)}</Text>, ...gateLines(file)],
         )}
+        {passedFiles.flatMap(file => [
+          <Button
+            key={`file:${file.file}`}
+            plain
+            dimColor
+            onPress={() => void toggleOpened($, file.file).catch(() => undefined)}
+          >
+            {clip(` ${ICON.done} ${oneLine(file.task ?? '')} ${file.gates.length}/${file.gates.length}`, columns)}
+          </Button>,
+          ...(shown.includes(file.file) ? gateLines(file) : []),
+        ])}
       </Box>
     )
   })

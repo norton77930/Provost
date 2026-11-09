@@ -12,6 +12,12 @@ wide, so their lines sat one cell right of the ✓ and · lines. The pane theref
 and `!` for a pending human gate. The drawing below keeps the glyphs the user chose; compare
 the layout with these substitutions.
 
+## Headline amendment (2026-11-07)
+
+The headline no longer starts with the word `board` (the host prefixes the status line with the
+mod name and the pane has its title), and the waiting-for-you text leads it, so a clipped
+headline keeps the gate's name. The drawing below has the new headline; the rest is as chosen.
+
 ## Expanded, with a plan, one dispatch and an acceptance file
 
 Fixture: five plan steps (1-3 completed, 4 in progress, 5 pending); one finished
@@ -21,7 +27,7 @@ file with task "board round 1" and gates `tests` (machine, pass, evidence
 `live-new-reset` (live, pending, check "real session /new"), `merge` (human, pending).
 
 ```
-board  ████████░░ 4/5 · 驗收 2/5 · 等你 merge   [收合]
+等你 merge · ████████░░ 4/5 · 驗收 2/5   [收合]
 ── 步驟 ──────────────────────────────────────
  ✓ 1  Move board mod into Provost repo
  ✓ 2  Write acceptance file for board round 1
