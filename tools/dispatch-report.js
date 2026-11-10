@@ -34,6 +34,8 @@ const PRICES = {
   "haiku-5-5": [0.1, 0.125, 0.2, 0.01, 0.5],
   "sonnet-5": [2, 2.5, 4, 0.2, 10],
   "fable-5-1": [10, 12.5, 20, 0.25, 50],
+  // Fable 5.2 from "What's new in Claude Fable 5.2" (checked 2026-11-10).
+  "fable-5-2": [8, 10, 16, 0.2, 40],
 };
 const estCost = (model, s) => {
   const p = PRICES[model];
