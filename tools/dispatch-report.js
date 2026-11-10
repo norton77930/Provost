@@ -36,12 +36,24 @@ const PRICES = {
   "fable-5-1": [10, 12.5, 20, 0.25, 50],
   // Fable 5.2 from "What's new in Claude Fable 5.2" (checked 2026-11-10).
   "fable-5-2": [8, 10, 16, 0.2, 40],
+  // Safety fallbacks: a flagged Fable 5.2 / Opus 5.5 request re-runs on Opus 4.8 (cyber) or
+  // Opus 5 (bio). Both $5 / $25 with cache reads at 0.1x (claude-api model docs, checked 2026-11-11).
+  "opus-5": [5, 6.25, 10, 0.5, 25],
+  "opus-4-8": [5, 6.25, 10, 0.5, 25],
 };
-const estCost = (model, s) => {
-  const p = PRICES[model];
-  if (!p) return "";
-  return ((s.input * p[0] + s.write5m * p[1] + s.write1h * p[2] + s.cacheRead * p[3] + s.out * p[4]) / 1e6).toFixed(2);
+// Prices each model's tokens at its own rates. Models with no tokens (Claude Code's
+// "<synthetic>" API-error messages) are ignored; any other unpriced model blanks the cost.
+const estCost = s => {
+  let usd = 0;
+  for (const [model, u] of Object.entries(s.byModel)) {
+    const p = PRICES[model];
+    if (!p) return "";
+    usd += u.input * p[0] + u.write5m * p[1] + u.write1h * p[2] + u.cacheRead * p[3] + u.out * p[4];
+  }
+  return (usd / 1e6).toFixed(2);
 };
+// More than one model produced tokens, e.g. a reviewer finished by a safety fallback.
+const mixedModel = s => !!s && Object.keys(s.byModel).length > 1;
 
 const redact = s => String(s ?? "").replace(/(gh[pousr]_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,}|sk-[A-Za-z0-9_-]{16,})/g, "[REDACTED]");
 const clip = (s, n) => redact(String(s ?? "").replace(/\s+/g, " ").slice(0, n));
@@ -55,7 +67,7 @@ async function eachLine(file, cb) {
 }
 
 async function subagentStats(file) {
-  const s = { first: null, last: null, turns: 0, out: 0, cacheRead: 0, input: 0, write5m: 0, write1h: 0, models: new Set(), apiErrors: 0 };
+  const s = { first: null, last: null, turns: 0, out: 0, cacheRead: 0, input: 0, write5m: 0, write1h: 0, models: new Set(), byModel: {}, apiErrors: 0 };
   if (!fs.existsSync(file)) return null;
   // Claude Code writes one line per content block and every line repeats the
   // response's usage, so count each response once (by message.id), keeping the
@@ -68,17 +80,22 @@ async function subagentStats(file) {
     if (m.model) s.models.add(m.model);
     if (o.isApiErrorMessage) s.apiErrors++;
     const id = m.id || o.uuid, prev = byId.get(id);
-    if (!prev || (u.output_tokens || 0) >= (prev.output_tokens || 0)) byId.set(id, u);
+    if (!prev || (u.output_tokens || 0) >= (prev.u.output_tokens || 0)) byId.set(id, { u, model: m.model || "" });
   });
-  for (const u of byId.values()) {
+  for (const { u, model } of byId.values()) {
     s.turns++;
-    s.out += u.output_tokens || 0;
-    s.cacheRead += u.cache_read_input_tokens || 0;
-    s.input += u.input_tokens || 0;
     // Split cache writes by TTL when the breakdown exists; otherwise count them as 5-minute writes.
     const cc = u.cache_creation;
-    if (cc) { s.write5m += cc.ephemeral_5m_input_tokens || 0; s.write1h += cc.ephemeral_1h_input_tokens || 0; }
-    else s.write5m += u.cache_creation_input_tokens || 0;
+    const t = {
+      out: u.output_tokens || 0, cacheRead: u.cache_read_input_tokens || 0, input: u.input_tokens || 0,
+      write5m: cc ? cc.ephemeral_5m_input_tokens || 0 : u.cache_creation_input_tokens || 0,
+      write1h: cc ? cc.ephemeral_1h_input_tokens || 0 : 0,
+    };
+    for (const k of Object.keys(t)) s[k] += t[k];
+    if (!Object.values(t).some(v => v > 0)) continue;
+    const key = model.replace(/^claude-/, "");
+    const b = s.byModel[key] = s.byModel[key] || { out: 0, cacheRead: 0, input: 0, write5m: 0, write1h: 0 };
+    for (const k of Object.keys(t)) b[k] += t[k];
   }
   return s;
 }
@@ -121,7 +138,8 @@ async function scanSession(projectDir, file) {
       write5mM: sub ? (sub.write5m / 1e6).toFixed(2) : "", write1hM: sub ? (sub.write1h / 1e6).toFixed(2) : "",
       apiErrors: sub ? sub.apiErrors : "",
     });
-    row.estCost = sub ? estCost(row.model, sub) : "";
+    row.estCost = sub ? estCost(sub) : "";
+    row.mixed = mixedModel(sub);
   }
   return rows.filter(r => !r.skip);
 }
@@ -260,7 +278,7 @@ ${all.length} reviews since ${since.toISOString().slice(0, 10)}` + (untilArg ? `
     }
     return;
   }
-  const byRole = {};
+  const byRole = {}, mixed = all.filter(r => r.mixed).length;
   for (const r of all) (byRole[r.role] = byRole[r.role] || []).push(r);
-  console.error(`\n${all.length} dispatches since ${since.toISOString().slice(0, 10)}` + (untilArg ? ` through ${untilArg}` : "") + Object.entries(byRole).map(([k, v]) => `; ${k}=${v.length}`).join(""));
+  console.error(`\n${all.length} dispatches since ${since.toISOString().slice(0, 10)}` + (untilArg ? ` through ${untilArg}` : "") + Object.entries(byRole).map(([k, v]) => `; ${k}=${v.length}`).join("") + (mixed ? `; mixed-model=${mixed}` : ""));
 })();

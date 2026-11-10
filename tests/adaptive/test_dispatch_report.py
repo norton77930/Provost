@@ -80,6 +80,37 @@ class DispatchReportTests(unittest.TestCase):
         self.assertEqual(len(out), 3)
         self.assertEqual(err.strip(), "1 dispatches since 2026-09-23; implementer-sonnet=1")
 
+    def test_safety_fallback_prices_each_model_and_counts_mixed_runs(self):
+        # A Fable 5.2 reviewer whose second response came from the Opus 4.8 safety fallback.
+        jl(self.proj / f"{SESSION}.jsonl", [
+            dispatch("r1", "2026-11-10T10:00:00Z", "code-reviewer", "Review auth"),
+            result("r1", "2026-11-10T10:05:00Z", "a1"),
+        ])
+        lines = sub_lines("claude-fable-5-2", "2026-11-10T10:00:05Z", "2026-11-10T10:04:05Z")
+        lines[1]["message"]["model"] = "claude-opus-4-8"
+        jl(self.proj / SESSION / "subagents" / "agent-a1.jsonl", lines)
+        out, err = self.run_report("--since", "2026-11-01", "--roles", "code-reviewer", "--tsv")
+        row = dict(zip(out[0].split("\t"), out[1].split("\t")))
+        self.assertEqual(row["model"], "fable-5-2+opus-4-8")
+        # fable-5-2: 2.2808 + opus-4-8: 1.8005, each response priced at its own model's rates
+        self.assertEqual(row["estCost"], "4.08")
+        self.assertIn("; mixed-model=1", err)
+
+    def test_zero_usage_synthetic_message_does_not_blank_cost(self):
+        jl(self.proj / f"{SESSION}.jsonl", [
+            dispatch("t1", "2026-11-10T10:00:00Z", "implementer-sonnet", "Add widget"),
+            result("t1", "2026-11-10T10:05:00Z", "a1"),
+        ])
+        lines = sub_lines("claude-sonnet-5-5", "2026-11-10T10:00:05Z", "2026-11-10T10:04:05Z")[:1]
+        lines.append({"type": "assistant", "timestamp": "2026-11-10T10:04:10Z", "isApiErrorMessage": True,
+                      "message": {"id": "m9", "model": "<synthetic>", "content": [],
+                                  "usage": {"input_tokens": 0, "output_tokens": 0}}})
+        jl(self.proj / SESSION / "subagents" / "agent-a1.jsonl", lines)
+        out, err = self.run_report("--since", "2026-11-01", "--tsv")
+        row = dict(zip(out[0].split("\t"), out[1].split("\t")))
+        self.assertEqual(row["estCost"], "0.62")
+        self.assertNotIn("mixed-model", err)
+
     def reviews_fixture(self):
         important = "Report: 4 Important\nI1 a.py:1 bug\nI2 b.py:2 bug\nI3 c.py:3 bug\nI4 d.py:4 bug"
         disp = "Reading the report.\nDispositions: I1 fixed; I2 rejected — wrong file; I3 intentional — by design; I4 moot — superseded"

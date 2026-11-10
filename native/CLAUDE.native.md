@@ -172,7 +172,15 @@ the reviewed commit, so the miss can become a reviewer eval case.
 
 The user sets main's model and effort. When a design decision, root cause, or
 conflicting evidence would benefit from more depth, say why raising effort or
-switching to Fable may help; you cannot change main's setting yourself.
+switching to Fable may help; you cannot change main's setting yourself. When
+Opus at `high` still falls short, suggest Fable at `medium` rather than Opus at
+`xhigh`. Suggest a switch at a natural break: first refresh the handoff record
+when handoff is enabled, then `/compact` before `/model`, because the prompt
+cache belongs to the model that wrote it and the next model's first turn
+rewrites whatever context remains (PreCompact already saves a snapshot, and the
+compacted session gets the checkpoint back). Suggest `/handoff` into a new
+session instead only when no subagent is running, the acceptance file is closed
+or will be rewritten, and the next phase needs none of the earlier conversation.
 
 Use `general-purpose` only for bounded work no dedicated role covers — e.g.
 non-code work that doesn't fit the implementer's TDD loop, such as media or
