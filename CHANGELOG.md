@@ -302,6 +302,14 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Fixed
 
+- The acceptance `Stop` gate does less work when there is nothing to judge (#112). The
+  bash part now exits before any interpreter starts when `<cwd>/.claude/acceptance`
+  holds no `*.json` file, not only when the directory is missing. A file with a valid
+  `closed` reason is dropped before the transcript is read, so a session with only
+  finished files never opens its transcript. A file that does not load cleanly stays a
+  candidate and still blocks as malformed when the session owns it. Accepted limit:
+  the bash exit cannot delete a session's leftover `.pushes` and `.seen` files; the
+  next prompt empties `.pushes` and `prune` removes both once stale.
 - `prune` with handoff off (#50) no longer fails with `HANDOFF_DISABLED`: it
   lists, and with `--apply` removes, the acceptance gate's stale
   `cache/acceptance/*.pushes` counters and touches nothing else.
