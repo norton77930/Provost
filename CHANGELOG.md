@@ -407,6 +407,12 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   are gone from the default `PROVOST_REMINDER_ROLES` of `hooks/native-facts` and from the
   default `--roles` of `tools/dispatch-report.js` (pass `--roles` to analyse old
   transcripts that used them).
+- Hooks and runtime installed with `install.py setup --config-dir X` now read
+  `X/provost/config.json` and keep the handoff store, the interpreter cache and the
+  facts and acceptance caches under `X/provost`, instead of silently answering `{}` or
+  using the config and store of an install in `~/.claude`. `PROVOST_CONFIG`,
+  `PROVOST_HANDOFF_HOME` and `PROVOST_HOME` still win; a checkout and an install in
+  `~/.claude` behave as before (#125).
 
 ### Removed
 

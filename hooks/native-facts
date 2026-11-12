@@ -35,7 +35,19 @@
 #   acceptance gate's push counter <provost dir>/cache/acceptance/<session_id>.pushes
 #   when it holds a count, so the person's prompt starts a new episode.
 set -uo pipefail
-config_file="${PROVOST_CONFIG:-${HOME}/.claude/provost/config.json}"
+# Config file: $PROVOST_CONFIG, else <provost dir>/config.json when this script is installed as
+# <provost dir>/runtime/<name>/hooks/native-facts (read from its own path as written, links not
+# resolved), else ~/.claude/provost/config.json. Same rule as hooks/native-event.
+config_file="${PROVOST_CONFIG:-}"
+if [[ -z "$config_file" ]]; then
+    config_file="${HOME}/.claude/provost/config.json"
+    _abs="${BASH_SOURCE[0]//\\//}"
+    [[ "$_abs" == /* || "$_abs" == [A-Za-z]:/* ]] || _abs="${PWD}/${_abs}"
+    _hooks="${_abs%/*}" _name="${_hooks%/*}" _runtime="${_name%/*}"
+    if [[ "${_hooks##*/}" == hooks && "${_runtime##*/}" == runtime && "$_runtime" == ?*/* ]]; then
+        config_file="${_runtime%/*}/config.json"
+    fi
+fi
 config=""
 [[ -r "$config_file" ]] && { IFS= read -r -d '' config < "$config_file" || true; }
 facts_dir="${config_file%[/\\]*}/cache/facts"

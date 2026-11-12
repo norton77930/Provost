@@ -6,7 +6,8 @@
 # provost_find_python fills the PROVOST_PY array with the command to run, or
 # returns 1 after printing the "requires Python 3.11+" message. Order:
 #   1. $PROVOST_PYTHON when executable (no probe, no cache)
-#   2. the cached interpreter path in ${PROVOST_HOME:-~/.claude/provost}/cache/python
+#   2. the cached interpreter path in <provost dir>/cache/python, where <provost dir> is
+#      $PROVOST_HOME, else the directory this runtime is installed in, else ~/.claude/provost
 #   3. python3, python, then py -3, each version-probed; the first python3/python
 #      that qualifies is written to the cache (best effort).
 # An interpreter inside the current working directory tree (a project venv on
@@ -45,6 +46,17 @@ if [[ "$_provost_module_root" == /* ]]; then
     fi
     [[ -n "$_provost_native" ]] && _provost_module_root="$_provost_native"
     unset _provost_native
+fi
+# Installed as <provost dir>/runtime/<name>/hooks: keep <provost dir> for the interpreter cache.
+# Same lexical rule as hooks/native-event; a checkout leaves it empty.
+_provost_installed=""
+if [[ "$_provost_here" == */hooks ]]; then
+    _provost_runtime="${_provost_here%/*}"
+    _provost_runtime="${_provost_runtime%/*}"
+    if [[ "${_provost_runtime##*/}" == runtime && "$_provost_runtime" == ?*/* ]]; then
+        _provost_installed="${_provost_runtime%/*}"
+    fi
+    unset _provost_runtime
 fi
 export PYTHONPATH="$_provost_module_root"
 # Hooks run with the project as cwd; keep `python -m` from importing its modules (3.11+).
@@ -106,7 +118,7 @@ _provost_physically_outside() {
 
 provost_find_python() {
     PROVOST_PY=()
-    local cache_file="${PROVOST_HOME:-${HOME:-}/.claude/provost}/cache/python"
+    local cache_file="${PROVOST_HOME:-${_provost_installed:-${HOME:-}/.claude/provost}}/cache/python"
     local cached="" candidate resolved
     if [[ -n "${PROVOST_PYTHON:-}" && -f "$PROVOST_PYTHON" && -x "$PROVOST_PYTHON" ]]; then
         PROVOST_PY=("$PROVOST_PYTHON")

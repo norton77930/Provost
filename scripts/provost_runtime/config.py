@@ -10,8 +10,27 @@ class ConfigError(ValueError):
     pass
 
 
+def installed_provost_dir(module_file=None):
+    """The provost directory this runtime was installed in, else None.
+
+    Lexical, from the file's own path (links are not resolved, no process starts):
+    <provost dir>/runtime/<name>/scripts/provost_runtime/config.py. hooks/native-event,
+    hooks/native-facts and hooks/_python.sh read the same layout from their own paths.
+    """
+    path = Path(module_file or __file__).absolute()
+    if path.parent.name == "provost_runtime" and path.parents[1].name == "scripts" and path.parents[3].name == "runtime":
+        return path.parents[4]
+    return None
+
+
+def provost_dir() -> Path:
+    """Default provost directory: where this runtime is installed, else ~/.claude/provost."""
+    return installed_provost_dir() or Path.home() / ".claude/provost"
+
+
 def config_path() -> Path:
-    return Path(os.environ.get("PROVOST_CONFIG", str(Path.home() / ".claude/provost/config.json")))
+    explicit = os.environ.get("PROVOST_CONFIG")
+    return Path(explicit) if explicit else provost_dir() / "config.json"
 
 
 def handoff_home() -> Path:
@@ -20,7 +39,7 @@ def handoff_home() -> Path:
     if explicit:
         return Path(explicit).absolute()
     home = os.environ.get("PROVOST_HOME")
-    return (Path(home) / "handoffs" if home else Path.home() / ".claude/provost/handoffs").absolute()
+    return ((Path(home) if home else provost_dir()) / "handoffs").absolute()
 
 
 def normalized(root: Path) -> str:
