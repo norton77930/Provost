@@ -58,8 +58,11 @@ class DispatchReportTests(unittest.TestCase):
     def agent(self, agent_id, model, t0, t1):
         jl(self.proj / SESSION / "subagents" / f"agent-{agent_id}.jsonl", sub_lines(model, t0, t1))
 
-    def run_report(self, *args):
+    def run_report(self, *args, config_dir=None):
         env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        if config_dir is not None:
+            env["CLAUDE_CONFIG_DIR"] = str(config_dir)
         p = subprocess.run(["node", str(SCRIPT), *args], env=env, capture_output=True, text=True,
                            encoding="utf-8", check=True)
         return p.stdout.splitlines(), p.stderr
@@ -277,6 +280,93 @@ class DispatchReportTests(unittest.TestCase):
         self.assertEqual((dest / names[0]).read_text(encoding="utf-8"), "mine")
         self.assertIn(names[0], err)
         self.assertEqual([l.split("\t")[-1] for l in out[1:]], ["", ""])
+
+    def late_lines(self, lines):
+        jl(self.proj / f"{SESSION}.jsonl", lines)
+        out, _ = self.run_report("--reviews", "--tsv")
+        return [l.split("\t")[4:11] for l in out[1:]]  # important, five outcomes, unrecorded
+
+    def test_dispositions_after_a_re_review_go_to_the_review_they_answer(self):
+        rows = self.late_lines([
+            dispatch("r1", "2026-10-20T10:00:00Z", "code-reviewer", "Review"),
+            result("r1", "2026-10-20T10:05:00Z", "a1", "Counts: Important 2 · Nit 0"),
+            say("2026-10-20T10:10:00Z", "Fixing both."),
+            dispatch("r2", "2026-10-20T11:00:00Z", "code-reviewer", "Re-review"),
+            result("r2", "2026-10-20T11:05:00Z", "a2", "Counts: Important 0 · Nit 0"),
+            say("2026-10-20T11:06:00Z", "Dispositions: I1 fixed; I2 fixed"),
+        ])
+        self.assertEqual(rows, [["2", "2", "0", "0", "0", "0", "0"], ["0", "0", "0", "0", "0", "0", "0"]])
+
+    def test_each_dispositions_line_goes_to_the_review_it_records_most_for(self):
+        rows = self.late_lines([
+            dispatch("r1", "2026-10-20T10:00:00Z", "code-reviewer", "Review A"),
+            result("r1", "2026-10-20T10:05:00Z", "a1", "Counts: Important 2 · Nit 0"),
+            dispatch("r2", "2026-10-20T11:00:00Z", "code-reviewer", "Review B"),
+            result("r2", "2026-10-20T11:05:00Z", "a2", "Counts: Important 1 · Nit 0"),
+            say("2026-10-20T11:06:00Z", "Dispositions: I1 fixed; I2 fixed"),
+            say("2026-10-20T11:07:00Z", "Dispositions: I1 rejected — wrong file"),
+        ])
+        self.assertEqual(rows, [["2", "2", "0", "0", "0", "0", "0"], ["1", "0", "1", "0", "0", "0", "0"]])
+
+    def test_a_tie_goes_to_the_latest_review_and_leaves_the_earlier_unrecorded(self):
+        rows = self.late_lines([
+            dispatch("r1", "2026-10-20T10:00:00Z", "code-reviewer", "Review A"),
+            result("r1", "2026-10-20T10:05:00Z", "a1", "Counts: Important 1 · Nit 0"),
+            dispatch("r2", "2026-10-21T10:00:00Z", "code-reviewer", "Review B"),
+            result("r2", "2026-10-21T10:05:00Z", "a2", "Counts: Important 1 · Nit 0"),
+            say("2026-10-21T10:06:00Z", "Dispositions: I1 fixed"),
+        ])
+        self.assertEqual(rows, [["1", "0", "0", "0", "0", "0", "1"], ["1", "1", "0", "0", "0", "0", "0"]])
+
+    def test_a_line_directly_after_its_review_is_unchanged(self):
+        rows = self.late_lines([
+            dispatch("r1", "2026-10-20T10:00:00Z", "code-reviewer", "Review A"),
+            result("r1", "2026-10-20T10:05:00Z", "a1", "Counts: Important 2 · Nit 0"),
+            say("2026-10-20T10:06:00Z", "Dispositions: I1 fixed; I2 rejected — no"),
+            dispatch("r2", "2026-10-20T11:00:00Z", "code-reviewer", "Review B"),
+            result("r2", "2026-10-20T11:05:00Z", "a2", "Counts: Important 1 · Nit 0"),
+            say("2026-10-20T11:06:00Z", "Dispositions: I1 fixed"),
+        ])
+        self.assertEqual(rows, [["2", "1", "1", "0", "0", "0", "0"], ["1", "1", "0", "0", "0", "0", "0"]])
+
+    def test_a_line_with_no_candidate_review_falls_back_to_the_latest_review(self):
+        rows = self.late_lines([
+            dispatch("r1", "2026-10-20T10:00:00Z", "code-reviewer", "Review"),
+            result("r1", "2026-10-20T10:05:00Z", "a1", "Counts: Important 0 · Nit 0"),
+            say("2026-10-20T10:06:00Z", "Dispositions: I1 fixed"),
+        ])
+        self.assertEqual(rows, [["0", "1", "0", "0", "0", "0", "0"]])
+
+    def test_a_late_line_reaches_a_review_before_the_since_window(self):
+        jl(self.proj / f"{SESSION}.jsonl", [
+            dispatch("r1", "2026-10-20T10:00:00Z", "code-reviewer", "Review"),
+            result("r1", "2026-10-20T10:05:00Z", "a1", "Counts: Important 2 · Nit 0"),
+            dispatch("r2", "2026-10-22T11:00:00Z", "code-reviewer", "Re-review"),
+            result("r2", "2026-10-22T11:05:00Z", "a2", "Counts: Important 0 · Nit 0"),
+            say("2026-10-22T11:06:00Z", "Dispositions: I1 fixed; I2 fixed"),
+        ])
+        out, _ = self.run_report("--reviews", "--tsv", "--until", "2026-10-20")
+        self.assertEqual([l.split("\t")[4:11] for l in out[1:]], [["2", "2", "0", "0", "0", "0", "0"]])
+        out, _ = self.run_report("--reviews", "--tsv", "--since", "2026-10-21")
+        self.assertEqual([l.split("\t")[4:11] for l in out[1:]], [["0", "0", "0", "0", "0", "0", "0"]])
+
+    def test_config_dir_overrides_the_default_transcripts_root(self):
+        config = self.home / "alt-config"
+        jl(config / "projects" / PROJECT / f"{SESSION}.jsonl", [
+            dispatch("t1", "2026-10-20T10:00:00Z", "implementer-sonnet", "Add widget"),
+            result("t1", "2026-10-20T10:07:00Z", "a1"),
+        ])
+        out, _ = self.run_report("--tsv", config_dir=config)
+        self.assertEqual(len(out), 2)
+        self.assertTrue(out[1].endswith("Add widget"))
+        # Without the variable the default ~/.claude/projects is read.
+        jl(self.proj / f"{SESSION}.jsonl", [
+            dispatch("t2", "2026-10-20T10:00:00Z", "implementer-sonnet", "Default root"),
+            result("t2", "2026-10-20T10:07:00Z", "a1"),
+        ])
+        out, _ = self.run_report("--tsv")
+        self.assertEqual(len(out), 2)
+        self.assertTrue(out[1].endswith("Default root"))
 
 
 if __name__ == "__main__":
