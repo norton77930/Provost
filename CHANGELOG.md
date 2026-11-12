@@ -134,6 +134,12 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- `code-reviewer` ends a report that has an `Important` finding with one line
+  that shows the `Dispositions:` answer the caller owes, naming that report's
+  ids (#126). Measured over 2026-10-31 to 2026-11-12, 39 of 50 reviews with
+  `Important` findings have no `Dispositions:` line the report tool can read,
+  so the reminder now arrives with the report instead of resting on the policy
+  text alone.
 - CI covers more (#121): the runtime tests also run on Python 3.12 (one extra
   job on Ubuntu), the `mods` job installs a pinned Claude Code CLI version
   instead of the latest, and it runs `tools/tests/*.test.js` with `node --test`.
@@ -331,9 +337,22 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   its `error` still reads `GIT_FAILED`, from the log step. Branch and uncommitted
   entries now fail together and keep their previous values together: when
   `git status` fails, the branch keeps its previous value along with the dirty list.
+- `tools/dispatch-report.js --reviews` gives a `Dispositions:` line to the finished review
+  of the session with Important findings and no line yet for which the line records the most
+  findings (the latest on a tie), so a line written after a fix and re-review counts for the
+  first review instead of the re-review; when no review qualifies the latest review gets it
+  as before. The transcripts root is `$CLAUDE_CONFIG_DIR/projects` when that variable is set
+  (#126).
 
 ### Fixed
 
+- The board mod reads an acceptance file the way the Stop gate does (#127). A gate of an
+  unknown kind now makes the whole file malformed instead of being dropped, a file with
+  a valid top-level `closed` reason is finished and no longer shows its gates, and
+  `source`, `tree`, `files` with `digest`, a blank `id` and a leading BOM are checked
+  as the runtime checks them. One list of cases, `mods/board/tests/fixtures/acceptance-cases.ts`,
+  is run against both readers (`tests/adaptive/test_acceptance_fixtures.py` and the board
+  test); the board still checks only that `ranAt` is a string and does not judge staleness.
 - The acceptance `Stop` gate does less work when there is nothing to judge (#112). The
   bash part now exits before any interpreter starts when `<cwd>/.claude/acceptance`
   holds no `*.json` file, not only when the directory is missing. A file with a valid

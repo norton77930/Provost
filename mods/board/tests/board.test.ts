@@ -1,3 +1,4 @@
+import acceptanceCases from './fixtures/acceptance-cases'
 import { expect, mock, test } from 'claude-code/testing'
 import type { AgentInfo, On, PaneOpenArgs, ToolCallResult } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
@@ -672,7 +673,7 @@ test('acceptance files the main loop wrote show as gates; malformed ones are not
   }
 })
 
-test('live and visual gates count; a gate of an unknown kind is skipped without spoiling the file', { options: ZH }, async ($, on) => {
+test('live and visual gates count; a gate of an unknown kind makes the file malformed, as the Stop gate reads it', { options: ZH }, async ($, on) => {
   const w = world(on)
   const agent = agentTool(on, w)
   writeTools(on)
@@ -686,18 +687,120 @@ test('live and visual gates count; a gate of an unknown kind is skipped without 
       gates: [
         { id: 'L1', kind: 'live', check: 'c', status: 'pass' },
         { id: 'V1', kind: 'visual', check: 'c', status: 'pending' },
-        { id: 'X1', kind: 'telepathy', check: 'c', status: 'pass' },
         { id: 'M1', kind: 'machine', check: 'c', status: 'fail' },
+      ],
+    }),
+  )
+  w.file(
+    'unknown.json',
+    JSON.stringify({
+      task: 'Unknown',
+      gates: [
+        { id: 'L1', kind: 'live', check: 'c', status: 'pass' },
+        { id: 'X1', kind: 'telepathy', check: 'c', status: 'pass' },
       ],
     }),
   )
   w.file('bad.json', JSON.stringify({ task: 'Bad', gates: [{ id: 'B1', kind: 'live', check: 'c', status: 'maybe' }] }))
   await writeAcceptance($, 'kinds.json')
+  await writeAcceptance($, 'unknown.json')
   await writeAcceptance($, 'bad.json')
   await turnDone($)
   const ui = await mountPane($, 'terminal')
-  // The live gate counts as passed, the pending visual gate is no exception, the failed machine gate is; the unknown kind is skipped.
-  expect((await paneLines(ui))[1]).toBe('✗M1  » general-purpose  bad.json  格式錯誤')
+  // The live gate counts as passed, the pending visual gate is no exception, the failed machine gate is;
+  // the file with the unknown kind is malformed whole, none of its gates count.
+  expect((await paneLines(ui))[1]).toBe('✗M1  » general-purpose  bad.json  格式錯誤  unknown.json  格式錯誤')
+  await ui.unmount()
+})
+
+// The shared cases: the Stop gate's reader (scripts/provost_runtime/acceptance.py load()) is the
+// reference and tests/adaptive/test_acceptance_fixtures.py runs these same cases against it, so a
+// difference between the two readers fails one of the two suites. Each case's text is driven through
+// the engine: the board reads the file, and its `gates` state shows the reading.
+// Not covered by cases: the 1 MB size cap, an unreadable file and staleness (the board judges none).
+// A blank id or `closed` is pinned with ordinary whitespace only; str.strip() and trim() differ on a
+// few exotic characters and that is left alone. A case marked `runtimeOnly` is a known difference
+// the board keeps on purpose: it is skipped here, with its reason required.
+type AcceptanceCase = {
+  name: string
+  text: string
+  expected: { reading: 'malformed' | 'closed' | 'open'; gates?: { id: string; kind: string; status: string }[] }
+  runtimeOnly?: string
+}
+
+const ACCEPTANCE_CASES = acceptanceCases as AcceptanceCase[]
+
+// Answers /gates with the board's `gates` state.
+const GATES_READER = {
+  name: 'gates-reader',
+  register(on: On) {
+    on('command.run', { command: 'gates' }, async $ => ({
+      text: JSON.stringify((await $.state.get({ plugin: 'board', key: 'gates' })).value ?? []),
+    }))
+  },
+}
+const gatesState = async ($: Engine) => {
+  const ran = await $.command.run({
+    command: 'gates',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 120 },
+  })
+  return JSON.parse(ran.text ?? '[]') as { file: string; task: string | null; gates: { id: string; kind: string; status: string }[] }[]
+}
+
+test('the shared acceptance cases are a list of named cases, a runtimeOnly one saying why', () => {
+  expect(ACCEPTANCE_CASES.length).toBeGreaterThan(40)
+  const names = ACCEPTANCE_CASES.map(c => c.name)
+  expect(new Set(names).size).toBe(names.length)
+  const known = ACCEPTANCE_CASES.filter(c => 'runtimeOnly' in c)
+  expect(known).toHaveLength(2)
+  for (const c of known) {
+    expect(typeof c.runtimeOnly).toBe('string')
+    expect((c.runtimeOnly ?? '').trim()).not.toBe('')
+  }
+})
+
+for (const c of ACCEPTANCE_CASES) {
+  if ('runtimeOnly' in c) continue // a known difference, pinned by the check above
+  test(`shared acceptance case, ${c.name}`, { plugins: [GATES_READER] }, async ($, on) => {
+    const w = world(on)
+    writeTools(on)
+    await start($)
+    w.file('case.json', c.text)
+    await writeAcceptance($, 'case.json')
+    await turnDone($)
+    const files = await gatesState($)
+    // Closed: the file is not listed. Malformed: listed with no task. Open: listed with its gates.
+    const reading =
+      files.length === 0
+        ? { reading: 'closed' }
+        : files[0].task === null
+          ? { reading: 'malformed' }
+          : { reading: 'open', gates: files[0].gates.map(g => ({ id: g.id, kind: g.kind, status: g.status })) }
+    expect(files.length).toBeLessThanOrEqual(1)
+    expect(reading).toEqual(c.expected)
+  })
+}
+
+test('a finished acceptance file adds nothing to the board: no rows, no bar, no count', { options: ZH }, async ($, on) => {
+  const w = world(on)
+  writeTools(on)
+  await start($)
+  w.file('done.json', JSON.stringify({ task: 'Finished', closed: 'merged', gates: [{ id: 'D1', kind: 'machine', check: 'c', status: 'fail' }] }))
+  w.file('ship.json', GATES)
+  await writeAcceptance($, 'done.json')
+  await writeAcceptance($, 'ship.json')
+  await turnDone($)
+  // Only the open file counts: A1 of 3 passed; the failed D1 of the finished file is not an exception.
+  expect(w.status()).toBe('等你 A3 · 驗收 █▓░░░ 1/3')
+  const ui = await mountPane($, 'terminal')
+  expect((await paneLines(ui))[1]).toBe('!A3  ✗A2')
+  await ui.press({ key: 'expand' })
+  const shown = (await ui.findAll({ type: 'Text', text: /^── 驗收 · / })).map(t => t.text.split(' ')[3])
+  expect(shown).toEqual(['Ship'])
+  expect(await gateLinesOf(ui)).toEqual([' ✓ A1  tests pass', ' ✗ A2  reviewed', ' ! A3  等你核可'])
+  expect(await ui.find({ type: 'Text', text: /Finished|D1|格式錯誤/ })).toBeUndefined()
   await ui.unmount()
 })
 
