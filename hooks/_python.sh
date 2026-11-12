@@ -6,7 +6,8 @@
 # provost_find_python fills the PROVOST_PY array with the command to run, or
 # returns 1 after printing the "requires Python 3.11+" message. Order:
 #   1. $PROVOST_PYTHON when executable (no probe, no cache)
-#   2. the cached interpreter path in ${PROVOST_HOME:-~/.claude/provost}/cache/python
+#   2. the cached interpreter path in <provost dir>/cache/python, where <provost dir> is
+#      $PROVOST_HOME, else the directory this runtime is installed in, else ~/.claude/provost
 #   3. python3, python, then py -3, each version-probed; the first python3/python
 #      that qualifies is written to the cache (best effort).
 # An interpreter inside the current working directory tree (a project venv on
@@ -45,6 +46,43 @@ if [[ "$_provost_module_root" == /* ]]; then
     fi
     [[ -n "$_provost_native" ]] && _provost_module_root="$_provost_native"
     unset _provost_native
+fi
+# Installed as <provost dir>/runtime/<name>/hooks: keep <provost dir> for the interpreter cache.
+# Same lexical rule as hooks/native-event; a checkout leaves it empty.
+_provost_installed=""
+if [[ -n "$_provost_here" ]]; then
+    _abs="$_provost_here"
+    # Collapse . and .. segments lexically (links stay unresolved, no process); a .. above the
+    # root stays at the root, as os.path.abspath does. Under Git Bash a leading // (a UNC
+    # //server/share) is kept, and server and share are never popped; elsewhere // is /.
+    # Parameter expansion only.
+    _pre="" _rest="$_abs" _out="" _keep=0 _depth=0
+    if [[ "$_rest" == [A-Za-z]:/* ]]; then
+        _pre="${_rest:0:2}"; _rest="${_rest:2}"
+    elif [[ ( "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ) && "$_rest" == //[!/]* ]]; then
+        _pre="/"; _rest="${_rest#/}"; _keep=2
+    fi
+    while [[ -n "$_rest" ]]; do
+        _seg="${_rest%%/*}"
+        case "$_rest" in */*) _rest="${_rest#*/}" ;; *) _rest="" ;; esac
+        case "$_seg" in
+            "" | .) ;;
+            ..)
+                if (( _depth > _keep )); then _out="${_out%/*}"; _depth=$(( _depth - 1 )); fi
+                ;;
+            *) _out="${_out}/${_seg}"; _depth=$(( _depth + 1 )) ;;
+        esac
+    done
+    _abs="${_pre}${_out}"
+    _name="${_abs%/*}" _runtime="${_name%/*}" _prov="${_runtime%/*}"
+    # The provost directory needs a name of its own: not empty, not a bare drive, not a UNC share
+    # root. (The Git Bash spelling /c of a drive root is not rejected: on Linux /c is an ordinary
+    # directory.)
+    if [[ "${_abs##*/}" == hooks && "${_runtime##*/}" == runtime && "$_runtime" == */* \
+            && -n "$_prov" && ! "$_prov" =~ ^[A-Za-z]:$ && ( "$_prov" != //* || "${_prov#//}" == */*/* ) ]]; then
+        _provost_installed="$_prov"
+    fi
+    unset _abs _pre _rest _out _keep _depth _seg _name _runtime _prov
 fi
 export PYTHONPATH="$_provost_module_root"
 # Hooks run with the project as cwd; keep `python -m` from importing its modules (3.11+).
@@ -106,7 +144,7 @@ _provost_physically_outside() {
 
 provost_find_python() {
     PROVOST_PY=()
-    local cache_file="${PROVOST_HOME:-${HOME:-}/.claude/provost}/cache/python"
+    local cache_file="${PROVOST_HOME:-${_provost_installed:-${HOME:-}/.claude/provost}}/cache/python"
     local cached="" candidate resolved
     if [[ -n "${PROVOST_PYTHON:-}" && -f "$PROVOST_PYTHON" && -x "$PROVOST_PYTHON" ]]; then
         PROVOST_PY=("$PROVOST_PYTHON")

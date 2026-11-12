@@ -1,13 +1,52 @@
 #!/usr/bin/env bash
 # Personal native entrypoint. Never inject a second orchestration policy.
 set -uo pipefail
-config_file="${PROVOST_CONFIG:-${HOME}/.claude/provost/config.json}"
+_src="${BASH_SOURCE[0]//\\//}"
+[[ "$_src" == */* ]] || _src="./${_src}"
+# Config file: $PROVOST_CONFIG, else <provost dir>/config.json when this script is installed as
+# <provost dir>/runtime/<name>/hooks/native-event (read from its own path, . and .. collapsed
+# lexically: parameter expansion only, no process, links not resolved), else
+# ~/.claude/provost/config.json.
+config_file="${PROVOST_CONFIG:-}"
+if [[ -z "$config_file" ]]; then
+    config_file="${HOME}/.claude/provost/config.json"
+    _abs="$_src"
+    [[ "$_abs" == /* || "$_abs" == [A-Za-z]:/* ]] || _abs="${PWD}/${_abs}"
+    # Collapse . and .. segments lexically (links stay unresolved, no process); a .. above the
+    # root stays at the root, as os.path.abspath does. Under Git Bash a leading // (a UNC
+    # //server/share) is kept, and server and share are never popped; elsewhere // is /.
+    # Parameter expansion only.
+    _pre="" _rest="$_abs" _out="" _keep=0 _depth=0
+    if [[ "$_rest" == [A-Za-z]:/* ]]; then
+        _pre="${_rest:0:2}"; _rest="${_rest:2}"
+    elif [[ ( "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ) && "$_rest" == //[!/]* ]]; then
+        _pre="/"; _rest="${_rest#/}"; _keep=2
+    fi
+    while [[ -n "$_rest" ]]; do
+        _seg="${_rest%%/*}"
+        case "$_rest" in */*) _rest="${_rest#*/}" ;; *) _rest="" ;; esac
+        case "$_seg" in
+            "" | .) ;;
+            ..)
+                if (( _depth > _keep )); then _out="${_out%/*}"; _depth=$(( _depth - 1 )); fi
+                ;;
+            *) _out="${_out}/${_seg}"; _depth=$(( _depth + 1 )) ;;
+        esac
+    done
+    _abs="${_pre}${_out}"
+    _hooks="${_abs%/*}" _name="${_hooks%/*}" _runtime="${_name%/*}" _prov="${_runtime%/*}"
+    # The provost directory needs a name of its own: not empty, not a bare drive, not a UNC share
+    # root. (The Git Bash spelling /c of a drive root is not rejected: on Linux /c is an ordinary
+    # directory.)
+    if [[ "${_hooks##*/}" == hooks && "${_runtime##*/}" == runtime && "$_runtime" == */* \
+            && -n "$_prov" && ! "$_prov" =~ ^[A-Za-z]:$ && ( "$_prov" != //* || "${_prov#//}" == */*/* ) ]]; then
+        config_file="${_prov}/config.json"
+    fi
+fi
 if [[ ! -e "$config_file" ]]; then
     printf '{}\n'
     exit 0
 fi
-_src="${BASH_SOURCE[0]//\\//}"
-[[ "$_src" == */* ]] || _src="./${_src}"
 # shellcheck source=_python.sh
 source "${_src%/*}/_python.sh"
 if provost_find_python && output="$("${PROVOST_PY[@]}" -m provost_runtime.cli native-hook)"; then

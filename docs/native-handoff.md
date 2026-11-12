@@ -8,8 +8,10 @@ The personal CLAUDE.md controls delegation; this runtime does not select agents.
 
 Records are stored outside the repository, under
 `<home>/v2/repos/<repo_key[:16]>/sessions/<sha256(session)>/`. The home is
-`PROVOST_HANDOFF_HOME`, else `$PROVOST_HOME/handoffs`, else
-`~/.claude/provost/handoffs`. `repo_key` is derived from the main checkout, so a
+`PROVOST_HANDOFF_HOME`, else `$PROVOST_HOME/handoffs`, else `handoffs` in the
+provost folder the runtime is installed in (`<config dir>/provost`, when it runs
+from `<config dir>/provost/runtime/<name>/`), else `~/.claude/provost/handoffs`
+(a checkout). `repo_key` is derived from the main checkout, so a
 main checkout and all of its worktrees share one store: entering a worktree
 mid-session keeps the same records, and deleting a worktree deletes none of them.
 A home inside a Git work tree is refused (`STORE_INSIDE_REPO`) unless Git ignores
@@ -1191,8 +1193,9 @@ answers at every main-turn end:
   `Stop` finds no unmet gate (the counter is deleted) or when the person sends a
   prompt (see below). The count is kept per session in
   `<provost dir>/cache/acceptance/<session_id>.pushes` (beside `cache/facts` and
-  `cache/notifications`; `<provost dir>` is the folder of `provost/config.json`, or of
-  `PROVOST_CONFIG`), replaced atomically on each push. A counter that cannot be read
+  `cache/notifications`; `<provost dir>` is the folder of the config file, which is
+  `PROVOST_CONFIG`, else `config.json` in the provost folder the runtime is installed in,
+  else `~/.claude/provost/config.json`), replaced atomically on each push. A counter that cannot be read
   or written, or a session id that cannot name it, ends the turn instead of blocking.
 - **No repeat of an unchanged stale block.** Each block replaces
   `<provost dir>/cache/acceptance/<session_id>.seen`, a hash of the unmet state it

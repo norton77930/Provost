@@ -167,8 +167,10 @@ failed run rolls back. Running `setup` again changes nothing. The first time it
 replaces a local `skills/handoff/SKILL.md` that differs, it also keeps that copy
 beside it as `SKILL.md.local-<UTC time>.bak`. The backup of `settings.json` is a
 full copy, credentials included, and backups are never pruned. The installer
-honours `CLAUDE_CONFIG_DIR` and `--config-dir`; the hooks themselves read
-`~/.claude/provost/config.json` unless `PROVOST_CONFIG` points elsewhere.
+honours `CLAUDE_CONFIG_DIR` and `--config-dir`. Hooks and runtime installed under
+`<config dir>/provost/runtime/` use the `<config dir>/provost` folder they sit in
+(its `config.json`, `handoffs` and `cache`); run from a checkout, they read
+`~/.claude/provost`. `PROVOST_CONFIG` overrides the config file in both cases.
 
 After changing anything in the repository, run `python install.py check` to see
 what differs from the live setup (exit 0 = no drift, 1 = drift), and
@@ -285,7 +287,8 @@ error.
 
 The runtime keeps a sealed, per-session chain of handoff records (sources,
 decisions, assignments, evidence, next step) under
-`~/.claude/provost/handoffs`, shared by a checkout and its worktrees. Hooks
+`~/.claude/provost/handoffs` (or the `handoffs` folder of the `provost` folder the
+runtime is installed in), shared by a checkout and its worktrees. Hooks
 inject the latest checkpoint after compaction or resume, capture facts (edited
 paths, dispatches, commits; never command text or file contents) and remind the
 main session when a dispatch or edit has no record yet. Decisions and evidence go
