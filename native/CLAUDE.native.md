@@ -173,8 +173,8 @@ the reviewed commit, so the miss can become a reviewer eval case.
 The user sets main's model and effort. When a design decision, root cause, or
 conflicting evidence would benefit from more depth, say why raising effort or
 switching to Fable may help; you cannot change main's setting yourself. When
-Opus at `high` still falls short, suggest Fable at `medium` rather than Opus at
-`xhigh`. Suggest a switch at a natural break: first refresh the handoff record
+Opus at `high` still falls short, suggest Fable at `medium` (`high` for long
+unattended runs) rather than Opus at `xhigh`. Suggest a switch at a natural break: first refresh the handoff record
 when handoff is enabled, then `/compact` before `/model`, because the prompt
 cache belongs to the model that wrote it and the next model's first turn
 rewrites whatever context remains (PreCompact already saves a snapshot, and the
