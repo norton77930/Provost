@@ -134,6 +134,12 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- Policy §10 suggests Fable at `high` instead of `medium` for long unattended
+  runs. The "Prompting Claude Fable 5.2" guide says the model stops early more
+  often at `low` and `medium`, and puts long unattended runs at `high`. The rest
+  of that guide needs no change here: the policy has no lines that tell the model
+  to think less, show its reasoning, or follow a hard style rule, and §4 already
+  forbids subagents that check main's own work.
 - Second prompt-audit pass: §8 names the Matt skills only the user can invoke
   (`/to-spec`, `/to-tickets`, `/implement`, `/implement-spec`), `architecture-reviewer`
   tags and numbers findings as §3 expects, and both implementers also stop on
