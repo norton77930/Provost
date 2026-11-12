@@ -366,6 +366,14 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   roles (`Explore`, `claude-code-guide`, `plan`, `statusline-setup`) are skipped, a reworded
   description counts, and one role mention covers one dispatch. `warnings` is now the first
   key of the output, and the guidance says to read the output whole, not through `head`/`grep`.
+- Docs and defaults match the code again (#115). `ROADMAP.md`, `CONTRIBUTING.md` and the
+  pull request template no longer describe an `install.py` rollback command (an install
+  that fails restores itself; there is no command) or say that the installer never
+  touches `settings.json` (`setup` adds hook registrations); the role count is nine; both
+  READMEs list `digest`. The retired role names `implementer-high` and `implementer-deep`
+  are gone from the default `PROVOST_REMINDER_ROLES` of `hooks/native-facts` and from the
+  default `--roles` of `tools/dispatch-report.js` (pass `--roles` to analyse old
+  transcripts that used them).
 
 ### Removed
 

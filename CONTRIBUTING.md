@@ -20,8 +20,9 @@ channel described in [`SECURITY.md`](SECURITY.md).
   focused failing test in `tests/adaptive/`, make the smallest coherent fix, and
   keep hooks fail-soft — a hook must never block or break a session. Hooks must
   run on bash 3.2 (macOS); `test_packaging` scans for newer constructs.
-- **Installer** (`install.py`): never write outside the config directory, never
-  touch `settings.json`, back up before writing, and keep `check` read-only.
+- **Installer** (`install.py`): never write outside the config directory, back
+  up before writing, and keep `check` read-only. `install` never touches
+  `settings.json`; only `setup` adds hook registrations to it.
 - **Policy and roles** (`native/`, `agents/`): update the role table in both
   `README.md` and `README.zh-TW.md` when a model, effort or tool list changes.
 - **Skills**: vendored skills stay pinned to the snapshot recorded in
@@ -49,5 +50,6 @@ python install.py check
 ## Pull requests
 
 Describe the change, the evidence (tests run, live check), and any behaviour
-that changes for existing installs. CI must pass on all three operating
-systems.
+that changes for existing installs. CI must pass: the runtime and installer
+tests on Windows, Ubuntu and macOS, the docs link check on Windows and the mods
+checks on Ubuntu.

@@ -10,9 +10,10 @@ backups and rollback) become weaker? State explicitly if nothing changes.
 
 ## How to revert
 
-How does someone undo this after installing it? For example `install.py` rollback
-from its backup, or reverting the merge and reinstalling. State it plainly when
-reverting the merge is enough.
+How does someone undo this after installing it? For example reverting the merge
+and running `install.py install` again from that checkout, or restoring files by
+hand from the backup directory (`install.py` has no rollback command). State it
+plainly when reverting the merge is enough.
 
 ## Verification
 

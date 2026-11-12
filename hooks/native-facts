@@ -209,7 +209,7 @@ prefix="\"v\":1,\"ts\":${ts}"
 tail_fields="\"cwd\":\"${cwd}\",\"agent\":\"${agent}\""
 out=""
 flag=""
-writers="${PROVOST_REMINDER_ROLES:-implementer implementer-high implementer-sonnet implementer-deep mech-executor general-purpose}"
+writers="${PROVOST_REMINDER_ROLES:-implementer implementer-sonnet mech-executor general-purpose}"
 
 case "$tool" in
     Edit|Write|NotebookEdit)
