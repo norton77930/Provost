@@ -1335,6 +1335,15 @@ class AcceptanceClosedTests(AcceptanceCase):
         with mock.patch("provost_runtime.acceptance.load", side_effect=PermissionError()):
             self.assertEqual(session_files(event, self.directory), [path])
 
+    def test_a_file_that_breaks_the_parser_stays_a_candidate_and_does_not_hide_ours(self):
+        # json.loads raises RecursionError (not Malformed, not OSError) on a deeply nested file.
+        self.acceptance("deep.json", None, raw="[" * 200000, mine=False)
+        self.acceptance("ours.json", [gate("our-gate")])
+        result = self.stop()
+        self.assertEqual(result.get("decision"), "block", result)
+        self.assertIn("our-gate", result["reason"])
+        self.assertNotIn("deep.json", result["reason"])
+
     def test_a_malformed_file_of_another_session_does_not_block(self):
         self.closed("done.json", [gate("done-gate")])
         self.acceptance("theirs.json", None, raw="{not json", mine=False)

@@ -62,7 +62,7 @@ class NativeWrapperTests(FixtureCase):
         result, log, _ = self.native_event()
         self.assertEqual(len([c for c in log.read_text(encoding="utf-8").splitlines() if " -c " in c]), 1)
 
-    def test_acceptance_gate_starts_no_interpreter_without_acceptance_dir(self):
+    def test_acceptance_gate_starts_no_interpreter_without_acceptance_json(self):
         log = self.root / "python.log"
         bin_dir = self.root / "bin"
         self.fake_interpreter(bin_dir, "python3", log)
@@ -72,7 +72,12 @@ class NativeWrapperTests(FixtureCase):
         result = self.run_bash(hook, path_dirs=[bin_dir], stdin=stop)
         self.assertEqual((result.returncode, result.stdout), (0, ""), result.stderr)
         self.assertFalse(log.exists(), "no acceptance directory: no interpreter may start")
-        (self.root / ".claude" / "acceptance").mkdir(parents=True)
+        directory = self.root / ".claude" / "acceptance"
+        directory.mkdir(parents=True)
+        result = self.run_bash(hook, path_dirs=[bin_dir], stdin=stop)
+        self.assertEqual((result.returncode, result.stdout), (0, ""), result.stderr)
+        self.assertFalse(log.exists(), "no *.json file: no interpreter may start")
+        (directory / "task.json").write_text("{}", encoding="utf-8")
         result = self.run_bash(hook, path_dirs=[bin_dir], stdin=stop)
         self.assertEqual((result.returncode, json.loads(result.stdout)), (0, {}), result.stderr)
         self.assertIn("-m provost_runtime.cli acceptance-hook", log.read_text(encoding="utf-8"))

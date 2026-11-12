@@ -558,10 +558,12 @@ def session_files(event, directory):
 def _finished(path):
     """True when the file loads cleanly and carries a valid `closed` reason: finished work, which neither blocks
     nor counts as the task a brief must cite, so its ownership is not worth a transcript read. A file that is
-    malformed (a bad `closed` included), unreadable or gone is not finished here: check() reports it."""
+    malformed (a bad `closed` included), unreadable or gone is not finished here: check() reports it.
+    Any exception counts as not finished (a deeply nested file makes json raise RecursionError): a file this
+    session does not own must not switch the gate off for the others, so ownership decides as before."""
     try:
         return "closed" in load(path)
-    except (Malformed, OSError):
+    except Exception:
         return False
 
 

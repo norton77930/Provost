@@ -24,6 +24,9 @@ if [[ "$cwd" != *\\* ]]; then
     # Windows ignores case, any case (nocaseglob; a superset on case-sensitive systems, which Python then
     # filters). The directory is quoted, so glob characters in the cwd stay literal. A pattern that matches
     # nothing stays unexpanded and fails the test.
+    # set +f and unset GLOBIGNORE keep an inherited noglob or ignore list from leaving the pattern unexpanded.
+    set +f
+    unset GLOBIGNORE
     shopt -s dotglob nocaseglob
     found=""
     for entry in "$dir"/*.json; do

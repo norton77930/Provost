@@ -1198,10 +1198,12 @@ behalf, because a hook cannot tell those apart. With the `cache/acceptance` fold
 present (after the first push), `native-facts` also reads every `PostToolUse` event
 with handoff off, only to find that it has nothing to do.
 
-Accepted limit: after `<cwd>/.claude/acceptance` is deleted, a leftover push counter
-survives until the person's next prompt. The bash part of the gate exits before Python
-runs when that directory is gone or holds no `*.json` file, so a clean `Stop` cannot delete the counter; the
-prompt reset empties it, and `prune` removes it once it is stale.
+Accepted limit: after `<cwd>/.claude/acceptance` is deleted, or its last `*.json` file is,
+the session's leftover `.pushes` and `.seen` files survive. The bash part of the gate
+exits before Python runs when that directory is gone or holds no `*.json` file, so a
+clean `Stop` cannot delete them. The person's next prompt empties `.pushes`; `.seen` stays
+until `prune` removes it once it is stale, so a file that was deleted (not closed) and is
+later recreated at the same path with the same all-stale state is not blocked again.
 
 **A verdict covers content, not a time.** A `machine`, `live` or `visual` gate with
 status `pass` is judged by the first of these that applies:

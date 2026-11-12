@@ -274,9 +274,11 @@ class AcceptanceGateFastPathTests(FixtureCase):
     def event(self, cwd, kind):
         base = {"session_id": "s1", "transcript_path": str(self.root / "t.jsonl"), "cwd": str(cwd)}
         if kind == "Stop":
-            return json.dumps({**base, "hook_event_name": "Stop", "last_assistant_message": "done"})
+            return json.dumps({**base, "hook_event_name": "Stop", "last_assistant_message": "done"},
+                              ensure_ascii=False)
         return json.dumps({**base, "hook_event_name": "PreToolUse", "tool_name": "Agent",
-                           "tool_input": {"subagent_type": "implementer", "prompt": "Build it."}})
+                           "tool_input": {"subagent_type": "implementer", "prompt": "Build it."}},
+                          ensure_ascii=False)
 
     def gate(self, cwd, kind="Stop"):
         self.log.unlink(missing_ok=True)
@@ -331,3 +333,20 @@ class AcceptanceGateFastPathTests(FixtureCase):
         self.assert_no_interpreter(project)
         (directory / "task.json").write_text("{}", encoding="utf-8")
         self.assert_interpreter(project)
+
+    def test_inherited_glob_settings_do_not_hide_a_json_file(self):
+        # BASH_ENV runs in every non-interactive bash: the way a person's profile could leave noglob or a
+        # GLOBIGNORE behind (bash does not take GLOBIGNORE from the environment itself).
+        directory = self.root / ".claude" / "acceptance"
+        directory.mkdir(parents=True)
+        (directory / "task.json").write_text("{}", encoding="utf-8")
+        for label, setting in (("noglob", "set -f"), ("GLOBIGNORE", "GLOBIGNORE='*'")):
+            startup = self.root / (label + ".sh")
+            startup.write_text(setting + "\n", encoding="utf-8", newline="\n")
+            for kind in ("Stop", "PreToolUse"):
+                with self.subTest(label + " " + kind):
+                    self.log.unlink(missing_ok=True)
+                    result = self.run_bash(REPO / "hooks" / "acceptance-gate", path_dirs=[self.bin],
+                                           stdin=self.event(self.root, kind), env={"BASH_ENV": startup.as_posix()})
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("-m provost_runtime.cli acceptance-hook", self.log.read_text(encoding="utf-8"))
