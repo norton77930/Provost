@@ -299,6 +299,17 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   double-checking. The `mech-executor` and `test-analyst` descriptions say the
   same. SessionStart warns when `CLAUDE_CODE_SUBAGENT_MODEL` is set, since it
   overrides every role's model frontmatter (idea from pilotfish).
+- `install.py check` requires every hook registration that `setup` writes (#113): all
+  eight entries, each with a matcher that covers the registered one and in the
+  registered sync mode. Before, it looked at four events and at neither matcher nor
+  sync mode, so a missing `UserPromptSubmit`, `PreCompact` or `PostCompact` entry read
+  as `ok`. Each unmet entry is named (`<Event> <hook>: missing`, `matcher (expected
+  ...)` or `sync (expected ...)`) in the text output and in a new `registrations` list
+  of `--json`; nothing from `settings.json` is printed. A matcher is judged by coverage
+  (absent, empty and `"*"` cover everything; lists may be reordered or split over
+  groups); regular expressions are not evaluated and are reported as `matcher`. A
+  `settings.json` that cannot be read is still `settings: unknown`, but now counts as
+  drift: `check` exits 1 instead of 0.
 
 ### Fixed
 
