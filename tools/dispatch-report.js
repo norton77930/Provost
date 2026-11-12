@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 // Lists implementer-family subagent dispatches from Claude Code transcripts.
 // Usage: node dispatch-report.js [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--project substr] [--roles a,b] [--tsv] [--reviews] [--reports <dir>]
-// Reads ~/.claude/projects/*/<session>.jsonl and <session>/subagents/*. Read-only, except that --reports <dir> writes report files there.
+// Reads <config dir>/projects/*/<session>.jsonl and <session>/subagents/*, where <config dir> is $CLAUDE_CONFIG_DIR when set, else ~/.claude.
+// Read-only, except that --reports <dir> writes report files there.
 // --reviews lists code-reviewer dispatches instead: Important findings (the number after "Important" in the report's
 // counts line, else the distinct I<n> ids) and the "Dispositions: I1 fixed; I2 rejected — why" line main writes after
-// it (outcomes: fixed, rejected, intentional, moot, unproven); per-model precision on stderr. tagged=no marks a report with neither (its important=0 means unknown), and
+// it (outcomes: fixed, rejected, intentional, moot, unproven); per-model precision on stderr. A Dispositions line goes to
+// the finished review of the same session that has Important findings and no line yet and for which the line records the
+// most findings (the latest on a tie), so a line written after a fix and re-review counts for the first review; with no such review, to the latest one. tagged=no marks a report with neither (its important=0 means unknown), and
 // precision covers tagged reviews only.
 // A code-reviewer that ran in the background returns only "Async agent launched"; its report is then the message of
 // the subagent's last SubagentHandback call (else its last assistant text). --reviews --reports <dir> saves each report (redacted) as
@@ -22,7 +25,7 @@ const roles = new Set(opt("--roles", "implementer,implementer-sonnet").split(","
 const tsv = args.includes("--tsv");
 const reviews = args.includes("--reviews");
 const reportsDir = reviews ? opt("--reports", "") : "";
-const root = path.join(os.homedir(), ".claude", "projects");
+const root = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"), "projects");
 
 // USD per million tokens from the official pricing page (checked 2026-10-11):
 // [input, 5m cache write, 1h cache write, cache read, output]. Unknown models get no estCost.
@@ -183,9 +186,23 @@ function saveReport(row, session, text) {
   return name;
 }
 
+// Report text and finding counts of one review. Real reports open with a counts line ("Counts: Important 2 · Nit 1",
+// "Important: 0, ...", full-width colon too); older ones number findings I1, I2. A report with neither is untagged:
+// its zero is "unknown", not "no findings". Cached on the row.
+async function reviewInfo(projectDir, session, row) {
+  if (row.info) return row.info;
+  const subFile = row.agentId && path.join(projectDir, session, "subagents", `agent-${row.agentId}.jsonl`);
+  const reportText = row.text !== null ? row.text : (subFile ? await lastAssistantText(subFile) : "");
+  const ids = new Set([...reportText.matchAll(/\bI(\d+)\b/g)].map(m => "I" + m[1]));
+  const counts = /Important\s*[:：]?\s*(\d+)/.exec(reportText);
+  return row.info = { subFile, reportText, ids, counts, important: counts ? Number(counts[1]) : ids.size };
+}
+// How many of a Dispositions line's findings the report has: ids up to the counts line's number, else ids in the report.
+const recordedIn = (info, out) => Object.keys(out).filter(id => info.counts ? Number(id.slice(1)) <= info.important : info.ids.has(id)).length;
+
 async function scanReviews(projectDir, file) {
-  const rows = [], byToolUse = {};
-  let last = null; // the latest review; a Dispositions line counts only until the next code-reviewer dispatch
+  const rows = [], byToolUse = {}, lines = [];
+  let last = null; // the latest review dispatched so far
   await eachLine(file, o => {
     const content = (o.message && o.message.content) || [];
     if (o.type === "assistant") {
@@ -193,13 +210,15 @@ async function scanReviews(projectDir, file) {
         if ((c.type === "tool_use" && (c.name === "Agent" || c.name === "Task")) && c.input.subagent_type === "code-reviewer") {
           last = { ts: o.timestamp, override: c.input.model || "", desc: clip(c.input.description, 60), agentId: null, toolUseId: c.id, text: null, out: {}, done: false };
           byToolUse[c.id] = last; rows.push(last);
-        } else if (c.type === "text" && last && last.done && !last.disp && /^\s*Dispositions:/m.test(c.text || "")) {
-          last.disp = true;
+        } else if (c.type === "text" && /^\s*Dispositions:/m.test(c.text || "")) {
+          // Assigned after the scan: which review a line answers depends on the reports, and on later lines.
+          const out = {};
           const line = c.text.split("\n").find(l => /^\s*Dispositions:/.test(l));
           for (const e of line.replace(/^\s*Dispositions:/, "").split(";")) {
             const m = /^\s*I(\d+)\s+(fixed|rejected|intentional|moot|unproven)\b/.exec(e);
-            if (m) last.out["I" + m[1]] = m[2];
+            if (m) out["I" + m[1]] = m[2];
           }
+          lines.push({ out, last, lastDone: !!last && last.done, finished: rows.filter(r => r.done) });
         }
       }
     }
@@ -215,23 +234,30 @@ async function scanReviews(projectDir, file) {
     }
   });
   const session = path.basename(file, ".jsonl");
+  // A line goes to the finished review with Important findings and no line yet for which it records the most
+  // (the latest on a tie); with none, to the latest review dispatched before it, if finished and without a line.
+  for (const l of lines) {
+    let best = null, most = 0;
+    for (const r of l.finished) {
+      if (r.disp) continue;
+      const info = await reviewInfo(projectDir, session, r);
+      const n = info.important > 0 ? recordedIn(info, l.out) : 0;
+      if (n > 0 && n >= most) { best = r; most = n; }
+    }
+    if (!best && l.lastDone && !l.last.disp) best = l.last;
+    if (best) { best.disp = true; best.out = l.out; }
+  }
   const out = [];
   for (const row of rows) {
     if (!row.ts || new Date(row.ts) < since || (until && new Date(row.ts) >= until)) continue;
-    const subFile = row.agentId && path.join(projectDir, session, "subagents", `agent-${row.agentId}.jsonl`);
-    const sub = subFile && await subagentStats(subFile);
-    const reportText = row.text !== null ? row.text : (subFile ? await lastAssistantText(subFile) : "");
-    const ids = new Set([...reportText.matchAll(/\bI(\d+)\b/g)].map(m => "I" + m[1]));
+    const info = await reviewInfo(projectDir, session, row);
+    const sub = info.subFile && await subagentStats(info.subFile);
+    const { reportText, ids, counts, important } = info;
     const n = Object.fromEntries(OUTCOMES.map(k => [k, Object.values(row.out).filter(v => v === k).length]));
-    // Real reports open with a counts line ("Counts: Important 2 · Nit 1", "Important: 0, ...", full-width colon too);
-    // older ones number findings I1, I2. A report with neither is untagged: its zero is "unknown", not "no findings".
-    const counts = /Important\s*[:：]?\s*(\d+)/.exec(reportText);
-    const important = counts ? Number(counts[1]) : ids.size;
-    const recorded = Object.keys(row.out).filter(id => counts ? Number(id.slice(1)) <= important : ids.has(id)).length;
     out.push({
       ts: row.ts, project: path.basename(projectDir).replace(/^[A-Za-z]--/, ""), session: session.slice(0, 8),
       model: (sub && sub.models.size ? [...sub.models].join("+").replace(/claude-/g, "") : row.override) || "?",
-      important, ...n, unrecorded: Math.max(0, important - recorded), desc: row.desc,
+      important, ...n, unrecorded: Math.max(0, important - recordedIn(info, row.out)), desc: row.desc,
       tagged: counts || ids.size ? "yes" : "no",
       report: reportsDir ? saveReport(row, session, reportText) : "",
     });
