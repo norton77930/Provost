@@ -52,31 +52,37 @@ fi
 _provost_installed=""
 if [[ -n "$_provost_here" ]]; then
     _abs="$_provost_here"
-    # Collapse . and .. segments lexically (links stay unresolved); a .. above the root
-    # leaves _abs empty, which counts as not installed. Parameter expansion only.
-    _pre="" _rest="$_abs" _out="" _bad=""
-    if [[ "$_rest" == [A-Za-z]:/* ]]; then _pre="${_rest:0:2}"; _rest="${_rest:2}"; fi
+    # Collapse . and .. segments lexically (links stay unresolved, no process); a .. above the
+    # root stays at the root, as os.path.abspath does. Under Git Bash a leading // (a UNC
+    # //server/share) is kept, and server and share are never popped; elsewhere // is /.
+    # Parameter expansion only.
+    _pre="" _rest="$_abs" _out="" _keep=0 _depth=0
+    if [[ "$_rest" == [A-Za-z]:/* ]]; then
+        _pre="${_rest:0:2}"; _rest="${_rest:2}"
+    elif [[ ( "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ) && "$_rest" == //[!/]* ]]; then
+        _pre="/"; _rest="${_rest#/}"; _keep=2
+    fi
     while [[ -n "$_rest" ]]; do
         _seg="${_rest%%/*}"
         case "$_rest" in */*) _rest="${_rest#*/}" ;; *) _rest="" ;; esac
         case "$_seg" in
             "" | .) ;;
             ..)
-                if [[ -z "$_out" ]]; then _bad=1; break; fi
-                _out="${_out%/*}"
+                if (( _depth > _keep )); then _out="${_out%/*}"; _depth=$(( _depth - 1 )); fi
                 ;;
-            *) _out="${_out}/${_seg}" ;;
+            *) _out="${_out}/${_seg}"; _depth=$(( _depth + 1 )) ;;
         esac
     done
-    if [[ -n "$_bad" ]]; then _abs=""; else _abs="${_pre}${_out}"; fi
+    _abs="${_pre}${_out}"
     _name="${_abs%/*}" _runtime="${_name%/*}" _prov="${_runtime%/*}"
-    # The provost directory needs a name of its own: not empty, not a bare drive. (The Git Bash
-    # spelling /c of a drive root is not rejected: on Linux /c is an ordinary directory.)
+    # The provost directory needs a name of its own: not empty, not a bare drive, not a UNC share
+    # root. (The Git Bash spelling /c of a drive root is not rejected: on Linux /c is an ordinary
+    # directory.)
     if [[ "${_abs##*/}" == hooks && "${_runtime##*/}" == runtime && "$_runtime" == */* \
-            && -n "$_prov" && ! "$_prov" =~ ^[A-Za-z]:$ ]]; then
+            && -n "$_prov" && ! "$_prov" =~ ^[A-Za-z]:$ && ( "$_prov" != //* || "${_prov#//}" == */*/* ) ]]; then
         _provost_installed="$_prov"
     fi
-    unset _abs _pre _rest _out _bad _seg _name _runtime _prov
+    unset _abs _pre _rest _out _keep _depth _seg _name _runtime _prov
 fi
 export PYTHONPATH="$_provost_module_root"
 # Hooks run with the project as cwd; keep `python -m` from importing its modules (3.11+).

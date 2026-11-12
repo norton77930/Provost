@@ -53,6 +53,12 @@ class InstalledShapeTests(unittest.TestCase):
         spelled = provost / "runtime" / "n" / "scripts" / ".." / "scripts" / "." / "provost_runtime" / "config.py"
         self.assertEqual(config.installed_provost_dir(spelled), provost)
 
+    @unittest.skipUnless(os.name == "nt", "UNC anchors")
+    def test_unc_share_root_is_not_a_provost_directory(self):
+        tail = "runtime/n/scripts/provost_runtime/config.py"
+        self.assertEqual(config.installed_provost_dir("//server/share/p/" + tail), Path("//server/share/p"))
+        self.assertIsNone(config.installed_provost_dir("//server/share/" + tail))
+
     def test_it_reads_this_modules_own_path_by_default(self):
         self.assertIsNone(config.installed_provost_dir())  # the tests import the checkout
         with mock.patch.object(config, "__file__", str(installed_file(self.tmp / "p"))):
@@ -258,6 +264,26 @@ class SpellingTests(unittest.TestCase):
                 self.assertEqual(self.run_hook(script, event, cwd), {})
                 self.assertEqual(len((facts / f"{session}.jsonl").read_text(encoding="utf-8").splitlines()), 1)
                 self.assertHomeUntouched()
+
+    def test_dotdot_above_the_root_stays_at_the_root(self):
+        script = self.runtime / "hooks" / "native-event"
+        posix = script.as_posix()
+        if os.name == "nt":
+            posix = f"/{posix[0].lower()}{posix[2:]}"  # the Git Bash spelling /c/...
+        self.session_start("/../.." + posix, self.workspace, "above-root")
+
+    @unittest.skipUnless(os.name == "nt", "UNC administrative share")
+    def test_unc_spelling_keeps_its_double_slash(self):
+        script = self.runtime / "hooks" / "native-event"
+        drive, rest = os.path.splitdrive(str(script))
+        if not drive.endswith(":") or len(drive) != 2:
+            self.skipTest("the temporary directory has no drive letter")
+        admin = f"//localhost/{drive[0]}$"
+        if not os.path.isdir(admin + "/"):
+            self.skipTest(f"{admin} is not readable for this user")
+        unc = admin + rest.replace("\\", "/")
+        self.session_start(unc, self.workspace, "unc")
+        self.session_start(unc.replace("/hooks/", "/scripts/../hooks/"), self.workspace, "unc-dotdot")
 
     @unittest.skipUnless(os.name == "nt", "Windows path spellings")
     def test_windows_spellings_of_the_absolute_path(self):
