@@ -134,6 +134,9 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- CI covers more (#121): the runtime tests also run on Python 3.12 (one extra
+  job on Ubuntu), the `mods` job installs a pinned Claude Code CLI version
+  instead of the latest, and it runs `tools/tests/*.test.js` with `node --test`.
 - Handoff guidance steers to one `record` per save (#114). The SessionStart text,
   both `native-facts` reminders, the operations guide and the handoff skill now
   say that `record` returns the new `revision`, which is the next `--expected`

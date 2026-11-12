@@ -25,17 +25,23 @@ jobs:
         run: powershell.exe -NoProfile -File .\tests\docs\Test-MarkdownLinks.ps1
 
   adaptive-runtime-checks:
-    name: Adaptive runtime (${{ matrix.os }})
+    # The three 3.11 jobs keep their names; the extra run adds its Python version.
+    name: Adaptive runtime (${{ matrix.os }}${{ matrix.python != '3.11' && format(', Python {0}', matrix.python) || '' }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
+        python: ['3.11']
+        include:
+          # One run on the newer Python, on the fastest system only.
+          - os: ubuntu-latest
+            python: '3.12'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: '3.11'
+          python-version: ${{ matrix.python }}
       - name: Exercise optional runtime in temporary workspaces
         run: python -m unittest discover -s tests/adaptive -p "test_*.py" -v
 
@@ -47,8 +53,11 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
+      - name: Test tools
+        run: node --test tools/tests/*.test.js
+      # Pinned so a CLI release cannot turn this job red; raise it by hand.
       - name: Install Claude Code CLI
-        run: npm install -g @anthropic-ai/claude-code
+        run: npm install -g @anthropic-ai/claude-code@2.1.322
       - name: Validate marketplace and mods
         run: |
           claude plugin validate .
