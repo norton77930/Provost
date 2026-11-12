@@ -706,13 +706,18 @@ class SettingsTests(InstallCase):
         """gate: the synchronous Stop entry; by default start's command with acceptance-gate for native-event.
         pre: the PreToolUse Agent entry; by default the same as gate's default."""
         default = json.loads(json.dumps(start).replace("native-event", "acceptance-gate"))
-        gate = default if gate is None else gate
-        pre = default if pre is None else pre
-        return {"env": {"TOKEN": SECRET}, "hooks": {
-            "SessionStart": [{"hooks": [dict(type="command", **start)]}],
-            "PreToolUse": [{"matcher": "Agent", "hooks": [dict(type="command", **pre)]}],
-            "PostToolUse": [{"matcher": "*", "hooks": [dict(type="command", **post)]}],
-            "Stop": [{"hooks": [dict(type="command", **start)]}, {"hooks": [dict(type="command", **gate)]}]}}
+        commands = {("PreToolUse", "acceptance-gate"): default if pre is None else pre,
+                    ("Stop", "acceptance-gate"): default if gate is None else gate,
+                    "native-event": start, "native-facts": post}
+        hooks = {}
+        for event, matcher, name, extra in install.REGISTRATIONS:
+            command = commands.get((event, name), commands.get(name))
+            hook = {"type": "command", **command}
+            if extra.get("async"):
+                hook.setdefault("async", True)
+            group = {} if matcher is None else {"matcher": matcher}
+            hooks.setdefault(event, []).append({**group, "hooks": [hook]})
+        return {"env": {"TOKEN": SECRET}, "hooks": hooks}
 
     def test_plain_command_strings(self):
         base = "/home/u/.claude/" + RUNTIME + "/hooks/"
@@ -807,6 +812,133 @@ class SettingsTests(InstallCase):
         code, out, _ = self.run_cli("check")
         self.assertEqual(code, 0)
         self.assertNotIn("python install.py setup", out)
+
+    # check requires every registration that setup writes: event, matcher and sync mode, not only the hook.
+
+    def set_up(self):
+        """Run setup; return the settings.json it wrote."""
+        self.assertEqual(self.run_cli("setup")[0], 0)
+        return json.loads((self.config / "settings.json").read_text(encoding="utf-8"))
+
+    def entry(self, data, event, matcher, name):
+        """The (group, hook) of data's registration (event, matcher, name)."""
+        for group in data["hooks"][event]:
+            for hook in group["hooks"]:
+                if group.get("matcher") == matcher and hook["command"].endswith(f'/hooks/{name}"'):
+                    return group, hook
+        self.fail(f"no {event} {name} registration")
+
+    def check_with(self, data):
+        """Write data as settings.json, run check in both formats; return (exit code, JSON report, text)."""
+        write(self.config / "settings.json", json.dumps(data))
+        code, report = self.check_json()
+        text_code, out, err = self.run_cli("check")
+        self.assertEqual(text_code, code)
+        self.assertNotIn(SECRET, out + err + json.dumps(report))
+        self.assertNotIn("MARKERMATCHER", out + err + json.dumps(report))
+        return code, report, out
+
+    def assert_names(self, data, *names):
+        """check exits 1 and names exactly names (as '<Event> <hook>: <problem>') in text and JSON."""
+        code, report, out = self.check_with(data)
+        self.assertEqual((code, report["settings"], report["drift"]), (1, "not-registered", True))
+        self.assertEqual(report["registrations"], list(names))
+        for name in names:
+            self.assertIn(name, out)
+        return out
+
+    def test_setup_written_settings_are_ok_with_no_registration_problem(self):
+        self.set_up()
+        code, report = self.check_json()
+        self.assertEqual((code, report["settings"], report["registrations"]), (0, "ok", []))
+
+    def test_each_missing_registration_is_named(self):
+        data = self.set_up()
+        for event, matcher, name, _ in install.REGISTRATIONS:
+            with self.subTest(event=event, hook=name):
+                changed = json.loads(json.dumps(data))
+                group, _ = self.entry(changed, event, matcher, name)
+                changed["hooks"][event].remove(group)
+                out = self.assert_names(changed, f"{event} {name}: missing")
+                self.assertIn("python install.py setup", out)
+
+    def test_changed_matcher_is_named_and_left_to_the_user(self):
+        data = self.set_up()
+        for event, matcher, name, _ in install.REGISTRATIONS:
+            with self.subTest(event=event, hook=name):
+                changed = json.loads(json.dumps(data))
+                self.entry(changed, event, matcher, name)[0]["matcher"] = "MARKERMATCHER"
+                out = self.assert_names(changed, f"{event} {name}: matcher")
+                self.assertIn("by hand", out)
+                self.assertNotIn("python install.py setup", out)
+
+    def test_matcher_is_compared_exactly_but_an_empty_one_means_none(self):
+        data = self.set_up()
+        group, _ = self.entry(data, "Stop", None, "native-event")
+        group["matcher"] = ""
+        self.assertEqual(self.check_with(data)[1]["settings"], "ok")
+        group["matcher"] = ".*"
+        self.assert_names(data, "Stop native-event: matcher")
+        group["matcher"] = None
+        self.assert_names(data, "Stop native-event: matcher")
+
+    def test_flipped_sync_mode_is_named(self):
+        data = self.set_up()
+        for event, matcher, name, extra in install.REGISTRATIONS:
+            with self.subTest(event=event, hook=name):
+                changed = json.loads(json.dumps(data))
+                hook = self.entry(changed, event, matcher, name)[1]
+                if extra.get("async"):
+                    del hook["async"]
+                else:
+                    hook["async"] = True
+                out = self.assert_names(changed, f"{event} {name}: sync")
+                # setup replaces an async acceptance-gate entry with the sync one; it leaves the others alone
+                fixed_by_setup = name in install.SYNC_HOOKS
+                self.assertEqual("python install.py setup" in out, fixed_by_setup)
+                self.assertEqual("by hand" in out, not fixed_by_setup)
+
+    def test_exec_form_of_every_hook_is_ok(self):
+        data = self.set_up()
+        bash = "C:/Program Files/Git/bin/bash.exe"
+        for groups in data["hooks"].values():
+            for group in groups:
+                for hook in group["hooks"]:
+                    path = hook.pop("command")[len('bash "'):-1]
+                    hook.update(command=bash, args=[path.replace("/", "\\")])
+        code, report, _ = self.check_with(data)
+        self.assertEqual((code, report["settings"], report["registrations"]), (0, "ok", []))
+
+    def test_missing_and_mismatched_registrations_get_both_hints(self):
+        data = self.set_up()
+        group, _ = self.entry(data, "PreCompact", "manual|auto", "native-event")
+        data["hooks"]["PreCompact"].remove(group)
+        self.entry(data, "Stop", None, "native-event")[0]["matcher"] = "MARKERMATCHER"
+        out = self.assert_names(data, "PreCompact native-event: missing", "Stop native-event: matcher")
+        self.assertIn("python install.py setup", out)
+        self.assertIn("by hand", out)
+
+    def test_missing_settings_file_names_every_registration(self):
+        (self.config / "settings.json").unlink()
+        code, report = self.check_json()
+        self.assertEqual(code, 1)
+        self.assertEqual(report["registrations"],
+                         [f"{event} {name}: missing" for event, _, name, _ in install.REGISTRATIONS])
+
+    def test_unreadable_settings_exit_one_and_say_so(self):
+        for text in ('{"env": {"TOKEN": "' + SECRET + '"', b"\xff\xfe\x00", "[1, 2]"):
+            with self.subTest(text=text):
+                write(self.config / "settings.json", text)
+                code, report = self.check_json()
+                _, out, err = self.run_cli("check")
+                self.assertNotIn(SECRET, out + err)
+                if text == "[1, 2]":  # readable, but nothing is registered
+                    self.assertEqual((code, report["settings"]), (1, "not-registered"))
+                    continue
+                self.assertEqual((code, report["settings"], report["drift"]), (1, "unknown", True))
+                self.assertEqual(report["registrations"], [])
+                self.assertEqual(self.run_cli("check")[0], 1)
+                self.assertIn("settings.json could not be read", out)
 
 
 class SetupTests(InstallCase):

@@ -3,7 +3,9 @@
 
 python install.py [install|check|setup] [--dry-run] [--config-dir DIR] [--source DIR] [--json]
 
-check (default) is read-only: exit 0 no drift, 1 drift, 2 error (--dry-run is rejected with check).
+check (default) is read-only: exit 0 no drift, 1 drift (including a hook registration that is missing or
+differs in matcher or sync mode, and a settings.json that cannot be read), 2 error (--dry-run is rejected
+with check).
 install writes only changed targets, after backing them up: exit 0 success, 2 error.
 setup is install plus first-time wiring: it appends the CLAUDE.md markers when there are none,
 adds the missing Provost hook registrations to settings.json (other values are kept; the file is
@@ -33,18 +35,13 @@ END = b"<!-- claudex-native:end -->"
 # A local copy of this file that differs is kept beside it (<name>.local-<UTC time>.bak) before the
 # installer first overwrites it; once such a copy exists, later installs only use the backup dir.
 KEEP_LOCAL = "skills/handoff/SKILL.md"
-# The hooks check requires per event; Stop needs both the async declaration scan and the acceptance gate,
-# PreToolUse the acceptance gate's dispatch reminder.
-HOOK_EVENTS = {"SessionStart": ("native-event",),
-               "PreToolUse": ("acceptance-gate",),
-               "PostToolUse": ("native-facts",),
-               "Stop": ("native-event", "acceptance-gate")}
 # Hooks that count only when registered without "async": true (an async Stop hook cannot block the turn,
 # and an async PreToolUse hook cannot add context to the dispatch).
 SYNC_HOOKS = ("acceptance-gate",)
 SETTINGS = "settings.json"
 RUNTIME_CONFIG = "provost/config.json"
-# What setup registers: (event, matcher or None, hook, extra hook keys), as in docs/native-handoff.md.
+# What setup registers, and what check requires (event, matcher and sync mode; not the timeout):
+# (event, matcher or None, hook, extra hook keys), as in docs/native-handoff.md.
 REGISTRATIONS = (
     ("SessionStart", "startup|clear|compact|resume|fork", "native-event", {"timeout": 30}),
     ("PreCompact", "manual|auto", "native-event", {"timeout": 30}),
@@ -210,24 +207,49 @@ def check_layout(source, config, targets):
 
 
 def settings_status(config):
-    """ok | not-registered | async-duplicate | unknown. Only hook command strings are inspected; nothing is printed."""
+    """(status, problems). status is one of
+    ok: every entry of REGISTRATIONS is present;
+    not-registered: one is missing or differs (or the file is absent, or has no hooks);
+    async-duplicate: all are present, but an async acceptance-gate entry runs beside the sync one;
+    unknown: the file cannot be read or is not valid JSON.
+    problems: (event, hook, kind, by_hand) per registration that is not satisfied, in REGISTRATIONS order;
+    kind is missing (no entry on the event runs the hook), matcher (none in a group with the registered
+    matcher) or sync (none with the registered sync mode); by_hand is True when setup would leave it as it is.
+    Only hook entries are inspected; nothing from the file is printed."""
     try:
         data = json.loads((config / SETTINGS).read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
-        return "not-registered"  # nothing is registered without the file; setup creates it
+        data = None  # nothing is registered without the file; setup creates it
     except (OSError, ValueError):
-        return "unknown"
+        return "unknown", []
     hooks = data.get("hooks") if isinstance(data, dict) else None
-    if not isinstance(hooks, dict):
-        return "not-registered"
-    for event, names in HOOK_EVENTS.items():
-        for name in names:
-            if not _registered(hooks.get(event), name):
-                return "not-registered"
-    if any(list(_async_gates(hooks.get(event), name)) for event, names in HOOK_EVENTS.items()
-           for name in names if name in SYNC_HOOKS):
-        return "async-duplicate"
-    return "ok"
+    hooks = hooks if isinstance(hooks, dict) else {}
+    problems = []
+    for event, matcher, name, extra in REGISTRATIONS:
+        kind = _problem(hooks.get(event), matcher, name, extra.get("async") is True)
+        if kind:
+            problems.append((event, name, kind, _registered(hooks.get(event), name)))
+    if problems:
+        return "not-registered", problems
+    if any(list(_async_gates(hooks.get(event), name)) for event, _, name, extra in REGISTRATIONS
+           if name in SYNC_HOOKS and not extra.get("async")):
+        return "async-duplicate", []
+    return "ok", []
+
+
+def _problem(groups, matcher, name, is_async):
+    """None when groups has an entry that runs hook <name> in a group with this matcher and sync mode,
+    else "missing", "matcher" or "sync" (the first requirement that no entry meets)."""
+    runs = [(group, hook) for group in groups if isinstance(group, dict) and isinstance(group.get("hooks"), list)
+            for hook in group["hooks"]
+            if isinstance(hook, dict) and any(_ends_with(text, f"{RUNTIME}/hooks/{name}") for text in _strings(hook))
+            ] if isinstance(groups, list) else []
+    if not runs:
+        return "missing"
+    runs = [(g, h) for g, h in runs if g.get("matcher", "") == (matcher or "")]
+    if not runs:
+        return "matcher"
+    return None if any((h.get("async") is True) == is_async for _, h in runs) else "sync"
 
 
 def _registered(groups, name):
@@ -610,16 +632,25 @@ def main(argv=None):
         changes = [t for t in targets if t.status != "ok"]
         if args.command == "check":
             extra = extras(config, targets)
-            settings = settings_status(config)
-            # Registrations that setup would add or fix (not "unknown": an unreadable file is not diagnosed)
+            settings, problems = settings_status(config)
+            by_hand = [p for p in problems if p[3]]  # setup does not change a hook that is already registered
+            # An unreadable file is drift too (exit 1), but setup cannot fix it: the user has to
+            unreadable = settings == "unknown"
             unregistered = settings in ("not-registered", "async-duplicate")
-            drift = bool(changes) or unregistered
-            payload = {"command": "check", "drift": drift, "settings": settings, "extra": extra,
-                       "targets": [{"path": t.rel, "status": t.status} for t in targets]}
+            drift = bool(changes) or unregistered or unreadable
+            registrations = [f"{event} {name}: {kind}" for event, name, kind, _ in problems]
+            payload = {"command": "check", "drift": drift, "settings": settings, "registrations": registrations,
+                       "extra": extra, "targets": [{"path": t.rel, "status": t.status} for t in targets]}
             lines = [f"{t.status:<9} {t.rel}" for t in targets] + [f"{'extra':<9} {rel}" for rel in extra]
-            lines += [f"settings  {settings}", f"drift: {'yes' if drift else 'no'}"]
-            if unregistered:
+            lines += [f"settings  {settings}"] + [f"{'register':<9} {text}" for text in registrations]
+            lines.append(f"drift: {'yes' if drift else 'no'}")
+            if unreadable:
+                lines.append(f"{SETTINGS} could not be read (unreadable or not valid JSON); fix or restore it")
+            if (unregistered and len(by_hand) < len(problems)) or settings == "async-duplicate":
                 lines.append("next: run python install.py setup to fix the hook registrations in settings.json")
+            if by_hand:
+                lines.append("next: fix the entries marked matcher or sync in settings.json by hand; "
+                             "setup does not change a hook that is already registered")
             emit(args, payload, lines)
             return 1 if drift else 0
         plan = [{"path": t.rel, "action": "create" if t.status == "missing" else "update"} for t in changes]
