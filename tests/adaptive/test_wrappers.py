@@ -275,3 +275,93 @@ class InterpreterCacheTests(FixtureCase):
                 line = self.calls()[-1]
                 pythonpath = line.split("PYTHONPATH=", 1)[1].split(" -m ", 1)[0]
                 self.assertEqual(Path(pythonpath).resolve(), (REPO / "scripts").resolve(), line)
+
+
+class AcceptanceGateFastPathTests(FixtureCase):
+    """hooks/acceptance-gate exits with bash builtins alone unless <cwd>/.claude/acceptance can hold a *.json file."""
+
+    def setUp(self):
+        super().setUp()
+        self.log = self.root / "python.log"
+        self.bin = self.root / "bin"
+        self.fake_interpreter(self.bin, "python3", self.log)
+
+    def event(self, cwd, kind):
+        base = {"session_id": "s1", "transcript_path": str(self.root / "t.jsonl"), "cwd": str(cwd)}
+        if kind == "Stop":
+            return json.dumps({**base, "hook_event_name": "Stop", "last_assistant_message": "done"},
+                              ensure_ascii=False)
+        return json.dumps({**base, "hook_event_name": "PreToolUse", "tool_name": "Agent",
+                           "tool_input": {"subagent_type": "implementer", "prompt": "Build it."}},
+                          ensure_ascii=False)
+
+    def gate(self, cwd, kind="Stop"):
+        self.log.unlink(missing_ok=True)
+        result = self.run_bash(REPO / "hooks" / "acceptance-gate", path_dirs=[self.bin], stdin=self.event(cwd, kind))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result
+
+    def assert_no_interpreter(self, cwd):
+        for kind in ("Stop", "PreToolUse"):
+            with self.subTest(kind):
+                result = self.gate(cwd, kind)
+                self.assertEqual(result.stdout, "", result.stderr)
+                self.assertFalse(self.log.exists(), "no *.json file: no interpreter may start")
+
+    def assert_interpreter(self, cwd):
+        for kind in ("Stop", "PreToolUse"):
+            with self.subTest(kind):
+                self.gate(cwd, kind)
+                self.assertIn("-m provost_runtime.cli acceptance-hook", self.log.read_text(encoding="utf-8"))
+
+    def test_directory_without_json_files_starts_no_interpreter(self):
+        directory = self.root / ".claude" / "acceptance"
+        directory.mkdir(parents=True)
+        self.assert_no_interpreter(self.root)
+        (directory / "notes.txt").write_text("not a gate file", encoding="utf-8")
+        (directory / "task.json.bak").write_text("{}", encoding="utf-8")
+        self.assert_no_interpreter(self.root)
+        self.assert_no_interpreter(str(self.root) + "/")
+
+    def test_a_json_file_hands_the_decision_to_python(self):
+        directory = self.root / ".claude" / "acceptance"
+        directory.mkdir(parents=True)
+        (directory / "task.json").write_text("{}", encoding="utf-8")
+        self.assert_interpreter(self.root)
+
+    def test_json_file_python_would_count_is_never_skipped(self):
+        # Path.glob("*.json") counts hidden files, and on Windows ignores case: bash must not skip either.
+        directory = self.root / ".claude" / "acceptance"
+        directory.mkdir(parents=True)
+        for name in (".json", ".hidden.json", "UPPER.JSON"):
+            with self.subTest(name):
+                (directory / name).write_text("{}", encoding="utf-8")
+                self.assert_interpreter(self.root)
+                (directory / name).unlink()
+        self.assert_no_interpreter(self.root)
+
+    def test_glob_characters_in_the_cwd_stay_literal(self):
+        project = self.root / "proj[ab]"
+        (self.root / "proja").mkdir()
+        directory = project / ".claude" / "acceptance"
+        directory.mkdir(parents=True)
+        self.assert_no_interpreter(project)
+        (directory / "task.json").write_text("{}", encoding="utf-8")
+        self.assert_interpreter(project)
+
+    def test_inherited_glob_settings_do_not_hide_a_json_file(self):
+        # BASH_ENV runs in every non-interactive bash: the way a person's profile could leave noglob or a
+        # GLOBIGNORE behind (bash does not take GLOBIGNORE from the environment itself).
+        directory = self.root / ".claude" / "acceptance"
+        directory.mkdir(parents=True)
+        (directory / "task.json").write_text("{}", encoding="utf-8")
+        for label, setting in (("noglob", "set -f"), ("GLOBIGNORE", "GLOBIGNORE='*'")):
+            startup = self.root / (label + ".sh")
+            startup.write_text(setting + "\n", encoding="utf-8", newline="\n")
+            for kind in ("Stop", "PreToolUse"):
+                with self.subTest(label + " " + kind):
+                    self.log.unlink(missing_ok=True)
+                    result = self.run_bash(REPO / "hooks" / "acceptance-gate", path_dirs=[self.bin],
+                                           stdin=self.event(self.root, kind), env={"BASH_ENV": startup.as_posix()})
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("-m provost_runtime.cli acceptance-hook", self.log.read_text(encoding="utf-8"))

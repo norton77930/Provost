@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Acceptance gate entrypoint. Register it for Stop as a synchronous hook (no "async"), beside
 # native-event's async Stop registration: only a synchronous hook can block the turn end.
-# The common case, no <cwd>/.claude/acceptance directory, exits 0 with no output using bash builtins
-# only, before any interpreter starts (each process costs about 0.5 s on Windows). Otherwise
-# provost_runtime.cli acceptance-hook decides: a block decision while a session acceptance file has a
-# non-human gate pending or failed (or is malformed), else {}. Every failure ends with no decision, so
-# a broken check never traps a session. Always exits 0.
+# The common cases, no <cwd>/.claude/acceptance directory or one without a *.json file, exit 0 with no
+# output using bash builtins only, before any interpreter starts (each process costs about 0.5 s on
+# Windows). Otherwise provost_runtime.cli acceptance-hook decides: a block decision while a session
+# acceptance file has a non-human gate pending or failed (or is malformed), else {}. Every failure ends
+# with no decision, so a broken check never traps a session. Always exits 0.
 # Also register it for PreToolUse with matcher Agent (synchronous): it then adds a reminder to cite the
 # acceptance file when an implementation brief does not, and never denies a dispatch.
 set -uo pipefail
@@ -17,8 +17,26 @@ cwd_re='"cwd"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)"'
 [[ "$input" =~ $cwd_re ]] || exit 0
 cwd="${BASH_REMATCH[1]//\\\\//}"
 [[ -n "$cwd" ]] || exit 0
-if [[ "$cwd" != *\\* && ! -d "${cwd%/}/.claude/acceptance" ]]; then
-    exit 0
+if [[ "$cwd" != *\\* ]]; then
+    dir="${cwd%/}/.claude/acceptance"
+    [[ -d "$dir" ]] || exit 0
+    # Any entry Path.glob("*.json") could count sends the event to Python: hidden names (dotglob) and, since
+    # Windows ignores case, any case (nocaseglob; a superset on case-sensitive systems, which Python then
+    # filters). The directory is quoted, so glob characters in the cwd stay literal. A pattern that matches
+    # nothing stays unexpanded and fails the test.
+    # set +f and unset GLOBIGNORE keep an inherited noglob or ignore list from leaving the pattern unexpanded.
+    set +f
+    unset GLOBIGNORE
+    shopt -s dotglob nocaseglob
+    found=""
+    for entry in "$dir"/*.json; do
+        if [[ -e "$entry" || -L "$entry" ]]; then
+            found=1
+            break
+        fi
+    done
+    shopt -u dotglob nocaseglob
+    [[ -n "$found" ]] || exit 0
 fi
 _src="${BASH_SOURCE[0]//\\//}"
 [[ "$_src" == */* ]] || _src="./${_src}"
