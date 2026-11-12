@@ -334,6 +334,13 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Fixed
 
+- The board mod reads an acceptance file the way the Stop gate does (#127). A gate of an
+  unknown kind now makes the whole file malformed instead of being dropped, a file with
+  a valid top-level `closed` reason is finished and no longer shows its gates, and
+  `source`, `tree`, `files` with `digest`, a blank `id` and a leading BOM are checked
+  as the runtime checks them. One list of cases, `mods/board/tests/fixtures/acceptance-cases.ts`,
+  is run against both readers (`tests/adaptive/test_acceptance_fixtures.py` and the board
+  test); the board still checks only that `ranAt` is a string and does not judge staleness.
 - The acceptance `Stop` gate does less work when there is nothing to judge (#112). The
   bash part now exits before any interpreter starts when `<cwd>/.claude/acceptance`
   holds no `*.json` file, not only when the directory is missing. A file with a valid
