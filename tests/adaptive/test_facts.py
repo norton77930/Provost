@@ -376,6 +376,108 @@ class FoldTests(FactsCase):
                 self.assertEqual(capped[key], [entry(i) for i in range(101, 200)])
 
 
+class InspectGitTests(FactsCase):
+    """_inspect reads the branch and the dirty list from one `git status --branch` call (#123)."""
+
+    def entry(self, root="C:/r", **previous):
+        return dict({"root": str(root), "first_touched_at": facts._iso(self.now - 100),
+                     "last_touched_at": facts._iso(self.now - 10)}, **previous)
+
+    def fake(self, status, log=""):
+        """A git callable answering status and log (an exception value is raised); records each call."""
+        calls = []
+
+        def git(root, *args):
+            calls.append(args)
+            answer = {"status": status, "log": log}[args[0]]
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+        return git, calls
+
+    def test_one_fold_makes_two_git_calls_per_repo(self):
+        repo = self.repo("a")
+        self.write(self.edit(repo / "x.py", self.now - 9, repo))
+        calls = []
+
+        class Recording(facts._Git):
+            def __call__(self, cwd, *args):
+                calls.append(args)
+                return super().__call__(cwd, *args)
+        with mock.patch.object(facts, "_Git", Recording):
+            entry = self.repo_entry(self.fold(repo), repo)
+        inspected = [args for args in calls if args != ("rev-parse", "--show-toplevel")]  # the finder's
+        self.assertEqual([args[0] for args in inspected], ["status", "log"])
+        self.assertIn("--branch", inspected[0])
+        self.assertIsNone(entry["error"])
+        self.assertTrue(entry["branch"])
+
+    def test_branch_comes_from_the_status_header(self):
+        for header, branch in (("## main...origin/main [ahead 1, behind 2]", "main"),
+                               ("## feat/x...origin/feat/x [gone]", "feat/x"),
+                               ("## feat/x", "feat/x"),
+                               ("## HEAD (no branch)", "HEAD"),
+                               ("## No commits yet on trunk", "trunk"),
+                               ("## Initial commit on trunk", "trunk"),
+                               ("## No commits yet on main...origin/main [gone]", "main"),
+                               ("## Initial commit on main...origin/main [gone]", "main")):
+            git, calls = self.fake(header + "\0")
+            entry, _, fresh = facts._inspect(git, self.entry(branch="old"))
+            self.assertEqual((entry["branch"], entry["dirty"], entry["dirty_total"], entry["error"], fresh),
+                             (branch, [], 0, None, []), header)
+            self.assertEqual([args[0] for args in calls], ["status", "log"])
+
+    def test_the_header_is_not_a_dirty_entry_and_a_path_starting_like_one_is(self):
+        git, _ = self.fake("## main\0?? ## odd\0R  c d\0a b\0 M x.py\0")
+        entry, _, fresh = facts._inspect(git, self.entry())
+        self.assertEqual(entry["branch"], "main")
+        self.assertEqual(entry["dirty"], [{"status": "??", "path": "## odd"}, {"status": "R ", "path": "c d"},
+                                          {"status": " M", "path": "x.py"}])
+        self.assertEqual((entry["dirty_total"], fresh), (3, entry["dirty"]))
+
+    def test_branch_and_dirty_fail_together_and_keep_the_previous_values(self):
+        previous = {"branch": "old", "dirty": [{"status": " M", "path": "kept.py"}], "dirty_total": 3}
+        log = "abc\x1f%d\x1fsubject\n" % (self.now - 5)
+        for status, code in ((facts._GitError("GIT_TIMEOUT"), "GIT_TIMEOUT"), ("", "GIT_FAILED"),
+                             ("?? ## x\0", "GIT_FAILED")):  # no header: nothing in it is trusted
+            git, _ = self.fake(status, log)
+            entry, newest, fresh = facts._inspect(git, self.entry(**previous))
+            self.assertEqual({k: entry[k] for k in ("branch", "dirty", "dirty_total", "error")},
+                             dict(previous, error=code), status)
+            self.assertEqual((fresh, newest, [c["hash"] for c in entry["commits"]]), ([], self.now - 5, ["abc"]))
+
+    def test_branch_against_real_git(self):
+        origin = self.repo("origin")
+        clone = self.root / "clone"
+        self.git("clone", "-q", str(origin), str(clone))
+        base = self.git("rev-parse", "--abbrev-ref", "HEAD", cwd=clone)
+        self.commit(clone, "ahead", self.now - 60)
+        self.commit(origin, "behind", self.now - 50)
+        self.git("fetch", "-q", cwd=clone)
+        self.assertIn("[ahead 1, behind 1]", self.git("status", "--porcelain=v1", "--branch", cwd=clone))
+
+        def inspect(path):
+            entry = facts._inspect(facts._Git(), self.entry(path, branch="old"))[0]
+            return entry["branch"], entry["error"]
+        self.assertEqual(inspect(clone), (base, None))
+        self.git("checkout", "-q", "-b", "feat/x", cwd=clone)  # no upstream
+        self.assertEqual(inspect(clone), ("feat/x", None))
+        self.git("checkout", "-q", "--detach", cwd=clone)
+        self.assertEqual(inspect(clone), ("HEAD", None))
+        empty = self.root / "empty"
+        empty.mkdir()
+        self.git("init", "-q", "-b", "trunk", cwd=empty)
+        # No commits: status names the unborn branch; only the log step fails.
+        self.assertEqual(inspect(empty), ("trunk", "GIT_FAILED"))
+        # A clone of an empty repository tracks a branch that does not exist yet.
+        bare = self.root / "bare.git"
+        self.git("init", "-q", "--bare", str(bare))
+        unborn = self.root / "unborn"
+        self.git("clone", "-q", str(bare), str(unborn))
+        name = self.git("symbolic-ref", "--short", "HEAD", cwd=unborn)
+        self.assertEqual(inspect(unborn), (name, "GIT_FAILED"))
+
+
 class PreCompactTests(FactsCase):
     def event(self):
         return {"session_id": SESSION, "cwd": str(self.root), "hook_event_name": "PreCompact"}

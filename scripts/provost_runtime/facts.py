@@ -235,22 +235,38 @@ def gather(previous, events, invalid, finder):
     return state
 
 
+def _branch(header):
+    """Branch of a `git status --branch` header field: "HEAD" when detached (as rev-parse
+    --abbrev-ref names it), the unborn branch of a repo without commits, else the local branch
+    before any "...upstream [ahead/behind]" (a ref name holds no ".." and no space)."""
+    name = header[3:]
+    if name == "HEAD (no branch)":
+        return "HEAD"
+    for prefix in ("No commits yet on ", "Initial commit on "):  # the second: older git
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+    return name.split("...", 1)[0] or None
+
+
 def _inspect(git, repo):
-    """Current git facts of one repo; each failed step leaves a code and the rest still run.
-    A failed step keeps the value the previous fold stored (branch, dirty/dirty_total or commits),
-    else the empty one. Returns (entry, newest commit epoch or None, the dirty list read in this
-    fold or [] when git status failed: a kept list never dates a change)."""
+    """Current git facts of one repo from two git calls (status, log); each failed step leaves a
+    code and the other still runs. A failed step keeps the value the previous fold stored, else the
+    empty one: status gives branch and dirty/dirty_total together, so they fail together (also on
+    output without its "## " header); log gives commits. Returns (entry, newest commit epoch or
+    None, the dirty list read in this fold or [] when git status failed: a kept list never dates
+    a change)."""
     root = repo["root"]
     entry = {"root": root, "branch": repo.get("branch"), "first_touched_at": repo["first_touched_at"],
              "last_touched_at": repo["last_touched_at"], "dirty": list(repo.get("dirty", [])),
              "dirty_total": repo.get("dirty_total", 0), "commits": list(repo.get("commits", [])), "error": None}
     newest, fresh = None, []
     try:
-        entry["branch"] = git(root, "rev-parse", "--abbrev-ref", "HEAD").strip() or None
-    except _GitError as exc:
-        entry["error"] = str(exc)
-    try:
-        tokens = iter(git(root, "status", "--porcelain=v1", "-z").split("\0"))
+        tokens = iter(git(root, "status", "--porcelain=v1", "-z", "--branch").split("\0"))
+        header = next(tokens)  # only the first field is the header; a path may start with "## " too
+        if not header.startswith("## "):
+            raise _GitError("GIT_FAILED")
+        branch = _branch(header)
         dirty = []
         for token in tokens:
             if len(token) < 4:
@@ -259,9 +275,9 @@ def _inspect(git, repo):
             if token[0] in "RC":
                 next(tokens, None)  # -z puts a rename's source path in its own field
         fresh = dirty[:MAX_DIRTY]
-        entry["dirty"], entry["dirty_total"] = fresh, len(dirty)
+        entry["branch"], entry["dirty"], entry["dirty_total"] = branch, fresh, len(dirty)
     except _GitError as exc:
-        entry["error"] = entry["error"] or str(exc)
+        entry["error"] = str(exc)
     try:
         since = "--since=@%d" % _epoch(repo["first_touched_at"])
         commits = []

@@ -619,8 +619,9 @@ fails (for example `STORE_BUSY`) the facts.json PreCompact wrote is rendered, wi
 no warning. Resume does not refold.
 
 On a git timeout or failure in any fold (PreCompact or this refold), each failed
-step for a repo (`rev-parse` for `branch`, `status` for `dirty`/`dirty_total`, `log`
-for `commits`) keeps the value the previous fold stored and the repo's `error` names
+step for a repo (two per repo: `status` for `branch` and `dirty`/`dirty_total`, read
+from one call and so kept together, and `log` for `commits`) keeps the value the
+previous fold stored and the repo's `error` names
 the code (`GIT_TIMEOUT`, `GIT_FAILED`, `GIT_UNAVAILABLE`); steps that succeed are
 current, and the next fold where git answers clears `error`. A repo with no previous
 entry gets `branch` null, no dirty entries and no commits. Kept dirty entries never
