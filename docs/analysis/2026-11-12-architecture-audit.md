@@ -232,6 +232,13 @@ Stop gate 累計等待 351 分鐘（3,141 次有耗時紀錄），占期間內�
 6. **驗證。** 用 `time_sessionstart.py` 的同一方法（store 副本）前後對比子行程數與耗時；上線後每週量：**SessionStart 逾時 0 次、p90 低於 10 秒**。
 7. **回滾。** revert 單一 commit 後重新 install；不涉及 store 格式。
 
+> **更正（2026-11-12，實作 #123 時發現）。** 4-a 已完成（#124）。4-b 的前提不成立，沒有實作。
+>
+> - **4-b 的索引檔：** store 沒有「每個 work 一個索引檔」。`current.json` 是每個 session 一筆，記的是該 session 的目前 revision；`store.py` 的 `_collection` 註明索引檔「are hints, never authority」。一張卡是不是某個 work 的最新一張，要讀過所有卡、確認沒有別張卡把它當 `parent_record` 才知道。所以「只讀索引檔」無法讓選單維持相同內容。
+> - **重新量到的成本（store 副本，31 個 session，無其他負載）：** `SessionStart:startup` 4.6 秒，其中 `_joinable_menu` → `work_states` 4.3 秒；`_read` 197 次共 2.6 秒，`guard` 416 次共 2.3 秒。`guard` 對每張卡都把路徑的每一層重新檢查一遍，同一批父目錄被反覆檢查。
+> - **4-a 的實測：** `SessionStart:compact` 的子行程數 19 → 14 與 16 → 11（5 個 repo，各少一個）。
+> - **後續：** 三個做法（減少一次 `work_states` 呼叫內重複的路徑檢查與讀檔、每個 work 的 head 索引、選單只看 `current.json`）與取捨列在 issue #123，等維護者選擇。§7 的目標「SessionStart:compact 子行程數 ≤ 5」沒有考慮 repo 數（這次量測的 session 有 5 個 repo），之後改看「每個 repo 的 git 子行程 2 個」。
+
 #### C3（P2）一筆 handoff 紀錄最多要三個請求，提醒沒有去重
 
 1. **證據。** §3.4：只做 handoff 的請求 779 個、`status` 549 次、`record` 1,003 次、payload 暫存檔寫入至少 551 次。`cli.py:273-279`：`record` 省略 `--input` 時已經會從 stdin 讀。但 SessionStart 注入的操作說明只教檔案路徑（`hooks.py:711`、`:718`：「record reads JSON from --input <payload-file>」），並要求「Start a save with status」。`record` 的回傳已含新的 `revision`（`cli.py:247`）。`hooks/native-facts:158-163` 的「a subagent result just arrived」每次 subagent 交回都發，期間內 593 次（Agent 呼叫 672 次），沒有像 `:133` 那樣用 `.reminded` 去重。
@@ -291,6 +298,12 @@ Stop gate 累計等待 351 分鐘（3,141 次有耗時紀錄），占期間內�
 6. **驗證。** 兩週後 `--reviews`：**unrecorded ÷ important 低於 20%**（基準 48 ÷ 57 = 84%）。
 7. **回滾。** revert；不影響審查本身。
 
+> **更正（2026-11-13，階段 2 派工前量測）。** 第 4 點「依 session 開始日分組」不需要做，改為先修工具的歸屬（#126）。
+>
+> - **不是時間差。** 規則 2026-10-29 安裝。用現有的 `--since` 就能量：`--reviews --since 2026-10-31` 為 159 次審查、65 個 `Important`、56 個沒有處置紀錄（86%）。
+> - **但 86% 不能讀成「沒寫」。** 工具只把 `Dispositions:` 行算給最近一次 `code-reviewer` 派工。實際順序常是審查 → 修正 → 複審 → 確認修好才寫處置行，這一行就被算到沒有 `Important` 的複審上（輸出裡可見「important 0、fixed 2」的複審列，前一列是「important 2、unrecorded 2」）。
+> - **後續：** 先讓工具把處置行歸給它回答的那次審查，再重量；角色檔要不要加提示，依重量後的數字決定。
+
 #### C8（P3）文件與程式不一致
 
 | 位置 | 文件說 | 實際 |
@@ -331,6 +344,13 @@ Stop gate 累計等待 351 分鐘（3,141 次有耗時紀錄），占期間內�
 - 影響：只寫驗收檔就可能觸發「未宣告分類」或「上次紀錄後改過檔」的提醒。重複的解析已經出現差異。
 - 修正：`acceptance.py` 內兩份合成一個產生器函式；`hooks._scan_lines` 套用同一個排除條件。不動 bash 那份（它是為了不啟動 Python）。
 - 驗證：新增測試「只寫驗收檔不算 repo 編輯」；`test_hooks.py`、`test_acceptance.py` 全過。回滾：revert。
+
+> **更正（2026-11-13，階段 2 派工前複核）。** 「兩套判定」不是漂移，行為修改撤回；合併解析延後。
+>
+> - **判定的差異是刻意的。** `hooks._scan_lines` 的 docstring 寫明它對齊 bash 的 `native-facts`（不排除驗收檔）；`acceptance.last_edit` 的 docstring 寫明「writing the acceptance file is not a code change」，排除驗收檔是為了不讓寫驗收檔本身使 gate 過期。兩者回答的是不同問題。
+> - **「只寫驗收檔就觸發未宣告分類提醒」不算誤報。** 會寫驗收檔的都是非簡單任務，本來就該有分類宣告。這項影響沒有量到實際案例。
+> - **只在 `_scan_lines` 加排除會造成新的不一致：** 它會與它對齊的 bash hook 不同，而原建議又說不動 bash。
+> - **剩下的部分：** Python 內三份相同的逐字稿解析迴圈合成一個，仍是合理的維護性整理，但 C1-c（位移快取）會改寫 `session_files` 的同一段迴圈。兩者一起做，等階段 1 上線一週後的量測決定 C1-c 時再定。
 
 ### 4.2 潛在風險（程式碼可見，但未觀察到實際發生）
 
