@@ -242,9 +242,10 @@ def _branch(header):
     name = header[3:]
     if name == "HEAD (no branch)":
         return "HEAD"
-    for prefix in ("No commits yet on ", "Initial commit on "):  # the second: git before 2.18
+    for prefix in ("No commits yet on ", "Initial commit on "):  # the second: older git
         if name.startswith(prefix):
-            return name[len(prefix):] or None
+            name = name[len(prefix):]
+            break
     return name.split("...", 1)[0] or None
 
 

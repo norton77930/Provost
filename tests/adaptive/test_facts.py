@@ -418,7 +418,9 @@ class InspectGitTests(FactsCase):
                                ("## feat/x", "feat/x"),
                                ("## HEAD (no branch)", "HEAD"),
                                ("## No commits yet on trunk", "trunk"),
-                               ("## Initial commit on trunk", "trunk")):
+                               ("## Initial commit on trunk", "trunk"),
+                               ("## No commits yet on main...origin/main [gone]", "main"),
+                               ("## Initial commit on main...origin/main [gone]", "main")):
             git, calls = self.fake(header + "\0")
             entry, _, fresh = facts._inspect(git, self.entry(branch="old"))
             self.assertEqual((entry["branch"], entry["dirty"], entry["dirty_total"], entry["error"], fresh),
@@ -467,6 +469,13 @@ class InspectGitTests(FactsCase):
         self.git("init", "-q", "-b", "trunk", cwd=empty)
         # No commits: status names the unborn branch; only the log step fails.
         self.assertEqual(inspect(empty), ("trunk", "GIT_FAILED"))
+        # A clone of an empty repository tracks a branch that does not exist yet.
+        bare = self.root / "bare.git"
+        self.git("init", "-q", "--bare", str(bare))
+        unborn = self.root / "unborn"
+        self.git("clone", "-q", str(bare), str(unborn))
+        name = self.git("symbolic-ref", "--short", "HEAD", cwd=unborn)
+        self.assertEqual(inspect(unborn), (name, "GIT_FAILED"))
 
 
 class PreCompactTests(FactsCase):

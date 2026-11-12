@@ -321,10 +321,13 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   uncommitted entries come from one `git status --porcelain=v1 -z --branch` call,
   so `rev-parse --abbrev-ref HEAD` is gone and a repository costs two child
   processes (status, log) instead of three. Stored facts are unchanged for a branch
-  with or without upstream and for a detached HEAD (`HEAD`). A repository without
+  with or without upstream and for a detached HEAD (`HEAD`). A branch whose name is
+  ambiguous with another ref (a branch `v1` beside a tag `v1`) is now stored as `v1`
+  where `rev-parse --abbrev-ref` gave `heads/v1`. A repository without
   commits now stores its unborn branch name instead of keeping the previous value;
   its `error` still reads `GIT_FAILED`, from the log step. Branch and uncommitted
-  entries now fail together and keep their previous values together.
+  entries now fail together and keep their previous values together: when
+  `git status` fails, the branch keeps its previous value along with the dirty list.
 
 ### Fixed
 
