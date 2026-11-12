@@ -227,6 +227,11 @@ Then record it with a single-line command:
 bash "<runtime>/hooks/runtime" record --workspace "<root>" --session "<session>" --expected "<revision-or-null>" --request-id "<unique-milestone-id>" [--join] --input "<payload-file>"
 ```
 
+The result contains the new `revision`: it is the `--expected` of the next record of
+the same work_id, so `status` is needed only for a session's first save, after a
+compaction or resume, on a conflict, or for another work_id. `record` also reads the
+payload from stdin when `--input` is omitted, for callers outside a worktree guard.
+
 `--join` is only for a first record of a work that other sessions have logged (see
 Joining work below); leave it out otherwise.
 
@@ -989,8 +994,8 @@ hook, and for `UserPromptSubmit` as a sync hook.
   or NotebookEdit outside the scratch locations (`/.claude/jobs/`,
   `/.claude/projects/`, `AppData/Local/Temp`, `/tmp/`), and
   `<session_id>.pending-dispatch` when a writer subagent is dispatched (default
-  roles `implementer`, `implementer-high`, `implementer-sonnet`, `implementer-deep`,
-  `mech-executor`, `general-purpose`; override with the space-separated env var
+  roles `implementer`, `implementer-sonnet`, `mech-executor`, `general-purpose`;
+  override with the space-separated env var
   `PROVOST_REMINDER_ROLES`). Its output is always `{}`.
 - `UserPromptSubmit` reminds at the start of the next turn, once: when a pending
   flag exists and `<session_id>.reminded` does not, it creates `.reminded` and adds
@@ -1056,11 +1061,28 @@ JSON under "What setup registers, to do it by hand" in the
 [README](../README.md#install). It lists all eight entries, including the two
 acceptance-gate ones described under [Acceptance gates](#acceptance-gates).
 
-`python install.py check` reports `settings: not-registered` until the
-`SessionStart`, `PreToolUse`, `PostToolUse` and both `Stop` registrations (the async
-declaration scan and the synchronous [acceptance gate](#acceptance-gates)) are all
-present. That counts as drift: `check` exits non-zero and tells you to run
-`python install.py setup`.
+`python install.py check` reports `settings: not-registered` until every entry that
+`setup` writes is present: all eight registrations, each on its event, with a matcher
+that covers the registered one and in the registered sync mode (on `Stop`, the async
+declaration scan and the synchronous [acceptance gate](#acceptance-gates) are two
+entries). Timeouts are not compared. Each unmet entry is named on a `register` line and
+in the `registrations` list of `--json` as `<Event> <hook>: missing`,
+`matcher (expected ...)` or `sync (expected ...)`; only event names, hook names and the
+expected values are printed, never anything from `settings.json`.
+
+A matcher is judged by what it covers, not by its spelling: an absent, empty or `"*"`
+matcher covers everything, a plain list (names separated by `|` or `,`) covers its names
+in any order, and several groups that run the hook add up. `check` does not evaluate
+regular expressions, so a matcher with any other character is reported as `matcher`
+even when it would fire. `UserPromptSubmit` and `Stop` ignore the matcher, so any value
+passes there.
+
+An unmet entry counts as drift: `check` exits non-zero and tells you to run
+`python install.py setup` for what `setup` can add, and to fix by hand an entry marked
+`matcher` or `sync` that `setup` would leave, because it does not change a hook that is
+already registered. A `settings.json` that cannot be read or is not valid JSON is
+`settings: unknown`, which is drift too (exit 1) and has to be fixed or restored by
+hand.
 
 Do not register any of these hooks for `SubagentStop`. That event's context is delivered
 to the subagent's own conversation and keeps the subagent running, so it would loop

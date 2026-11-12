@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Lists implementer-family subagent dispatches from Claude Code transcripts.
 // Usage: node dispatch-report.js [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--project substr] [--roles a,b] [--tsv] [--reviews] [--reports <dir>]
-// Reads ~/.claude/projects/*/<session>.jsonl and <session>/subagents/*. Read-only.
+// Reads ~/.claude/projects/*/<session>.jsonl and <session>/subagents/*. Read-only, except that --reports <dir> writes report files there.
 // --reviews lists code-reviewer dispatches instead: Important findings (the number after "Important" in the report's
 // counts line, else the distinct I<n> ids) and the "Dispositions: I1 fixed; I2 rejected — why" line main writes after
 // it (outcomes: fixed, rejected, intentional, moot, unproven); per-model precision on stderr. tagged=no marks a report with neither (its important=0 means unknown), and
@@ -18,7 +18,7 @@ const since = new Date(opt("--since", "2026-09-23") + "T00:00:00Z");
 const untilArg = opt("--until", ""); // inclusive UTC date; omitted = no upper bound
 const until = untilArg ? new Date(Date.parse(untilArg + "T00:00:00Z") + 86400000) : null;
 const projectFilter = opt("--project", "");
-const roles = new Set(opt("--roles", "implementer,implementer-high,implementer-sonnet").split(","));
+const roles = new Set(opt("--roles", "implementer,implementer-sonnet").split(","));
 const tsv = args.includes("--tsv");
 const reviews = args.includes("--reviews");
 const reportsDir = reviews ? opt("--reports", "") : "";

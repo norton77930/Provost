@@ -14,6 +14,9 @@ import re
 
 from .acceptance import acceptance_directory, load, session_files, DIRECTORY, Malformed
 
+# Roles whose brief should cite the acceptance file. hooks/native-facts keeps a longer writer list
+# (it adds general-purpose) for the handoff reminder: a general-purpose dispatch changes files and
+# needs a record, but its work is not accepted through gates, so it is not reminded here.
 ROLES = ("implementer", "implementer-sonnet", "mech-executor")
 
 

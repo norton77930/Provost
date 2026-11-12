@@ -20,6 +20,7 @@ SPEC.loader.exec_module(install)
 RUNTIME = "provost/runtime/native-pilot-v1"
 BEGIN, END = "<!-- claudex-native:begin -->", "<!-- claudex-native:end -->"
 SECRET = "ghp_SECRETVALUE0123456789"
+ABSENT = object()  # a hook group without a "matcher" key
 
 
 def write(path, data):
@@ -706,13 +707,18 @@ class SettingsTests(InstallCase):
         """gate: the synchronous Stop entry; by default start's command with acceptance-gate for native-event.
         pre: the PreToolUse Agent entry; by default the same as gate's default."""
         default = json.loads(json.dumps(start).replace("native-event", "acceptance-gate"))
-        gate = default if gate is None else gate
-        pre = default if pre is None else pre
-        return {"env": {"TOKEN": SECRET}, "hooks": {
-            "SessionStart": [{"hooks": [dict(type="command", **start)]}],
-            "PreToolUse": [{"matcher": "Agent", "hooks": [dict(type="command", **pre)]}],
-            "PostToolUse": [{"matcher": "*", "hooks": [dict(type="command", **post)]}],
-            "Stop": [{"hooks": [dict(type="command", **start)]}, {"hooks": [dict(type="command", **gate)]}]}}
+        commands = {("PreToolUse", "acceptance-gate"): default if pre is None else pre,
+                    ("Stop", "acceptance-gate"): default if gate is None else gate,
+                    "native-event": start, "native-facts": post}
+        hooks = {}
+        for event, matcher, name, extra in install.REGISTRATIONS:
+            command = commands.get((event, name), commands.get(name))
+            hook = {"type": "command", **command}
+            if extra.get("async"):
+                hook.setdefault("async", True)
+            group = {} if matcher is None else {"matcher": matcher}
+            hooks.setdefault(event, []).append({**group, "hooks": [hook]})
+        return {"env": {"TOKEN": SECRET}, "hooks": hooks}
 
     def test_plain_command_strings(self):
         base = "/home/u/.claude/" + RUNTIME + "/hooks/"
@@ -807,6 +813,216 @@ class SettingsTests(InstallCase):
         code, out, _ = self.run_cli("check")
         self.assertEqual(code, 0)
         self.assertNotIn("python install.py setup", out)
+
+    # check requires every registration that setup writes: event, matcher and sync mode, not only the hook.
+
+    def set_up(self):
+        """Run setup; return the settings.json it wrote."""
+        self.assertEqual(self.run_cli("setup")[0], 0)
+        return json.loads((self.config / "settings.json").read_text(encoding="utf-8"))
+
+    def entry(self, data, event, matcher, name):
+        """The (group, hook) of data's registration (event, matcher, name)."""
+        for group in data["hooks"][event]:
+            for hook in group["hooks"]:
+                if group.get("matcher") == matcher and hook["command"].endswith(f'/hooks/{name}"'):
+                    return group, hook
+        self.fail(f"no {event} {name} registration")
+
+    def check_with(self, data):
+        """Write data as settings.json, run check in both formats; return (exit code, JSON report, text)."""
+        write(self.config / "settings.json", json.dumps(data))
+        code, report = self.check_json()
+        text_code, out, err = self.run_cli("check")
+        self.assertEqual(text_code, code)
+        self.assertNotIn(SECRET, out + err + json.dumps(report))
+        self.assertNotIn("MARKERMATCHER", out + err + json.dumps(report))
+        return code, report, out
+
+    def problem(self, event, name, kind):
+        """The line check prints for a registration problem; the expected value comes from REGISTRATIONS."""
+        (matcher, extra), = [(m, x) for e, m, n, x in install.REGISTRATIONS if (e, n) == (event, name)]
+        expected = {"missing": None, "matcher": matcher, "sync": "async" if extra.get("async") else "sync"}[kind]
+        return f"{event} {name}: {kind}" + (f" (expected {expected})" if expected else "")
+
+    def assert_names(self, data, *names):
+        """check exits 1 and names exactly names (as '<Event> <hook>: <problem>') in text and JSON."""
+        code, report, out = self.check_with(data)
+        self.assertEqual((code, report["settings"], report["drift"]), (1, "not-registered", True))
+        self.assertEqual(report["registrations"], list(names))
+        for name in names:
+            self.assertIn(name, out)
+        return out
+
+    def test_setup_written_settings_are_ok_with_no_registration_problem(self):
+        self.set_up()
+        code, report = self.check_json()
+        self.assertEqual((code, report["settings"], report["registrations"]), (0, "ok", []))
+
+    def test_each_missing_registration_is_named(self):
+        data = self.set_up()
+        for event, matcher, name, _ in install.REGISTRATIONS:
+            with self.subTest(event=event, hook=name):
+                changed = json.loads(json.dumps(data))
+                group, _ = self.entry(changed, event, matcher, name)
+                changed["hooks"][event].remove(group)
+                out = self.assert_names(changed, f"{event} {name}: missing")
+                self.assertIn("python install.py setup", out)
+
+    def test_changed_matcher_is_named_and_left_to_the_user(self):
+        data = self.set_up()
+        for event, matcher, name, _ in install.REGISTRATIONS:
+            with self.subTest(event=event, hook=name):
+                changed = json.loads(json.dumps(data))
+                self.entry(changed, event, matcher, name)[0]["matcher"] = "MARKERMATCHER"
+                if matcher is None:  # UserPromptSubmit and Stop ignore the matcher field
+                    self.assertEqual(self.check_with(changed)[1]["settings"], "ok")
+                    continue
+                out = self.assert_names(changed, self.problem(event, name, "matcher"))
+                self.assertIn("by hand", out)
+                self.assertNotIn("python install.py setup", out)
+
+    def test_matcher_registrations_accept_the_forms_that_match_everything(self):
+        data = self.set_up()
+        for event, matcher, name, _ in install.REGISTRATIONS:
+            for form in ("*", "", ABSENT):
+                if matcher is None:
+                    continue
+                with self.subTest(event=event, hook=name, form=form):
+                    changed = json.loads(json.dumps(data))
+                    group = self.entry(changed, event, matcher, name)[0]
+                    del group["matcher"]
+                    if form is not ABSENT:
+                        group["matcher"] = form
+                    code, report, _ = self.check_with(changed)
+                    self.assertEqual((code, report["settings"], report["registrations"]), (0, "ok", []))
+
+    def test_registrations_without_a_matcher_accept_any_matcher_value(self):
+        data = self.set_up()
+        group = self.entry(data, "Stop", None, "native-event")[0]
+        for value in ("", "*", ".*", "Edit", ["Edit"], 3, None):
+            with self.subTest(value=value):
+                group["matcher"] = value
+                self.assertEqual(self.check_with(data)[1]["settings"], "ok")
+
+    def probe(self, matcher, groups, is_async=False):
+        """install._problem for a PostToolUse native-facts registration against groups, a list of
+        (group matcher or ABSENT, hook extras list)."""
+        command = f'bash "/x/{RUNTIME}/hooks/native-facts"'
+        built = []
+        for group_matcher, hooks in groups:
+            group = {} if group_matcher is ABSENT else {"matcher": group_matcher}
+            built.append({**group, "hooks": [{"type": "command", "command": command, **h} for h in hooks]})
+        return install._problem(built, matcher, "native-facts", is_async)
+
+    def test_matcher_coverage(self):
+        registered, plain, asyn = "Edit|Write|Bash", [{}], [{"async": True}]
+        cases = (
+            ("same", [(registered, plain)], None),
+            ("reordered", [("Bash|Write|Edit", plain)], None),
+            ("comma list with spaces", [("Edit , Write,Bash", plain)], None),
+            ("pipe list with spaces", [(" Edit | Write | Bash ", plain)], None),
+            ("one group per alternative", [("Edit", plain), ("Write", plain), ("Bash", plain)], None),
+            ("broader list", [("Edit|Write|Bash|Agent", plain)], None),
+            ("wildcard", [("*", plain)], None),
+            ("empty", [("", plain)], None),
+            ("absent", [(ABSENT, plain)], None),
+            ("narrower list", [("Edit|Write", plain)], "matcher"),
+            ("one tool", [("Edit", plain)], "matcher"),
+            ("regular expression", [("Edit.*", plain)], "matcher"),
+            ("anchored regular expression", [("^Edit$|^Write$|^Bash$", plain)], "matcher"),
+            ("regular expression beside a narrower list", [("Edit.*", plain), ("Edit", plain)], "matcher"),
+            ("list value", [(["Edit", "Write", "Bash"], plain)], "matcher"),
+            ("number value", [(3, plain)], "matcher"),
+            ("null value", [(None, plain)], "matcher"),
+            ("covered only by async and sync entries together",
+             [("Edit|Write", plain), ("Bash", asyn)], "sync"),
+        )
+        for label, groups, kind in cases:
+            with self.subTest(label):
+                self.assertEqual(self.probe(registered, groups), kind)
+        # An async registration applies the same union rule to the async entries.
+        self.assertIsNone(self.probe(registered, [("Edit|Write", asyn), ("Bash", asyn)], True))
+        self.assertEqual(self.probe(registered, [(registered, plain)], True), "sync")
+
+    def test_malformed_shapes_never_raise(self):
+        base = f"/x/{RUNTIME}/hooks/"
+        data = self.hooks({"command": base + "native-event"}, {"command": base + "native-facts"})
+        data["hooks"]["PreCompact"] = {"not": "a list"}
+        data["hooks"]["PostCompact"] = [{"matcher": "manual|auto", "hooks": "not a list"}, "not a group",
+                                        {"matcher": "manual|auto", "hooks": ["not a hook", 7, None]}]
+        # "true" and 1 are not True: they count as synchronous
+        data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["async"] = "true"
+        data["hooks"]["SessionStart"][0]["hooks"][0]["async"] = 1
+        del data["hooks"]["Stop"][0]["hooks"][0]["async"]  # the async Stop registration, now synchronous
+        data["hooks"]["Stop"][1]["hooks"][0]["async"] = 1  # the sync gate stays synchronous
+        code, report, _ = self.check_with(data)
+        self.assertEqual((code, report["settings"]), (1, "not-registered"))
+        self.assertEqual(report["registrations"], [
+            self.problem("PreCompact", "native-event", "missing"),
+            self.problem("PostCompact", "native-event", "missing"),
+            self.problem("Stop", "native-event", "sync")])
+
+    def test_flipped_sync_mode_is_named(self):
+        data = self.set_up()
+        for event, matcher, name, extra in install.REGISTRATIONS:
+            with self.subTest(event=event, hook=name):
+                changed = json.loads(json.dumps(data))
+                hook = self.entry(changed, event, matcher, name)[1]
+                if extra.get("async"):
+                    del hook["async"]
+                else:
+                    hook["async"] = True
+                out = self.assert_names(changed, self.problem(event, name, "sync"))
+                # setup replaces an async acceptance-gate entry with the sync one; it leaves the others alone
+                fixed_by_setup = name in install.SYNC_HOOKS
+                self.assertEqual("python install.py setup" in out, fixed_by_setup)
+                self.assertEqual("by hand" in out, not fixed_by_setup)
+
+    def test_exec_form_of_every_hook_is_ok(self):
+        data = self.set_up()
+        bash = "C:/Program Files/Git/bin/bash.exe"
+        for groups in data["hooks"].values():
+            for group in groups:
+                for hook in group["hooks"]:
+                    path = hook.pop("command")[len('bash "'):-1]
+                    hook.update(command=bash, args=[path.replace("/", "\\")])
+        code, report, _ = self.check_with(data)
+        self.assertEqual((code, report["settings"], report["registrations"]), (0, "ok", []))
+
+    def test_missing_and_mismatched_registrations_get_both_hints(self):
+        data = self.set_up()
+        group, _ = self.entry(data, "PreCompact", "manual|auto", "native-event")
+        data["hooks"]["PreCompact"].remove(group)
+        post = [m for e, m, n, _ in install.REGISTRATIONS if (e, n) == ("PostToolUse", "native-facts")][0]
+        self.entry(data, "PostToolUse", post, "native-facts")[0]["matcher"] = "MARKERMATCHER"
+        out = self.assert_names(data, self.problem("PreCompact", "native-event", "missing"),
+                                self.problem("PostToolUse", "native-facts", "matcher"))
+        self.assertIn("python install.py setup", out)
+        self.assertIn("by hand", out)
+
+    def test_missing_settings_file_names_every_registration(self):
+        (self.config / "settings.json").unlink()
+        code, report = self.check_json()
+        self.assertEqual(code, 1)
+        self.assertEqual(report["registrations"],
+                         [f"{event} {name}: missing" for event, _, name, _ in install.REGISTRATIONS])
+
+    def test_unreadable_settings_exit_one_and_say_so(self):
+        for text in ('{"env": {"TOKEN": "' + SECRET + '"', b"\xff\xfe\x00", "[1, 2]", "[" * 200000):
+            with self.subTest(text=text[:20]):
+                write(self.config / "settings.json", text)
+                code, report = self.check_json()
+                _, out, err = self.run_cli("check")
+                self.assertNotIn(SECRET, out + err)
+                self.assertNotIn("Traceback", err)
+                if text == "[1, 2]":  # readable, but nothing is registered
+                    self.assertEqual((code, report["settings"]), (1, "not-registered"))
+                    continue
+                self.assertEqual((code, report["settings"], report["drift"]), (1, "unknown", True))
+                self.assertEqual(report["registrations"], [])
+                self.assertEqual(self.run_cli("check")[0], 1)
+                self.assertIn("settings.json could not be read", out)
 
 
 class SetupTests(InstallCase):

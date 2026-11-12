@@ -18,7 +18,10 @@ A Python invocation is also documented in the operations guide (the SessionStart
 
 ## Save
 
-1. Run `status --workspace "<root>" --session "<id>"`. It is read-only and returns
+1. Run `status --workspace "<root>" --session "<id>"` when you do not have the
+   revision of your last record of this work (a session's first save, after a
+   compaction or resume, on a conflict, or for another work); otherwise reuse the
+   `revision` that record returned as `--expected`. Status is read-only and returns
    the expected revision, the current checkpoint and a complete payload template
    (recently edited files prefilled as sources when facts exist). Expected is
    per work_id: `other_works` lists the session's other works, and when the
@@ -36,7 +39,9 @@ A Python invocation is also documented in the operations guide (the SessionStart
 3. Write the payload to a file with the Write tool, then run one plain command:
    `record --workspace "<root>" --session "<id>" --expected "<revision-or-null>" --request-id "<unique-id>" [--join] --input "<payload-file>"`,
    using the `expected` value status returned for the payload's work_id (`null`
-   when there is none).
+   when there is none), or the `revision` your last record of that work returned:
+   record returns the new `revision`, which is the next `--expected` for the same
+   work_id.
    Worktree guards refuse heredocs, pipes, command substitution and line
    continuations; never interpolate payload into executable shell text.
    A revision conflict means rerun status (with `--work "<work_id>"`) and

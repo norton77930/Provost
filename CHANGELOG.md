@@ -134,6 +134,13 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- Handoff guidance steers to one `record` per save (#114). The SessionStart text,
+  both `native-facts` reminders, the operations guide and the handoff skill now
+  say that `record` returns the new `revision`, which is the next `--expected`
+  for the same work, so `status` is needed only for a session's first save, after
+  a compaction or resume, on a conflict, or for another work. `--input
+  <payload-file>` stays the form the texts steer to (worktree guards refuse
+  heredocs). No CLI or store behaviour changed.
 - Policy §4 ties the writer cap to isolation. Writers sharing one checkout keep
   normal cap 2, burst 3 (`max_writers`/`burst_writers`, now labelled "shared
   checkout writers" in the SessionStart context). Writers each in their own worktree
@@ -299,6 +306,17 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   double-checking. The `mech-executor` and `test-analyst` descriptions say the
   same. SessionStart warns when `CLAUDE_CODE_SUBAGENT_MODEL` is set, since it
   overrides every role's model frontmatter (idea from pilotfish).
+- `install.py check` requires every hook registration that `setup` writes (#113): all
+  eight entries, each with a matcher that covers the registered one and in the
+  registered sync mode. Before, it looked at four events and at neither matcher nor
+  sync mode, so a missing `UserPromptSubmit`, `PreCompact` or `PostCompact` entry read
+  as `ok`. Each unmet entry is named (`<Event> <hook>: missing`, `matcher (expected
+  ...)` or `sync (expected ...)`) in the text output and in a new `registrations` list
+  of `--json`; nothing from `settings.json` is printed. A matcher is judged by coverage
+  (absent, empty and `"*"` cover everything; lists may be reordered or split over
+  groups); regular expressions are not evaluated and are reported as `matcher`. A
+  `settings.json` that cannot be read is still `settings: unknown`, but now counts as
+  drift: `check` exits 1 instead of 0.
 
 ### Fixed
 
@@ -367,6 +385,14 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   roles (`Explore`, `claude-code-guide`, `plan`, `statusline-setup`) are skipped, a reworded
   description counts, and one role mention covers one dispatch. `warnings` is now the first
   key of the output, and the guidance says to read the output whole, not through `head`/`grep`.
+- Docs and defaults match the code again (#115). `ROADMAP.md`, `CONTRIBUTING.md` and the
+  pull request template no longer describe an `install.py` rollback command (an install
+  that fails restores itself; there is no command) or say that the installer never
+  touches `settings.json` (`setup` adds hook registrations); the role count is nine; both
+  READMEs list `digest`. The retired role names `implementer-high` and `implementer-deep`
+  are gone from the default `PROVOST_REMINDER_ROLES` of `hooks/native-facts` and from the
+  default `--roles` of `tools/dispatch-report.js` (pass `--roles` to analyse old
+  transcripts that used them).
 
 ### Removed
 

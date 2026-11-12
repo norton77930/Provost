@@ -349,7 +349,7 @@ class NativeFactsTests(FixtureCase):
 
     def test_writer_dispatch_sets_pending_dispatch(self):
         for role, agent_type, env in (("implementer-sonnet", None, None), ("mech-executor", "implementer", None),
-                                      ("implementer-deep", None, None),
+                                      ("implementer", None, None),
                                       (None, None, None), ("custom-writer", None, {"PROVOST_REMINDER_ROLES": "custom-writer"})):
             for flag in self.facts_dir.glob(SESSION + ".pending-*"):
                 flag.unlink()
@@ -377,6 +377,7 @@ class NativeFactsTests(FixtureCase):
         out = self.prompt()["hookSpecificOutput"]
         self.assertEqual(out["hookEventName"], "UserPromptSubmit")
         self.assertTrue(out["additionalContext"].startswith("Handoff: since the last record"))
+        self.assertIn("(record; status first only if you lack the last revision)", out["additionalContext"])
         self.assertEqual(self.flags(), ["pending-edit", "reminded"])
         self.assertEqual(self.prompt(), {})
         self.capture(event("Agent", {"subagent_type": "implementer"}))
@@ -420,6 +421,7 @@ class NativeFactsTests(FixtureCase):
         self.assertEqual(out["hookEventName"], "UserPromptSubmit")
         self.assertTrue(out["additionalContext"].startswith("Handoff: a subagent result just arrived"), text[:40])
         self.assertIn("record the result milestone", out["additionalContext"])
+        self.assertIn("(record; status first only if you lack the last revision)", out["additionalContext"])
 
     def test_handback_message_reminds_every_time(self):
         for text in (self.handback(), self.handback(), self.handback(wrapper=False), "\n  " + self.handback()):
