@@ -401,47 +401,61 @@ const keyOf = (id: string | undefined, now: number) => id || `agent-${now}-${++s
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const isOneOf = <T extends string>(v: unknown, values: readonly T[]): v is T =>
   typeof v === 'string' && (values as readonly string[]).includes(v)
-const isOptionalString = (v: unknown) => v === undefined || typeof v === 'string'
 const GATE_KINDS = ['machine', 'live', 'visual', 'review', 'human'] as const
 const GATE_STATUSES = ['pass', 'fail', 'pending'] as const
+const GATE_OPTIONAL = ['ranAt', 'evidence', 'source'] as const
+// A pass of these goes stale after an edit, so they may carry the `tree` stamp.
+const GATE_STALE_KINDS: readonly string[] = ['machine', 'live', 'visual']
 const TODO_STATUSES = ['pending', 'in_progress', 'completed'] as const
 
-// One acceptance file read against its schema; `task: null` when it does not fit.
-function parseGates(file: string, text: string): BoardGateFile {
+// One acceptance file read the way the Stop gate reads it (scripts/provost_runtime/acceptance.py load(),
+// the reference; mods/board/tests/fixtures/acceptance-cases.ts pins both on the same cases): `task: null`
+// when it does not fit the schema, `null` for a finished file (a valid top-level `closed` reason), which
+// the board leaves out. Two things the board does not do: judge staleness, and parse `ranAt`, which is
+// only checked to be a string (the Stop gate holds the ISO 8601 check). A leading BOM is stripped.
+function parseGates(file: string, text: string): BoardGateFile | null {
   const malformed: BoardGateFile = { file, task: null, gates: [] }
   let data: unknown
   try {
-    data = JSON.parse(text)
+    data = JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text)
   } catch {
     return malformed
   }
-  if (!isRecord(data) || typeof data.task !== 'string' || !Array.isArray(data.gates)) return malformed
+  if (!isRecord(data) || typeof data.task !== 'string') return malformed
+  if ('closed' in data && !(typeof data.closed === 'string' && data.closed.trim() !== '')) return malformed
+  if (!Array.isArray(data.gates)) return malformed
   const list: BoardGateFile['gates'] = []
   for (const g of data.gates as unknown[]) {
     if (
       !isRecord(g) ||
       typeof g.id !== 'string' ||
+      g.id.trim() === '' ||
+      !isOneOf(g.kind, GATE_KINDS) ||
       typeof g.check !== 'string' ||
-      typeof g.kind !== 'string' ||
       !isOneOf(g.status, GATE_STATUSES) ||
-      !isOptionalString(g.ranAt) ||
-      !isOptionalString(g.evidence)
+      !GATE_OPTIONAL.every(key => !(key in g) || typeof g[key] === 'string') ||
+      (GATE_STALE_KINDS.includes(g.kind) && 'tree' in g && typeof g.tree !== 'string') ||
+      (g.kind !== 'human' && ('files' in g || 'digest' in g) && !hasFilesAndDigest(g))
     ) {
       return malformed
     }
-    // A kind this board does not know is left out; the rest of the file still counts.
-    if (isOneOf(g.kind, GATE_KINDS)) {
-      list.push({
-        id: g.id,
-        kind: g.kind,
-        status: g.status,
-        check: g.check,
-        ...(typeof g.evidence === 'string' ? { evidence: g.evidence } : {}),
-      })
-    }
+    list.push({
+      id: g.id,
+      kind: g.kind,
+      status: g.status,
+      check: g.check,
+      ...(typeof g.evidence === 'string' ? { evidence: g.evidence } : {}),
+    })
   }
-  return { file, task: data.task, gates: list }
+  return 'closed' in data ? null : { file, task: data.task, gates: list }
 }
+
+// `files` (a non-empty list of non-empty paths) and `digest` (a string) go together, as `runtime digest` prints them.
+const hasFilesAndDigest = (g: Record<string, unknown>) =>
+  Array.isArray(g.files) &&
+  g.files.length > 0 &&
+  g.files.every(name => typeof name === 'string' && name !== '') &&
+  typeof g.digest === 'string'
 
 const isAnswered = (ran: ToolCallResult) => ran.deny === undefined && ran.isError !== true
 
@@ -543,13 +557,14 @@ async function pollOnce($: EngineInterface) {
   await sync($)
 }
 
-// The acceptance files the main loop wrote, by name. One that can no longer be read
-// is left out; none written shows nothing.
+// The acceptance files the main loop wrote, by name. One that can no longer be read, or that is
+// finished (it carries a `closed` reason), is left out; none written shows nothing.
 async function readGates($: EngineInterface) {
   const found: BoardGateFile[] = []
   for (const path of await loadOwned($)) {
     const text = await $.fs.read(path).catch(() => undefined)
-    if (typeof text === 'string') found.push(parseGates(baseName(path), text))
+    const parsed = typeof text === 'string' ? parseGates(baseName(path), text) : null
+    if (parsed !== null) found.push(parsed)
   }
   found.sort((a, b) => a.file.localeCompare(b.file))
   const before = await read($, gates)
