@@ -703,7 +703,7 @@ def handle_event(event, config_path, acceptance=False):
             runtime = str(PLUGIN / "hooks/runtime")
             info = ("\nRuntime: " + runtime
                     + "\nWorkspace: " + str(root.root) + "\nSession: " + session
-                    + "\nWriter limits: normal=" + str(cfg["max_writers"]) + ", burst=" + str(cfg["burst_writers"])
+                    + "\nShared-checkout writers: " + str(cfg["max_writers"]) + ", burst " + str(cfg["burst_writers"])
                     + "\nHandoff: " + ("enabled" if enabled else "disabled; do not record or snapshot")
                     + "\nSource guides: " + str(PLUGIN / "docs/compatibility")
                     + "\nUse doctor/status/record/snapshot/list/resume/changes/search/prune through the runtime."

@@ -57,7 +57,7 @@ Delegate for clear task boundaries, useful parallelism and context isolation. De
 
 **Forks** (`subagent_type: "fork"`, where offered) inherit the whole conversation and always run on main's model, so they are the costliest dispatch. Use one only for a background side job that needs this conversation's context and is not implementation, such as collating data the conversation already gathered; implementation slices still go to the implementer family, and a fork that writes files counts against the writer budget.
 
-Use the dependency and ownership checks below to dispatch ready implementation slices concurrently, with normal cap 2, conditional burst cap 3. A project single-writer rule overrides these personal limits — this is policy, not an engine lock. Brief a role precisely the first time: goal, constraints, the seam, the verification command. Read its final report as the deliverable and do not re-derive its findings. Expected TDD RED is normal. After one evidence-based correction leaves the same substantive blocker, choose an appropriate escalation or takeover. API interruptions are not failed implementation attempts: inspect worker state and partial work before retrying or taking over; never duplicate uncertain active work.
+Use the dependency and ownership checks below to dispatch ready implementation slices concurrently: writers that share one checkout have normal cap 2, conditional burst cap 3; writers each in their own worktree have no fixed cap once the conditions below hold. A project single-writer rule overrides these personal limits — this is policy, not an engine lock. Brief a role precisely the first time: goal, constraints, the seam, the verification command. Read its final report as the deliverable and do not re-derive its findings. Expected TDD RED is normal. After one evidence-based correction leaves the same substantive blocker, choose an appropriate escalation or takeover. API interruptions are not failed implementation attempts: inspect worker state and partial work before retrying or taking over; never duplicate uncertain active work.
 
 
 ### Parallel dispatch: readiness and ownership
@@ -77,9 +77,24 @@ Keep this in existing progress/handoff records when available; no new manifest.
   launch. Check lockfiles, generated outputs, shared interfaces, test databases, ports and build directories.
   Disjoint source files alone do not establish independence. Commands/tests that
   mutate the same outputs are writers of those resources too.
-- Normally use at most two writers. Use a third only when the third ready task is independent of every active writer,
+- Writers sharing one checkout: normally at most two. Use a third only when the third ready task is independent of every active writer,
   all required interfaces are settled, verification resources do not conflict, and
-  main records the reason before dispatch. Do not fill slots without useful work.
+  main records the reason before dispatch.
+- Writers each in their own worktree, created by main from the current integration
+  commit: no fixed cap when every task in the wave passed the checks above, files
+  several tasks would each create or edit (shared components, types, registries,
+  locale files) were landed first by one preparatory slice or given a single owner,
+  and the machine's shared resources (ports, test databases, memory) can hold the
+  wave. The wave is the ready tasks that pass these checks; a wave larger than six
+  states why in its dispatch decision.
+- Do not fill slots without useful work, in either case.
+- Full-suite runs load the whole machine even across worktrees: run at most one at
+  a time (two when the suite is known to be light), while workers keep running
+  focused tests in their own loop. A failure that appears only under parallel load
+  (timeouts, out-of-memory, timing tests) is load, not a regression: rerun it alone
+  before acting on it.
+- Main merges isolated branches into the integration branch one at a time and
+  verifies the merged state after each merge before taking the next.
 - Count all implementation writers: implementer, mech-executor, any other
   write-capable task, and main when implementing. Read-only exploration/review
   does not consume this writer budget. Respect any lower host limit.
