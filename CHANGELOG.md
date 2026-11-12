@@ -343,6 +343,13 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   first review instead of the re-review; when no review qualifies the latest review gets it
   as before. The transcripts root is `$CLAUDE_CONFIG_DIR/projects` when that variable is set
   (#126).
+- The startup menu's `work_states` checks each store directory for links once per call
+  instead of once per card, and no longer reads the first record of each session twice.
+  Every card and index file it reads is still checked, writes still check every path
+  component on every call, and the returned value is unchanged. The link check (`guard`)
+  now makes one `lstat` per path component instead of `is_symlink()` plus `lstat()`, with
+  the same result. On a copy of a store with 31 sessions and 197 cards, one call went from
+  5,523 stat calls to 691 and from 272 file reads to 241 (#133).
 
 ### Fixed
 

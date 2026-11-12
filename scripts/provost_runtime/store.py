@@ -107,7 +107,21 @@ def session_dir(root, session):
     return _base(as_workspace(root)) / "sessions" / digest(session)
 
 
-def guard(root, path):
+def guard(root, path, *, checked=None):
+    """Refuse a path that leaves root (OUTSIDE_WORKSPACE) or whose components below root include a
+    symlink, junction or other reparse point (LINKED_STORAGE). A missing component is skipped.
+
+    One lstat per component. is_symlink() is S_ISLNK of that same lstat and returns False on the
+    errors it ignores, after which the second lstat raised them anyway, so a link, a missing
+    component and any other OSError come out as they did with is_symlink() then lstat().
+
+    checked: only for one read-only call that reads many files below the same directories
+    (work_states), a set that call creates and drops when it returns. A directory found clean is
+    added and skipped for the later paths of that call; files are always checked. Trust assumption:
+    inside that one read-only call, a directory checked once is not re-checked for later files below
+    it, so a link that replaces it during the call is seen by the next call, not this one. Writers
+    never pass it: every write checks every component on every call.
+    """
     root, path = Path(root).absolute(), Path(path).absolute()
     try:
         parts = path.relative_to(root).parts
@@ -118,14 +132,17 @@ def guard(root, path):
     node = root
     for part in parts:
         node = node / part
-        if node.is_symlink():
-            raise StoreError("LINKED_STORAGE")
+        if checked is not None and node in checked:
+            continue
         try:
             info = node.lstat()
         except FileNotFoundError:
             continue
-        if getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
+        if stat.S_ISLNK(info.st_mode) or (getattr(info, "st_file_attributes", 0)
+                                          & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
             raise StoreError("LINKED_STORAGE")
+        if checked is not None and stat.S_ISDIR(info.st_mode):
+            checked.add(node)
 
 
 _HOME_CHECKED = {}
@@ -365,11 +382,14 @@ def _lock(root, directory):
         raise StoreError("WRITE_FAILED") from exc
 
 
-def _read(root, path, session, kind):
+def _read(root, path, session, kind, *, checked=None, loaded=None):
+    """The validated object at path. checked: see guard. loaded: path's parsed JSON object when the
+    caller has already read it (the record work_states reads to learn the session id); it is checked
+    like a fresh read but not read again."""
     ws = as_workspace(root)
-    guard(handoff_home(), path)
+    guard(handoff_home(), path, checked=checked)
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8")) if loaded is None else loaded
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise StoreError("CORRUPT_RECORD") from exc
     if (not isinstance(data, dict) or data.get("schema_version") not in (1, 2)
@@ -455,14 +475,15 @@ KEEP_SNAPSHOTS = 3
 CHAINS = {"record": "records", "snapshot": "snapshots"}
 
 
-def _horizon(directory):
+def _horizon(directory, *, checked=None):
     """Horizon entry of each collection from horizon.json; both None without the file.
 
     An entry is None, the newest trimmed id of the collection's one chain, or (records
     of a session with several trimmed work chains) a list of such ids, one per chain.
+    checked: see guard.
     """
     path = directory / "horizon.json"
-    guard(handoff_home(), path)
+    guard(handoff_home(), path, checked=checked)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -489,10 +510,11 @@ def _horizon_entry(ids):
     return None if not ids else ids[0] if len(ids) == 1 else sorted(ids)
 
 
-def _recency(directory):
-    """Sort key of a record chain head: newest recorded_at first; the current.json hint breaks ties."""
+def _recency(directory, *, checked=None):
+    """Sort key of a record chain head: newest recorded_at first; the current.json hint breaks ties.
+    checked: see guard."""
     index = directory / "current.json"
-    guard(handoff_home(), index)
+    guard(handoff_home(), index, checked=checked)
     hint = (_load(index) or {}).get("revision")
 
     def key(head):
@@ -504,8 +526,11 @@ def _recency(directory):
     return key
 
 
-def _collection(root, session, kind):
+def _collection(root, session, kind, *, checked=None, loaded=None):
     """(chains, trimmed, broken) of one session collection; validation is per work chain.
+
+    checked: see guard. loaded: {object id: parsed JSON object} of files the caller has already
+    read (work_states: the record it reads to learn the session id), used instead of reading them again.
 
     chains: the valid chains, lists of objects newest first, ordered by recency of their
     head. A snapshot collection has at most one chain; a record collection has one per
@@ -532,9 +557,10 @@ def _collection(root, session, kind):
     directory = session_dir(root, session)
     index = directory / ("current.json" if kind == "record" else "latest.json")
     collection = directory / CHAINS[kind]
-    guard(home, collection)
-    guard(home, index)
-    horizons = _horizon_ids(_horizon(directory)[CHAINS[kind]])
+    loaded = loaded or {}
+    guard(home, collection, checked=checked)
+    guard(home, index, checked=checked)
+    horizons = _horizon_ids(_horizon(directory, checked=checked)[CHAINS[kind]])
     id_key = "revision" if kind == "record" else "snapshot_id"
     parent_key = "parent_record" if kind == "record" else "parent_snapshot"
     per_chain = kind == "record"
@@ -547,11 +573,11 @@ def _collection(root, session, kind):
             if not ID.fullmatch(path.stem):
                 continue
             try:
-                objects[path.stem] = _read(root, path, session, kind)
+                objects[path.stem] = _read(root, path, session, kind, checked=checked, loaded=loaded.get(path.stem))
             except StoreError as exc:
                 if not per_chain or str(exc) in ("LINKED_STORAGE", "OUTSIDE_WORKSPACE"):
                     raise
-                bad[path.stem] = (str(exc), _load(path) or {})
+                bad[path.stem] = (str(exc), (loaded[path.stem] if path.stem in loaded else _load(path)) or {})
     trimmed = {}
     for horizon in horizons:
         trimmed[horizon] = [horizon]
@@ -631,7 +657,7 @@ def _collection(root, session, kind):
             broken.setdefault(name, "AMBIGUOUS_CHAIN")
     chains = [chain for chain in candidates if chain[0]["payload"]["work_id"] not in broken]
     if len(chains) > 1:
-        recency = _recency(directory)
+        recency = _recency(directory, checked=checked)
         chains.sort(key=lambda chain: recency(chain[0]), reverse=True)
     return chains, trimmed, broken
 
@@ -744,18 +770,23 @@ def work_states(root):
     all of a session's chains are broken); a session dir whose cards cannot be read at all (a
     session-wide failure) is skipped and listed with its error code; a dir without records
     holds no cards and is not listed.
+
+    Each directory below the store home is checked for links once in this call (guard's
+    `checked`, a set local to the call), and the record read to learn a session id is handed to
+    _collection instead of being read again.
     """
     ws = as_workspace(root)
     home = handoff_home()
     base = _base(ws) / "sessions"
-    guard(home, base)
+    checked = set()  # directories found clean in this call only; see guard for the trust assumption
+    guard(home, base, checked=checked)
     works, skipped, broken = {}, [], []
     for folder in (sorted(base.iterdir()) if base.is_dir() else ()):
         if not ID.fullmatch(folder.name):
             continue
         try:
-            guard(home, folder / "records")
-            session = None
+            guard(home, folder / "records", checked=checked)
+            session = first = None
             for path in sorted((folder / "records").glob("*.json")) if (folder / "records").is_dir() else ():
                 if ID.fullmatch(path.stem):
                     raw = _load(path)
@@ -764,10 +795,11 @@ def work_states(root):
                     session = raw.get("session_id")
                     if not isinstance(session, str) or digest(session) != folder.name:
                         raise StoreError("RECORD_IDENTITY_MISMATCH")
+                    first = {path.stem: raw}
                     break
             if session is None:
                 continue
-            chains, _, faults = _collection(ws, session, "record")
+            chains, _, faults = _collection(ws, session, "record", checked=checked, loaded=first)
             heads = [chain[0] for chain in chains]
             broken.extend({"session": session, "work_id": work, "error": code} for work, code in sorted(faults.items()))
         except (StoreError, OSError) as exc:
