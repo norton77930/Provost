@@ -43,9 +43,29 @@ if [[ -z "$config_file" ]]; then
     config_file="${HOME}/.claude/provost/config.json"
     _abs="${BASH_SOURCE[0]//\\//}"
     [[ "$_abs" == /* || "$_abs" == [A-Za-z]:/* ]] || _abs="${PWD}/${_abs}"
-    _hooks="${_abs%/*}" _name="${_hooks%/*}" _runtime="${_name%/*}"
-    if [[ "${_hooks##*/}" == hooks && "${_runtime##*/}" == runtime && "$_runtime" == ?*/* ]]; then
-        config_file="${_runtime%/*}/config.json"
+    # Collapse . and .. segments lexically (links stay unresolved); a .. above the root
+    # leaves _abs empty, which counts as not installed. Parameter expansion only.
+    _pre="" _rest="$_abs" _out="" _bad=""
+    if [[ "$_rest" == [A-Za-z]:/* ]]; then _pre="${_rest:0:2}"; _rest="${_rest:2}"; fi
+    while [[ -n "$_rest" ]]; do
+        _seg="${_rest%%/*}"
+        case "$_rest" in */*) _rest="${_rest#*/}" ;; *) _rest="" ;; esac
+        case "$_seg" in
+            "" | .) ;;
+            ..)
+                if [[ -z "$_out" ]]; then _bad=1; break; fi
+                _out="${_out%/*}"
+                ;;
+            *) _out="${_out}/${_seg}" ;;
+        esac
+    done
+    if [[ -n "$_bad" ]]; then _abs=""; else _abs="${_pre}${_out}"; fi
+    _hooks="${_abs%/*}" _name="${_hooks%/*}" _runtime="${_name%/*}" _prov="${_runtime%/*}"
+    # The provost directory needs a name of its own: not empty, not a bare drive. (The Git Bash
+    # spelling /c of a drive root is not rejected: on Linux /c is an ordinary directory.)
+    if [[ "${_hooks##*/}" == hooks && "${_runtime##*/}" == runtime && "$_runtime" == */* \
+            && -n "$_prov" && ! "$_prov" =~ ^[A-Za-z]:$ ]]; then
+        config_file="${_prov}/config.json"
     fi
 fi
 config=""

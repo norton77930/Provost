@@ -13,13 +13,14 @@ class ConfigError(ValueError):
 def installed_provost_dir(module_file=None):
     """The provost directory this runtime was installed in, else None.
 
-    Lexical, from the file's own path (links are not resolved, no process starts):
-    <provost dir>/runtime/<name>/scripts/provost_runtime/config.py. hooks/native-event,
-    hooks/native-facts and hooks/_python.sh read the same layout from their own paths.
+    Lexical, from the file's own path with . and .. collapsed (links are not resolved, no
+    process starts): <provost dir>/runtime/<name>/scripts/provost_runtime/config.py.
+    hooks/native-event, hooks/native-facts and hooks/_python.sh read the same layout from
+    their own paths. A filesystem or drive root is never the provost directory.
     """
-    path = Path(module_file or __file__).absolute()
-    if path.parent.name == "provost_runtime" and path.parents[1].name == "scripts" and path.parents[3].name == "runtime":
-        return path.parents[4]
+    parts = Path(os.path.abspath(module_file or __file__)).parts
+    if len(parts) >= 7 and parts[-2] == "provost_runtime" and parts[-3] == "scripts" and parts[-5] == "runtime":
+        return Path(*parts[:-5])
     return None
 
 

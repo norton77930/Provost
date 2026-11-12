@@ -40,6 +40,19 @@ class InstalledShapeTests(unittest.TestCase):
             with self.subTest(parts):
                 self.assertIsNone(config.installed_provost_dir(self.tmp.joinpath("p", *parts)))
 
+    def test_paths_too_short_for_the_layout_are_not_installed(self):
+        for text in ("/scripts/provost_runtime/config.py", "/provost_runtime/config.py", "/config.py",
+                     "/runtime/n/scripts/provost_runtime/config.py",  # the provost directory would be the root
+                     "/p/runtime/n/provost_runtime/config.py", "/p/runtime/n/scripts/config.py",
+                     "/p/n/scripts/provost_runtime/config.py"):
+            with self.subTest(text):
+                self.assertIsNone(config.installed_provost_dir(text))
+
+    def test_dot_and_dotdot_segments_are_collapsed(self):
+        provost = self.tmp / "p"
+        spelled = provost / "runtime" / "n" / "scripts" / ".." / "scripts" / "." / "provost_runtime" / "config.py"
+        self.assertEqual(config.installed_provost_dir(spelled), provost)
+
     def test_it_reads_this_modules_own_path_by_default(self):
         self.assertIsNone(config.installed_provost_dir())  # the tests import the checkout
         with mock.patch.object(config, "__file__", str(installed_file(self.tmp / "p"))):
@@ -176,6 +189,84 @@ class InstalledHooksTests(unittest.TestCase):
         rows = (facts / "s1.jsonl").read_text(encoding="utf-8").splitlines()
         self.assertEqual([json.loads(r)["p"] for r in rows], ["/repo/a.py"])
         self.assertHomeUntouched()
+
+
+class SpellingTests(unittest.TestCase):
+    """One install for the class: the same script reached through different spellings of its path."""
+
+    @classmethod
+    def setUpClass(cls):
+        tmp = tempfile.TemporaryDirectory(prefix="provost-spelling-")
+        cls.addClassCleanup(tmp.cleanup)
+        cls.tmp = Path(tmp.name)
+        cls.home = cls.tmp / "home"
+        cls.home.mkdir()
+        cls.workspace = cls.tmp / "workspace"
+        cls.workspace.mkdir()
+        cls.config_dir = cls.tmp / "claude"
+        cls.provost = cls.config_dir / "provost"
+        cls.env = {k: v for k, v in os.environ.items() if not k.startswith("PROVOST_")}
+        cls.env.update(HOME=str(cls.home), USERPROFILE=str(cls.home), PYTHONDONTWRITEBYTECODE="1")
+        for name in ("CLAUDE_CONFIG_DIR", "GIT_DIR", "GIT_WORK_TREE"):
+            cls.env.pop(name, None)
+        result = subprocess.run([sys.executable, "-B", str(REPO / "install.py"), "setup", "--config-dir",
+                                 str(cls.config_dir)], capture_output=True, text=True, encoding="utf-8",
+                                env=cls.env, timeout=120)
+        assert result.returncode == 0, result.stdout + result.stderr
+        cls.runtime = cls.provost / "runtime" / "native-pilot-v1"
+
+    def run_hook(self, script, event, cwd):
+        result = subprocess.run([BASH, script], input=json.dumps(event), text=True, capture_output=True,
+                                encoding="utf-8", env=self.env, timeout=60, cwd=cwd)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def assertHomeUntouched(self):
+        self.assertEqual(list(self.home.rglob("*")), [])
+
+    def session_start(self, script, cwd, session):
+        result = self.run_hook(script, {"hook_event_name": "SessionStart", "source": "startup",
+                                        "session_id": session, "cwd": str(self.workspace)}, cwd)
+        self.assertIn("Native handoff runtime", result["hookSpecificOutput"]["additionalContext"], script)
+        self.assertTrue((self.provost / "cache" / "facts" / f"{session}.enabled").exists(), script)
+        self.assertHomeUntouched()
+
+    def test_native_event_spellings(self):
+        hooks, scripts = self.runtime / "hooks", self.runtime / "scripts"
+        for n, (script, cwd) in enumerate((("native-event", hooks), ("./native-event", hooks),
+                                           ("../hooks/native-event", scripts), ("hooks/native-event", self.runtime),
+                                           ("./../hooks/./native-event", scripts))):
+            with self.subTest(script=script):
+                self.session_start(script, cwd, f"spell-{n}")
+
+    def test_interpreter_cache_follows_a_dotdot_spelling(self):
+        cache = self.provost / "cache" / "python"
+        cache.unlink(missing_ok=True)
+        self.session_start("../hooks/native-event", self.runtime / "scripts", "spell-cache")
+        self.assertTrue(cache.exists())
+
+    def test_native_facts_spellings(self):
+        facts = self.provost / "cache" / "facts"
+        for n, (script, cwd) in enumerate((("./native-facts", self.runtime / "hooks"),
+                                           ("../hooks/native-facts", self.runtime / "scripts"))):
+            with self.subTest(script=script):
+                session = f"facts-{n}"
+                facts.mkdir(parents=True, exist_ok=True)
+                (facts / f"{session}.enabled").touch()
+                event = {"session_id": session, "cwd": str(self.workspace), "hook_event_name": "PostToolUse",
+                         "tool_name": "Edit", "tool_input": {"file_path": "/repo/a.py"}, "tool_response": {}}
+                self.assertEqual(self.run_hook(script, event, cwd), {})
+                self.assertEqual(len((facts / f"{session}.jsonl").read_text(encoding="utf-8").splitlines()), 1)
+                self.assertHomeUntouched()
+
+    @unittest.skipUnless(os.name == "nt", "Windows path spellings")
+    def test_windows_spellings_of_the_absolute_path(self):
+        script = self.runtime / "hooks" / "native-event"
+        drive = str(script)[0].lower()
+        spellings = (str(script), script.as_posix(), f"/{drive}/" + script.as_posix()[3:])
+        for n, text in enumerate(spellings):
+            with self.subTest(text):
+                self.session_start(text, self.workspace, f"win-{n}")
 
 
 if __name__ == "__main__":
