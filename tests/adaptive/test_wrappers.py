@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import unittest
@@ -18,6 +19,21 @@ class WrapperTests(FixtureCase):
                                 capture_output=True, text=True, encoding="utf-8", env=env, cwd=project, timeout=60)
         self.assertFalse(marker.exists(), result.stderr)
         self.assertNotEqual(result.returncode, 3)
+
+    def test_record_through_the_wrapper_takes_the_payload_on_stdin_and_returns_the_next_expected(self):
+        from provost_runtime.hooks import bind
+        bind(self.root, "s1", {})
+        def record(expected, request_id, next_step):
+            result = self.run_bash(REPO / "hooks" / "runtime", "record", "--workspace", str(self.root), "--session", "s1",
+                                   "--expected", expected, "--request-id", request_id,
+                                   stdin=json.dumps(self.payload(next_step)))
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return json.loads(result.stdout)
+        first = record("null", "r1", "first")
+        self.assertRegex(first["revision"], r"\S+")
+        second = record(first["revision"], "r2", "second")  # no status call in between
+        self.assertNotEqual(second["revision"], first["revision"])
+        self.assertEqual(second["payload"]["next"], "second")
 
 
 class InterpreterCacheTests(FixtureCase):

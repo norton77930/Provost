@@ -134,6 +134,13 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- Handoff guidance steers to one `record` per save (#114). The SessionStart text,
+  both `native-facts` reminders, the operations guide and the handoff skill now
+  say that `record` returns the new `revision`, which is the next `--expected`
+  for the same work, so `status` is needed only for a session's first save, after
+  a compaction or resume, on a conflict, or for another work. `--input
+  <payload-file>` stays the form the texts steer to (worktree guards refuse
+  heredocs). No CLI or store behaviour changed.
 - Policy §4 ties the writer cap to isolation. Writers sharing one checkout keep
   normal cap 2, burst 3 (`max_writers`/`burst_writers`, now labelled "shared
   checkout writers" in the SessionStart context). Writers each in their own worktree
