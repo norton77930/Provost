@@ -134,6 +134,12 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- `code-reviewer` ends a report that has an `Important` finding with one line
+  that shows the `Dispositions:` answer the caller owes, naming that report's
+  ids (#126). Measured over 2026-10-31 to 2026-11-12, 39 of 50 reviews with
+  `Important` findings have no `Dispositions:` line the report tool can read,
+  so the reminder now arrives with the report instead of resting on the policy
+  text alone.
 - CI covers more (#121): the runtime tests also run on Python 3.12 (one extra
   job on Ubuntu), the `mods` job installs a pinned Claude Code CLI version
   instead of the latest, and it runs `tools/tests/*.test.js` with `node --test`.
