@@ -18,6 +18,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -212,15 +213,16 @@ def settings_status(config):
     not-registered: one is missing or differs (or the file is absent, or has no hooks);
     async-duplicate: all are present, but an async acceptance-gate entry runs beside the sync one;
     unknown: the file cannot be read or is not valid JSON.
-    problems: (event, hook, kind, by_hand) per registration that is not satisfied, in REGISTRATIONS order;
-    kind is missing (no entry on the event runs the hook), matcher (none in a group with the registered
-    matcher) or sync (none with the registered sync mode); by_hand is True when setup would leave it as it is.
+    problems: (event, hook, kind, by_hand, expected) per registration that is not satisfied, in REGISTRATIONS
+    order; kind is missing, matcher or sync (see _problem); by_hand is True when setup would leave it as it
+    is; expected is the registered matcher or sync mode ("sync" or "async") for matcher and sync, taken from
+    REGISTRATIONS, never from the file, and None for missing.
     Only hook entries are inspected; nothing from the file is printed."""
     try:
         data = json.loads((config / SETTINGS).read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         data = None  # nothing is registered without the file; setup creates it
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):  # RecursionError: absurdly nested JSON
         return "unknown", []
     hooks = data.get("hooks") if isinstance(data, dict) else None
     hooks = hooks if isinstance(hooks, dict) else {}
@@ -228,7 +230,8 @@ def settings_status(config):
     for event, matcher, name, extra in REGISTRATIONS:
         kind = _problem(hooks.get(event), matcher, name, extra.get("async") is True)
         if kind:
-            problems.append((event, name, kind, _registered(hooks.get(event), name)))
+            expected = {"missing": None, "matcher": matcher, "sync": "async" if extra.get("async") else "sync"}[kind]
+            problems.append((event, name, kind, _registered(hooks.get(event), name), expected))
     if problems:
         return "not-registered", problems
     if any(list(_async_gates(hooks.get(event), name)) for event, _, name, extra in REGISTRATIONS
@@ -238,18 +241,48 @@ def settings_status(config):
 
 
 def _problem(groups, matcher, name, is_async):
-    """None when groups has an entry that runs hook <name> in a group with this matcher and sync mode,
-    else "missing", "matcher" or "sync" (the first requirement that no entry meets)."""
+    """None when groups satisfies the registration (matcher, hook <name>, is_async), else the first of
+    "missing" (no entry runs the hook), "matcher" or "sync" (see below) that applies.
+    A registration with matcher None (UserPromptSubmit, Stop: the event ignores the field) accepts any
+    group matcher. Otherwise the alternatives of the registered matcher (split on "|") must all be covered
+    by the union of what the matchers of the groups that run the hook cover: an absent, empty or "*"
+    matcher covers everything; a string of only letters, digits, _, -, spaces, "," and "|" covers its
+    alternatives (split on "|" and ","); any other value, such as a regular expression, covers nothing,
+    because check does not evaluate regular expressions (it reports "matcher" and leaves it to the user).
+    "sync" means the matcher is covered, but not by the entries that have the registered sync mode
+    ("async": true exactly when is_async)."""
     runs = [(group, hook) for group in groups if isinstance(group, dict) and isinstance(group.get("hooks"), list)
             for hook in group["hooks"]
             if isinstance(hook, dict) and any(_ends_with(text, f"{RUNTIME}/hooks/{name}") for text in _strings(hook))
             ] if isinstance(groups, list) else []
     if not runs:
         return "missing"
-    runs = [(g, h) for g, h in runs if g.get("matcher", "") == (matcher or "")]
-    if not runs:
+    wanted = set(matcher.split("|")) if matcher is not None else set()
+
+    def covered(pairs):
+        union = set()
+        for group, _ in pairs:
+            covers = _covers(group.get("matcher", ""))
+            if covers is None:
+                return True
+            union |= covers
+        return wanted <= union
+
+    if not covered(runs):
         return "matcher"
-    return None if any((h.get("async") is True) == is_async for _, h in runs) else "sync"
+    moded = [(g, h) for g, h in runs if (h.get("async") is True) == is_async]
+    return None if moded and covered(moded) else "sync"
+
+
+def _covers(matcher):
+    """None when a group matcher matches everything, else the set of tool or source names it lists."""
+    if not isinstance(matcher, str):
+        return set()
+    if matcher in ("", "*"):
+        return None
+    if re.fullmatch(r"[A-Za-z0-9_\- ,|]*", matcher):
+        return {part.strip() for part in re.split(r"[|,]", matcher) if part.strip()}
+    return set()
 
 
 def _registered(groups, name):
@@ -638,7 +671,8 @@ def main(argv=None):
             unreadable = settings == "unknown"
             unregistered = settings in ("not-registered", "async-duplicate")
             drift = bool(changes) or unregistered or unreadable
-            registrations = [f"{event} {name}: {kind}" for event, name, kind, _ in problems]
+            registrations = [f"{event} {name}: {kind}" + (f" (expected {expected})" if expected else "")
+                             for event, name, kind, _, expected in problems]
             payload = {"command": "check", "drift": drift, "settings": settings, "registrations": registrations,
                        "extra": extra, "targets": [{"path": t.rel, "status": t.status} for t in targets]}
             lines = [f"{t.status:<9} {t.rel}" for t in targets] + [f"{'extra':<9} {rel}" for rel in extra]

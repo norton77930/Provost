@@ -20,6 +20,7 @@ SPEC.loader.exec_module(install)
 RUNTIME = "provost/runtime/native-pilot-v1"
 BEGIN, END = "<!-- claudex-native:begin -->", "<!-- claudex-native:end -->"
 SECRET = "ghp_SECRETVALUE0123456789"
+ABSENT = object()  # a hook group without a "matcher" key
 
 
 def write(path, data):
@@ -838,6 +839,12 @@ class SettingsTests(InstallCase):
         self.assertNotIn("MARKERMATCHER", out + err + json.dumps(report))
         return code, report, out
 
+    def problem(self, event, name, kind):
+        """The line check prints for a registration problem; the expected value comes from REGISTRATIONS."""
+        (matcher, extra), = [(m, x) for e, m, n, x in install.REGISTRATIONS if (e, n) == (event, name)]
+        expected = {"missing": None, "matcher": matcher, "sync": "async" if extra.get("async") else "sync"}[kind]
+        return f"{event} {name}: {kind}" + (f" (expected {expected})" if expected else "")
+
     def assert_names(self, data, *names):
         """check exits 1 and names exactly names (as '<Event> <hook>: <problem>') in text and JSON."""
         code, report, out = self.check_with(data)
@@ -868,19 +875,93 @@ class SettingsTests(InstallCase):
             with self.subTest(event=event, hook=name):
                 changed = json.loads(json.dumps(data))
                 self.entry(changed, event, matcher, name)[0]["matcher"] = "MARKERMATCHER"
-                out = self.assert_names(changed, f"{event} {name}: matcher")
+                if matcher is None:  # UserPromptSubmit and Stop ignore the matcher field
+                    self.assertEqual(self.check_with(changed)[1]["settings"], "ok")
+                    continue
+                out = self.assert_names(changed, self.problem(event, name, "matcher"))
                 self.assertIn("by hand", out)
                 self.assertNotIn("python install.py setup", out)
 
-    def test_matcher_is_compared_exactly_but_an_empty_one_means_none(self):
+    def test_matcher_registrations_accept_the_forms_that_match_everything(self):
         data = self.set_up()
-        group, _ = self.entry(data, "Stop", None, "native-event")
-        group["matcher"] = ""
-        self.assertEqual(self.check_with(data)[1]["settings"], "ok")
-        group["matcher"] = ".*"
-        self.assert_names(data, "Stop native-event: matcher")
-        group["matcher"] = None
-        self.assert_names(data, "Stop native-event: matcher")
+        for event, matcher, name, _ in install.REGISTRATIONS:
+            for form in ("*", "", ABSENT):
+                if matcher is None:
+                    continue
+                with self.subTest(event=event, hook=name, form=form):
+                    changed = json.loads(json.dumps(data))
+                    group = self.entry(changed, event, matcher, name)[0]
+                    del group["matcher"]
+                    if form is not ABSENT:
+                        group["matcher"] = form
+                    code, report, _ = self.check_with(changed)
+                    self.assertEqual((code, report["settings"], report["registrations"]), (0, "ok", []))
+
+    def test_registrations_without_a_matcher_accept_any_matcher_value(self):
+        data = self.set_up()
+        group = self.entry(data, "Stop", None, "native-event")[0]
+        for value in ("", "*", ".*", "Edit", ["Edit"], 3, None):
+            with self.subTest(value=value):
+                group["matcher"] = value
+                self.assertEqual(self.check_with(data)[1]["settings"], "ok")
+
+    def probe(self, matcher, groups, is_async=False):
+        """install._problem for a PostToolUse native-facts registration against groups, a list of
+        (group matcher or ABSENT, hook extras list)."""
+        command = f'bash "/x/{RUNTIME}/hooks/native-facts"'
+        built = []
+        for group_matcher, hooks in groups:
+            group = {} if group_matcher is ABSENT else {"matcher": group_matcher}
+            built.append({**group, "hooks": [{"type": "command", "command": command, **h} for h in hooks]})
+        return install._problem(built, matcher, "native-facts", is_async)
+
+    def test_matcher_coverage(self):
+        registered, plain, asyn = "Edit|Write|Bash", [{}], [{"async": True}]
+        cases = (
+            ("same", [(registered, plain)], None),
+            ("reordered", [("Bash|Write|Edit", plain)], None),
+            ("comma list with spaces", [("Edit , Write,Bash", plain)], None),
+            ("pipe list with spaces", [(" Edit | Write | Bash ", plain)], None),
+            ("one group per alternative", [("Edit", plain), ("Write", plain), ("Bash", plain)], None),
+            ("broader list", [("Edit|Write|Bash|Agent", plain)], None),
+            ("wildcard", [("*", plain)], None),
+            ("empty", [("", plain)], None),
+            ("absent", [(ABSENT, plain)], None),
+            ("narrower list", [("Edit|Write", plain)], "matcher"),
+            ("one tool", [("Edit", plain)], "matcher"),
+            ("regular expression", [("Edit.*", plain)], "matcher"),
+            ("anchored regular expression", [("^Edit$|^Write$|^Bash$", plain)], "matcher"),
+            ("regular expression beside a narrower list", [("Edit.*", plain), ("Edit", plain)], "matcher"),
+            ("list value", [(["Edit", "Write", "Bash"], plain)], "matcher"),
+            ("number value", [(3, plain)], "matcher"),
+            ("null value", [(None, plain)], "matcher"),
+            ("covered only by async and sync entries together",
+             [("Edit|Write", plain), ("Bash", asyn)], "sync"),
+        )
+        for label, groups, kind in cases:
+            with self.subTest(label):
+                self.assertEqual(self.probe(registered, groups), kind)
+        # An async registration applies the same union rule to the async entries.
+        self.assertIsNone(self.probe(registered, [("Edit|Write", asyn), ("Bash", asyn)], True))
+        self.assertEqual(self.probe(registered, [(registered, plain)], True), "sync")
+
+    def test_malformed_shapes_never_raise(self):
+        base = f"/x/{RUNTIME}/hooks/"
+        data = self.hooks({"command": base + "native-event"}, {"command": base + "native-facts"})
+        data["hooks"]["PreCompact"] = {"not": "a list"}
+        data["hooks"]["PostCompact"] = [{"matcher": "manual|auto", "hooks": "not a list"}, "not a group",
+                                        {"matcher": "manual|auto", "hooks": ["not a hook", 7, None]}]
+        # "true" and 1 are not True: they count as synchronous
+        data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["async"] = "true"
+        data["hooks"]["SessionStart"][0]["hooks"][0]["async"] = 1
+        del data["hooks"]["Stop"][0]["hooks"][0]["async"]  # the async Stop registration, now synchronous
+        data["hooks"]["Stop"][1]["hooks"][0]["async"] = 1  # the sync gate stays synchronous
+        code, report, _ = self.check_with(data)
+        self.assertEqual((code, report["settings"]), (1, "not-registered"))
+        self.assertEqual(report["registrations"], [
+            self.problem("PreCompact", "native-event", "missing"),
+            self.problem("PostCompact", "native-event", "missing"),
+            self.problem("Stop", "native-event", "sync")])
 
     def test_flipped_sync_mode_is_named(self):
         data = self.set_up()
@@ -892,7 +973,7 @@ class SettingsTests(InstallCase):
                     del hook["async"]
                 else:
                     hook["async"] = True
-                out = self.assert_names(changed, f"{event} {name}: sync")
+                out = self.assert_names(changed, self.problem(event, name, "sync"))
                 # setup replaces an async acceptance-gate entry with the sync one; it leaves the others alone
                 fixed_by_setup = name in install.SYNC_HOOKS
                 self.assertEqual("python install.py setup" in out, fixed_by_setup)
@@ -913,8 +994,10 @@ class SettingsTests(InstallCase):
         data = self.set_up()
         group, _ = self.entry(data, "PreCompact", "manual|auto", "native-event")
         data["hooks"]["PreCompact"].remove(group)
-        self.entry(data, "Stop", None, "native-event")[0]["matcher"] = "MARKERMATCHER"
-        out = self.assert_names(data, "PreCompact native-event: missing", "Stop native-event: matcher")
+        post = [m for e, m, n, _ in install.REGISTRATIONS if (e, n) == ("PostToolUse", "native-facts")][0]
+        self.entry(data, "PostToolUse", post, "native-facts")[0]["matcher"] = "MARKERMATCHER"
+        out = self.assert_names(data, self.problem("PreCompact", "native-event", "missing"),
+                                self.problem("PostToolUse", "native-facts", "matcher"))
         self.assertIn("python install.py setup", out)
         self.assertIn("by hand", out)
 
@@ -926,12 +1009,13 @@ class SettingsTests(InstallCase):
                          [f"{event} {name}: missing" for event, _, name, _ in install.REGISTRATIONS])
 
     def test_unreadable_settings_exit_one_and_say_so(self):
-        for text in ('{"env": {"TOKEN": "' + SECRET + '"', b"\xff\xfe\x00", "[1, 2]"):
-            with self.subTest(text=text):
+        for text in ('{"env": {"TOKEN": "' + SECRET + '"', b"\xff\xfe\x00", "[1, 2]", "[" * 200000):
+            with self.subTest(text=text[:20]):
                 write(self.config / "settings.json", text)
                 code, report = self.check_json()
                 _, out, err = self.run_cli("check")
                 self.assertNotIn(SECRET, out + err)
+                self.assertNotIn("Traceback", err)
                 if text == "[1, 2]":  # readable, but nothing is registered
                     self.assertEqual((code, report["settings"]), (1, "not-registered"))
                     continue
