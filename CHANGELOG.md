@@ -317,6 +317,14 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   groups); regular expressions are not evaluated and are reported as `matcher`. A
   `settings.json` that cannot be read is still `settings: unknown`, but now counts as
   drift: `check` exits 1 instead of 0.
+- Facts fold: one git call fewer per repository (#123). The branch and the
+  uncommitted entries come from one `git status --porcelain=v1 -z --branch` call,
+  so `rev-parse --abbrev-ref HEAD` is gone and a repository costs two child
+  processes (status, log) instead of three. Stored facts are unchanged for a branch
+  with or without upstream and for a detached HEAD (`HEAD`). A repository without
+  commits now stores its unborn branch name instead of keeping the previous value;
+  its `error` still reads `GIT_FAILED`, from the log step. Branch and uncommitted
+  entries now fail together and keep their previous values together.
 
 ### Fixed
 
