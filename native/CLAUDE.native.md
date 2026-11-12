@@ -192,8 +192,10 @@ If `code-reviewer` fails with an error that explicitly names Fable quota
 exhaustion, confirm the failed run has stopped, tell the user, and re-dispatch
 the same review (same scope, same code state) with an `opus` model override.
 Other failures — a bare 429, network errors, shared account limits, refusals —
-are reported as blockers, not routed around. `architecture-reviewer` has no
-fallback without a separate user decision.
+get no model override: retry the same review once a transient cause clears (a
+network error, a 429 after its wait), and report it as a blocker when the cause
+persists or the run was refused. `architecture-reviewer` has no fallback without
+a separate user decision.
 
 Every implementation brief names sources, deliverable, acceptance, dependencies
 (unknown is not none), permitted/excluded paths, shared resources and report format.

@@ -134,6 +134,14 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- Policy §10 says what to do when `code-reviewer` fails for a reason other than
+  Fable quota exhaustion: no model override, but retry the same review once a
+  transient cause clears (a network error, a 429 after its wait), and report a
+  blocker only when the cause persists or the run was refused. The old wording,
+  "reported as blockers, not routed around", could be read as "never retry". The
+  "Prompting Claude Fable 5.2" guide says the model follows such cautions
+  closely and stops retrying, which matters in the long unattended runs §10 now
+  puts Fable on.
 - Policy §10 suggests Fable at `high` instead of `medium` for long unattended
   runs. The "Prompting Claude Fable 5.2" guide says the model stops early more
   often at `low` and `medium`, and puts long unattended runs at `high`. The rest
