@@ -1116,12 +1116,17 @@ actions) are the owner's decision and never hold the turn.
 `native-event`'s async `Stop` registration, which keeps the 分類 declaration scan),
 answers at every main-turn end:
 
-- No `<cwd>/.claude/acceptance` directory: the bash part exits 0 with no output
-  before any interpreter starts. This is the common case and costs no Python start.
-- Otherwise the runtime reads every `*.json` file in that directory that this session
-  wrote: its transcript holds a main-session Write, Edit or NotebookEdit call on that
-  file (a path as written, relative to `cwd` or absolute, case and slash direction
-  ignored on Windows) whose result was not an error. Calls by subagents (their own
+- No `<cwd>/.claude/acceptance` directory, or one that holds no `*.json` file: the bash
+  part exits 0 with no output before any interpreter starts. This is the common case and
+  costs no Python start. The bash test uses builtins only and errs toward Python: it
+  counts hidden names and any letter case (Windows ignores case), so a name Python would
+  count is never skipped. A `cwd` with a backslash escape still goes to Python.
+- Otherwise the runtime reads every open `*.json` file in that directory that this session
+  wrote (a file that loads cleanly with a valid `closed` reason is dropped first, see
+  below; with no candidate left the transcript is not opened): its transcript holds a
+  main-session Write, Edit or NotebookEdit call on that file (a path as written, relative
+  to `cwd` or absolute, case and slash direction ignored on Windows) whose result was not
+  an error. Calls by subagents (their own
   transcripts) and writes through Bash or PowerShell do not count, which is why the
   acceptance file is written with the Write tool. The whole transcript is searched, not
   only its newest part. Ownership is not read from file modification times: two
@@ -1142,7 +1147,12 @@ answers at every main-turn end:
   blocks; the reason names the file and its first problem, so a typo cannot switch
   enforcement off unnoticed.
 - A file with `closed` is finished work: its gates are skipped, so a session with only
-  closed files is in a clean state. The file still has to match the schema.
+  closed files is in a clean state. The file still has to match the schema. A closed
+  file that loads cleanly is dropped before the transcript is read, so finished files
+  cost no transcript scan (a large transcript takes seconds) and a session with only
+  closed files never opens it. A file that does not match the schema, a bad `closed`
+  included, or that cannot be read stays a candidate: if this session wrote it, it
+  still blocks as malformed.
 - Legitimate pauses end the turn with no decision and spend no push: a `Stop` event
   that carries `agent_id` (a subagent's; only the main session is gated); a non-empty
   `background_tasks` (a test run or other work still running in the background; checked
@@ -1190,7 +1200,7 @@ with handoff off, only to find that it has nothing to do.
 
 Accepted limit: after `<cwd>/.claude/acceptance` is deleted, a leftover push counter
 survives until the person's next prompt. The bash part of the gate exits before Python
-runs when that directory is gone, so a clean `Stop` cannot delete the counter; the
+runs when that directory is gone or holds no `*.json` file, so a clean `Stop` cannot delete the counter; the
 prompt reset empties it, and `prune` removes it once it is stale.
 
 **A verdict covers content, not a time.** A `machine`, `live` or `visual` gate with

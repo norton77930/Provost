@@ -1287,6 +1287,61 @@ class AcceptanceClosedTests(AcceptanceCase):
                 self.assertIn(str(path), result["reason"])
                 self.assertIn("closed must be a non-empty string", result["reason"])
 
+    def test_only_closed_files_never_open_the_transcript(self):
+        from provost_runtime.acceptance import session_files
+        self.closed("a.json", [gate("a")])
+        self.closed("b.json", [gate("b", "fail")], mine=False)
+        event = {"session_id": SESSION, "transcript_path": str(self.transcript), "cwd": str(self.root)}
+        with mock.patch("provost_runtime.hooks.resolve_transcript") as resolve:
+            self.assertEqual(session_files(event, self.directory), [])
+            self.assertEqual(self.stop(), {})
+            self.assertEqual(self.stop(transcript_path=str(self.root / "missing.jsonl")), {})
+        resolve.assert_not_called()
+
+    def test_an_open_file_beside_closed_ones_is_the_only_candidate_read_against_the_transcript(self):
+        from provost_runtime.acceptance import session_files
+        self.closed("old.json", [gate("old-gate")])
+        new = self.acceptance("new.json", [gate("new-gate")])
+        event = {"session_id": SESSION, "transcript_path": str(self.transcript), "cwd": str(self.root)}
+        self.assertEqual(session_files(event, self.directory), [new])
+        self.assertEqual(session_files({**event, "transcript_path": str(self.root / "missing.jsonl")},
+                                       self.directory), None)  # an open candidate needs the transcript, as before
+        self.assertEqual(self.stop()["reason"].count("old-gate"), 0)
+        self.assertIn("new-gate", self.stop(session_id="again")["reason"])
+
+    def test_a_malformed_file_still_blocks_its_owner_even_beside_closed_files(self):
+        self.closed("done.json", [gate("done-gate")])
+        broken = {
+            "plain.json": "{not json",
+            "closed-but-bad-gate.json": json.dumps({"task": "t", "closed": "merged", "gates": [gate("g", "done")]}),
+            "closed-but-no-task.json": json.dumps({"closed": "merged", "gates": []}),
+            "bad-closed.json": json.dumps({"task": "t", "closed": "", "gates": []}),
+        }
+        for index, (name, raw) in enumerate(broken.items()):
+            with self.subTest(name):
+                path = self.acceptance(name, None, raw=raw)
+                result = self.stop(session_id="broken-%d" % index)
+                self.assertEqual(result.get("decision"), "block", result)
+                self.assertIn(str(path), result["reason"])
+                self.assertIn("malformed", result["reason"].lower())
+                path.unlink()
+
+    def test_an_unreadable_candidate_stays_a_candidate(self):
+        from provost_runtime.acceptance import Malformed, session_files
+        path = self.closed("done.json", [gate("g")])
+        event = {"session_id": SESSION, "transcript_path": str(self.transcript), "cwd": str(self.root)}
+        with mock.patch("provost_runtime.acceptance.load", side_effect=Malformed("unreadable")):
+            self.assertEqual(session_files(event, self.directory), [path])
+        with mock.patch("provost_runtime.acceptance.load", side_effect=PermissionError()):
+            self.assertEqual(session_files(event, self.directory), [path])
+
+    def test_a_malformed_file_of_another_session_does_not_block(self):
+        self.closed("done.json", [gate("done-gate")])
+        self.acceptance("theirs.json", None, raw="{not json", mine=False)
+        self.acceptance("theirs-closed.json", None,
+                        raw=json.dumps({"task": "t", "closed": "merged", "gates": [gate("g", "done")]}), mine=False)
+        self.assertEqual(self.stop(), {})
+
     def test_a_closed_file_is_not_the_task_a_brief_must_cite(self):
         from provost_runtime.hooks import handle_event
         self.closed("old.json", [gate("old-gate")])

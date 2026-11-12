@@ -7,7 +7,8 @@ failed or stale. A verdict covers content, not a time: a pass is stale when its 
 digest, or when the code tree differs from its tree (tree_digest()); without either, a machine, live or visual
 pass goes by the time rule (older than the last main-session edit), and a review pass by any main-session edit;
 see unmet_state(). check() returns a block decision naming every unmet gate id and its file. Without a session
-acceptance file, with only closed ones, or with only human gates unmet, it returns {}. A malformed file is named
+acceptance file, with only closed ones (session_files() drops those before it opens the transcript), or with
+only human gates unmet, it returns {}. A malformed file is named
 in the block reason, so a typo cannot switch enforcement off unnoticed. A subagent's Stop, running background work
 and a stated blocker line end the turn, it blocks at most three times per episode, and it does not repeat an
 unchanged stale block after the person's prompt (see check()).
@@ -492,8 +493,11 @@ def acceptance_directory(event):
 
 
 def session_files(event, directory):
-    """The *.json files in directory that this session wrote, by name; None when the transcript is unknown.
-    A directory with no *.json file answers [] without opening the transcript, which is the common case.
+    """The open *.json files in directory that this session wrote, by name; None when the transcript is unknown.
+    A file that loads cleanly with a valid top-level `closed` reason is finished and left out before the
+    transcript is read; one that is malformed (a bad `closed` too), unreadable or gone stays a candidate, so a
+    malformed file the session owns still blocks. A directory with no *.json file, or with only finished
+    ones, answers [] without resolving or opening the transcript, which is the common case.
 
     A file belongs to the session when its transcript holds a main-session (non-sidechain) Write, Edit or
     NotebookEdit tool_use on that file whose tool_result did not come back as an error. Not the file's
@@ -511,7 +515,7 @@ def session_files(event, directory):
     candidates = []
     for candidate in sorted(directory.glob("*.json")):
         try:
-            if candidate.is_file():
+            if candidate.is_file() and not _finished(candidate):
                 candidates.append(candidate)
         except OSError:
             continue
@@ -549,6 +553,16 @@ def session_files(event, directory):
                     failed.add(block.get("tool_use_id"))
     owned = {key for call, key in written.items() if call not in failed}
     return [candidate for candidate in candidates if _key(str(candidate), "") in owned]
+
+
+def _finished(path):
+    """True when the file loads cleanly and carries a valid `closed` reason: finished work, which neither blocks
+    nor counts as the task a brief must cite, so its ownership is not worth a transcript read. A file that is
+    malformed (a bad `closed` included), unreadable or gone is not finished here: check() reports it."""
+    try:
+        return "closed" in load(path)
+    except (Malformed, OSError):
+        return False
 
 
 def _key(target, cwd):
