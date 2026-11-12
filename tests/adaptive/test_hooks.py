@@ -304,7 +304,7 @@ class SessionStartBudgetTests(FixtureCase):
     def test_activity_shrinks_to_its_headline_before_the_checkpoint_loses_its_digest(self):
         payload = self.payload_v1("keep next")
         payload.update(work_id="keep-work", blockers=["keep blocker"],
-                       decisions=["decision %d %s" % (i, "d" * 1100) for i in range(4)])  # digest ~3.1 KB
+                       decisions=["decision %d %s" % (i, "d" * 1300) for i in range(4)])  # digest ~4.0 KB
         self.record_v1(self.root, "s1", payload, None, "r")
         recorded = self.recorded_epoch()
         path = self.activity(recorded, agents=[("implementer", "slice %d %s" % (i, "x" * 110), 10 + i) for i in range(5)],

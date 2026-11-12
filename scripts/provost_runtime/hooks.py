@@ -708,16 +708,14 @@ def handle_event(event, config_path, acceptance=False):
                     + "\nSource guides: " + str(PLUGIN / "docs/compatibility")
                     + "\nUse doctor/status/record/snapshot/list/resume/changes/search/prune through the runtime."
                     + " Start a session's first save with status (read-only: expected revision and a complete template);"
-                    + " record reads the JSON payload from stdin.")
+                    + " record reads JSON from --input <payload-file>.")
             if enabled:
                 info += ("\nOperations guide: " + str(PLUGIN / "docs/native-handoff.md")
                          + "\nUse Bash: bash <quoted-runtime-path> status --workspace <quoted-workspace> --session <quoted-session>."
                          + "\nStatus is read-only and returns expected revision, checkpoint and a complete template;"
                          + " other_works lists the session's other work_ids."
                          + "\nFill the template with actual sources/decisions, then record --workspace <root> --session <id>"
-                         + " --expected <revision-or-null> --request-id <unique-milestone-id> <<'PROVOST_JSON'"
-                         + " with the payload on the next lines and PROVOST_JSON alone on the last"
-                         + " (no payload file needed; --input <payload-file> still works)."
+                         + " --expected <revision-or-null> --request-id <unique-milestone-id> --input <payload-file>."
                          + "\nRecord returns the new revision: pass it as --expected for the next record of the same work_id."
                          + " Run status again only when you do not have that revision (after a compaction or resume),"
                          + " on a conflict, or for another work_id."

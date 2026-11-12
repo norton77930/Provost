@@ -36,18 +36,14 @@ A Python invocation is also documented in the operations guide (the SessionStart
    `new_evidence` (`{claim, state, ref, updates?}`); the old `decisions` /
    `evidence` fields are refused. Follow Writing entries below. Exclude
    credentials and full transcripts. Never treat an unfilled template as saved work.
-3. Run one `record` call with the payload on stdin through a quoted heredoc
-   (no payload file needed):
-   `record --workspace "<root>" --session "<id>" --expected "<revision-or-null>" --request-id "<unique-id>" [--join] <<'PROVOST_JSON'`,
-   the payload JSON on the next lines, and `PROVOST_JSON` alone on the last line.
-   `--input "<payload-file>"` remains valid: write the payload to a file with the
-   Write tool and pass it instead of the heredoc. Use the `expected` value status
-   returned for the payload's work_id (`null` when there is none), or the
-   `revision` your last record of that work returned; record returns the new
-   `revision`, which is the next `--expected` for the same work_id.
-   Worktree guards refuse pipes, command substitution and line continuations (and
-   may refuse the heredoc: then use `--input`); never interpolate payload into
-   executable shell text, which is why the heredoc delimiter is quoted.
+3. Write the payload to a file with the Write tool, then run one plain command:
+   `record --workspace "<root>" --session "<id>" --expected "<revision-or-null>" --request-id "<unique-id>" [--join] --input "<payload-file>"`,
+   using the `expected` value status returned for the payload's work_id (`null`
+   when there is none), or the `revision` your last record of that work returned:
+   record returns the new `revision`, which is the next `--expected` for the same
+   work_id.
+   Worktree guards refuse heredocs, pipes, command substitution and line
+   continuations; never interpolate payload into executable shell text.
    A revision conflict means rerun status (with `--work "<work_id>"`) and
    reconcile, never overwrite.
    `JOIN_REQUIRED` means another session already logged this work_id. Add
