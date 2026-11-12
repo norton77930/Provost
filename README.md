@@ -291,7 +291,7 @@ paths, dispatches, commits; never command text or file contents) and remind the
 main session when a dispatch or edit has no record yet. Decisions and evidence go
 to an append-only log per work, shared by every session of the repository.
 Commands: `doctor`, `status`, `record`, `snapshot`, `list`, `resume`, `changes`,
-`search`, `prune`, `migrate`, and the maintainer-only `redact`.
+`search`, `digest`, `prune`, `migrate`, and the maintainer-only `redact`.
 See [`docs/native-handoff.md`](docs/native-handoff.md).
 
 ### What is in the repository

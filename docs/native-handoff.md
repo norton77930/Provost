@@ -989,8 +989,8 @@ hook, and for `UserPromptSubmit` as a sync hook.
   or NotebookEdit outside the scratch locations (`/.claude/jobs/`,
   `/.claude/projects/`, `AppData/Local/Temp`, `/tmp/`), and
   `<session_id>.pending-dispatch` when a writer subagent is dispatched (default
-  roles `implementer`, `implementer-high`, `implementer-sonnet`, `implementer-deep`,
-  `mech-executor`, `general-purpose`; override with the space-separated env var
+  roles `implementer`, `implementer-sonnet`, `mech-executor`, `general-purpose`;
+  override with the space-separated env var
   `PROVOST_REMINDER_ROLES`). Its output is always `{}`.
 - `UserPromptSubmit` reminds at the start of the next turn, once: when a pending
   flag exists and `<session_id>.reminded` does not, it creates `.reminded` and adds

@@ -8,11 +8,11 @@ This roadmap describes intended work, not promised dates. Items move to
 - Orchestration policy with difficulty × risk classification, evidence-based
   review triggers, an R2 stop, a writer budget and a finite Completion Contract
   ([`native/CLAUDE.native.md`](native/CLAUDE.native.md)).
-- Eight roles across Haiku, Sonnet, Opus and Fable ([`agents/`](agents/)).
+- Nine roles across Haiku, Sonnet, Opus and Fable ([`agents/`](agents/)).
 - Handoff runtime: sealed per-session records shared across worktrees,
   compaction recovery, facts capture and reminders, search, retention and
   prune with archive.
-- `install.py` with backups, rollback and a read-only drift check.
+- `install.py` with backups, automatic restore when an install fails, and a read-only drift check.
 - CI on Windows, Ubuntu and macOS for the runtime and installer.
 
 ## Next

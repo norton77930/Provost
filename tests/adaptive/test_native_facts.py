@@ -349,7 +349,7 @@ class NativeFactsTests(FixtureCase):
 
     def test_writer_dispatch_sets_pending_dispatch(self):
         for role, agent_type, env in (("implementer-sonnet", None, None), ("mech-executor", "implementer", None),
-                                      ("implementer-deep", None, None),
+                                      ("implementer", None, None),
                                       (None, None, None), ("custom-writer", None, {"PROVOST_REMINDER_ROLES": "custom-writer"})):
             for flag in self.facts_dir.glob(SESSION + ".pending-*"):
                 flag.unlink()
