@@ -227,6 +227,11 @@ Then record it with a single-line command:
 bash "<runtime>/hooks/runtime" record --workspace "<root>" --session "<session>" --expected "<revision-or-null>" --request-id "<unique-milestone-id>" [--join] --input "<payload-file>"
 ```
 
+The result contains the new `revision`: it is the `--expected` of the next record of
+the same work_id, so `status` is needed only for a session's first save, after a
+compaction or resume, on a conflict, or for another work_id. `record` also reads the
+payload from stdin when `--input` is omitted, for callers outside a worktree guard.
+
 `--join` is only for a first record of a work that other sessions have logged (see
 Joining work below); leave it out otherwise.
 
