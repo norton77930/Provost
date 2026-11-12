@@ -227,6 +227,11 @@ Then record it with a single-line command:
 bash "<runtime>/hooks/runtime" record --workspace "<root>" --session "<session>" --expected "<revision-or-null>" --request-id "<unique-milestone-id>" [--join] --input "<payload-file>"
 ```
 
+The result contains the new `revision`: it is the `--expected` of the next record of
+the same work_id, so `status` is needed only for a session's first save, after a
+compaction or resume, on a conflict, or for another work_id. `record` also reads the
+payload from stdin when `--input` is omitted, for callers outside a worktree guard.
+
 `--join` is only for a first record of a work that other sessions have logged (see
 Joining work below); leave it out otherwise.
 
@@ -989,8 +994,8 @@ hook, and for `UserPromptSubmit` as a sync hook.
   or NotebookEdit outside the scratch locations (`/.claude/jobs/`,
   `/.claude/projects/`, `AppData/Local/Temp`, `/tmp/`), and
   `<session_id>.pending-dispatch` when a writer subagent is dispatched (default
-  roles `implementer`, `implementer-high`, `implementer-sonnet`, `implementer-deep`,
-  `mech-executor`, `general-purpose`; override with the space-separated env var
+  roles `implementer`, `implementer-sonnet`, `mech-executor`, `general-purpose`;
+  override with the space-separated env var
   `PROVOST_REMINDER_ROLES`). Its output is always `{}`.
 - `UserPromptSubmit` reminds at the start of the next turn, once: when a pending
   flag exists and `<session_id>.reminded` does not, it creates `.reminded` and adds
