@@ -134,6 +134,20 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- Policy §4 ties the writer cap to isolation. Writers sharing one checkout keep
+  normal cap 2, burst 3 (`max_writers`/`burst_writers`, now labelled "shared
+  checkout writers" in the SessionStart context). Writers each in their own worktree
+  have no fixed cap once every task passed the dependency and ownership checks,
+  files several tasks would touch were landed first by one preparatory slice,
+  and the machine can hold the wave; a wave larger than six states why. Full-suite
+  runs are limited to one at a time (two when light), a failure seen only under
+  parallel load is rerun alone first, and main merges isolated branches one at a
+  time. Measured 2026-10-11..11-12: writer time at concurrency 1 fell from 90% to
+  75%, and the user lifted the cap by hand in four sessions (5, 5, 5 and 7
+  worktrees) whose branches merged with no or trivial conflicts after a shared
+  preparatory commit; what actually limited waves was dependency chains and
+  machine load (full suites running out of memory, timing tests failing under
+  load).
 - Policy §10 says what to do when `code-reviewer` fails for a reason other than
   Fable quota exhaustion: no model override, but retry the same review once a
   transient cause clears (a network error, a 429 after its wait), and report a

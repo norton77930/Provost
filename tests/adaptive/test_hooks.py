@@ -391,7 +391,7 @@ class SessionStartBudgetTests(FixtureCase):
                 text = self.start()
                 if chars < 8000:
                     self.assertIn("status --workspace", text)
-                    self.assertNotIn("Writer limits", text)
+                    self.assertNotIn("Shared-checkout writers", text)
                     self.assertIn("Session: s1", text)
 
     def test_every_oversized_combination_stays_within_budget(self):

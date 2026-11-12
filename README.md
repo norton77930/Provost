@@ -220,6 +220,9 @@ The `~/.claude/provost/config.json` it writes:
 }
 ```
 
+`max_writers` and `burst_writers` (at most 3) limit writers that share one
+checkout; writers that each work in their own worktree follow the policy's
+parallel-dispatch conditions instead of a fixed number.
 `exclude_roots` (a list of directories) turns handoff off below them. See
 [`docs/native-handoff.md`](docs/native-handoff.md) for storage, retention
 and recovery.
