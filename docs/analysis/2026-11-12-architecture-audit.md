@@ -15,7 +15,7 @@
 3. **最大的成本來源不是 Provost 注入的文字，而是主 session 每次請求的 context 大小。** 主 session 每次請求的 prompt 中位數 172K tokens，32.5% 的請求在 200K 以上；cache read 占主 session 估算成本 45%，1 小時 cache 寫入占 36%。Provost 的 policy（29.9K 字元）與 SessionStart 注入（中位數 7.2K 字元）相對很小。
 4. **可避免的浪費集中在「儀式性請求」。** 主 session 19,877 個請求中有 3,012 個（15.2%）只做通知、handoff 紀錄、digest、驗收檔或 task 清單，估算 $196（主 session 的 13.2%）。其中只呼叫 `PushNotification` 的請求 1,656 個、只做 handoff 的 779 個。每個這類請求都要重讀約 165K tokens 的 cache。
 5. **重複讀檔不是問題。** 同一 agent 內「檔案未變卻重讀」只占讀檔的 2.3% 至 2.8%，不需要處理。
-6. 建議先做三件低風險的事：恢復 Stop gate 的快速路徑（已結案的驗收檔不該讓每個回合都啟動 Python 掃整份逐字稿）、把 `record` 的操作說明改成 stdin 一步完成、補上 `install.py check` 沒檢查到的三個 hook 事件。
+6. 建議先做三件低風險的事：恢復 Stop gate 的快速路徑（已結案的驗收檔不該讓每個回合都啟動 Python 掃整份逐字稿）、讓 `record` 的操作說明沿用上一筆回傳的 revision 而省掉 `status`（原本建議的 stdin heredoc 已撤回，見 C3 的更正）、補上 `install.py check` 沒檢查到的三個 hook 事件。
 
 金額一律是「逐字稿記錄的 token 數 × `tools/dispatch-report.js:31-43` 的價目表」換算的估算值，不是帳單。
 
@@ -245,6 +245,12 @@ Stop gate 累計等待 351 分鐘（3,141 次有耗時紀錄），占期間內�
 6. **驗證。** 兩週後重跑 `measure2.js`：**只做 handoff 的請求數 ÷ `record` 次數**（基準 779 ÷ 1,003 = 0.78）降到 0.3 以下；`status` ÷ `record`（基準 0.55）降到 0.2 以下；`REVISION_CONFLICT` 次數不增加。
 7. **回滾。** 還原文字即可；CLI 行為未變，舊用法一直有效。
 
+> **更正（2026-11-12，實作 #114 時發現）。** 上面 4-a 的 heredoc 與 4-b 的提醒去重都撤回，只保留「沿用 `record` 回傳的 revision，省掉 `status`」。
+>
+> - **4-a 的 heredoc：** `docs/native-handoff.md` 原本就寫明 runtime 呼叫要維持單一純指令，「no heredoc … because worktree guards refuse those」，稽核時漏看。實測仍成立：在 worktree 隔離的 session 裡，連 `cat <<'X' … X` 都會被拒（"too complex to verify that it stays inside the worktree"）。操作說明維持 `--input <payload-file>`。
+> - **4-b 的提醒去重：** 同一期間的逐字稿量測顯示，去重會壓掉 693 次提醒中的 278 次，而這 278 次裡有 102 次之後確實寫了紀錄。省下的成本很小，風險是漏記結果。
+> - **第 5 點的效益與第 6 點的目標：** 「每筆紀錄降到 1 個請求」與「只做 handoff 的請求 ÷ `record` < 0.3」不再成立，因為 payload 檔仍要寫。`status` ÷ `record` < 0.2 的目標保留。
+
 #### C4（P2）`install.py check` 沒檢查三個 hook 事件，也不檢查 matcher 與 timeout
 
 1. **證據。** `install.py:38-41` 的 `HOOK_EVENTS` 只有 SessionStart、PreToolUse、PostToolUse、Stop；`:48-58` 的 `REGISTRATIONS` 有 8 筆，包含 PreCompact、PostCompact、UserPromptSubmit。`settings_status()`（`:212-230`）只看前者，以結尾字串比對（`:276-278`），不看 matcher、async、timeout。`settings.json` 讀不到時回 `unknown`（`:218-219`），而 `drift = bool(changes) or unregistered`（`:615-616`）不把 `unknown` 當漂移。實跑結果：目前 settings 混用 6 筆 exec 形式與 3 筆 `bash "…"` 字串形式（installer 只會寫後者，`:332`），`check` 仍回 `settings: ok`。
@@ -409,7 +415,7 @@ Stop gate 累計等待 351 分鐘（3,141 次有耗時紀錄），占期間內�
 | SessionStart 逾時（主 session） | 14 次 | 0 | C2 | `hook-timing.js` |
 | SessionStart p90 | 11.8 至 23.7 s | < 10 s | C2 | `hook-timing.js` |
 | SessionStart:compact 子行程數 | 7 至 9 | ≤ 5 | C2 | `time_sessionstart.py` |
-| 只做 handoff 的請求 ÷ `record` | 0.78 | < 0.3 | C3 | `measure2.js` |
+| 只做 handoff 的請求 ÷ `record` | 0.78 | 待重訂（stdin 建議撤回，見 C3 的更正） | C3 | `measure2.js` |
 | `status` ÷ `record` | 0.55 | < 0.2 | C3 | `summarize.js` |
 | 儀式性請求占主 session 請求 | 15.2% | < 9% | C3、S1、S2 | `measure2.js` |
 | 只通知的請求 ÷ 回合 | 0.53 | < 0.25 | S1 | `measure2.js` |
@@ -471,7 +477,7 @@ Stop gate 累計等待 351 分鐘（3,141 次有耗時紀錄），占期間內�
 | 階段 | 內容 | 風險 | 前置 |
 |---|---|---|---|
 | 0. 不動程式（使用者決定） | SOP-2 驗收檔整理；SOP-3 prune 檢視；C6 機密與備份；決定 S1 通知規則的寫法 | 低 | 無 |
-| 1. 小修正，各自獨立 PR | C1-a、C1-b（快速路徑與 closed 先過濾）；C3（操作說明改 stdin、提醒去重）；C4（`check` 涵蓋）；C8、C9（文件與名稱） | 低；C1、C3、C4 屬 R1，需 `code-reviewer` | 階段 0 的驗收檔整理能放大 C1-a 的效果 |
+| 1. 小修正，各自獨立 PR | C1-a、C1-b（快速路徑與 closed 先過濾）；C3（操作說明改為沿用回傳的 revision；stdin 與提醒去重已撤回）；C4（`check` 涵蓋）；C8、C9（文件與名稱） | 低；C1、C3、C4 屬 R1，需 `code-reviewer` | 階段 0 的驗收檔整理能放大 C1-a 的效果 |
 | 2. 中等修正 | C1-c、C1-d（位移快取、內部期限）；C2（git 呼叫合併、選單讀取）；C5（設定路徑）；C7（處置紀錄量測）；C11（CI）；C12、C10 | 中；動到 hook 與 runtime 核心路徑 | 階段 1 上線一週後的量測 |
 | 3. 量測後再決定 | S2 里程碑減量；S3 policy 瘦身；S4、S5 派工檢討；W1 至 W8 | 需 A/B 與使用者判斷 | 階段 2 的指標達標 |
 
