@@ -221,17 +221,33 @@ Write UTF-8 JSON with Write/Edit to an allowed scratch file, for example:
 }
 ```
 
-Then record it with a single-line command:
+Then record it in one call, with the payload on stdin through a quoted heredoc (no
+payload file needed):
+
+```bash
+bash "<runtime>/hooks/runtime" record --workspace "<root>" --session "<session>" --expected "<revision-or-null>" --request-id "<unique-milestone-id>" [--join] <<'PROVOST_JSON'
+<the payload JSON>
+PROVOST_JSON
+```
+
+`--input "<payload-file>"` remains valid: write the payload to a file and pass it
+instead of the heredoc.
 
 ```bash
 bash "<runtime>/hooks/runtime" record --workspace "<root>" --session "<session>" --expected "<revision-or-null>" --request-id "<unique-milestone-id>" [--join] --input "<payload-file>"
 ```
 
+The result contains the new `revision`: the returned `revision` is the `--expected` of
+the next record of the same work_id, so a second save needs no `status` call. Run
+`status` for a session's first save, when you do not have that revision (after a
+compaction or resume), on a conflict, or for another work_id.
+
 `--join` is only for a first record of a work that other sessions have logged (see
 Joining work below); leave it out otherwise.
 
-Keep each runtime call a single plain command: no heredoc, pipe, command
-substitution, env-var prefix or line continuation, because worktree guards refuse those.
+Keep each runtime call a single plain command: no pipe, command substitution,
+env-var prefix or line continuation, because worktree guards refuse those. The quoted
+heredoc above is the one exception; if a guard refuses it, use the `--input` form.
 
 Use a new request ID for new content; retry the same ID only with identical content
 (card and new entries): a replay returns the stored card and appends nothing.

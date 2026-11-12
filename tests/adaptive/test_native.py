@@ -105,17 +105,29 @@ class NativeTests(FixtureCase):
         self.assertRegex(flat,r"because")
         self.assertLess(len(text),4000)
 
-    def test_guidance_points_record_at_input_file_not_stdin(self):
+    def test_guidance_steers_to_one_record_call_with_the_payload_on_stdin(self):
         text=self.context(handle_event(self.event(),self.config_path))
-        self.assertIn("--input <payload-file>",text)
-        self.assertNotIn("stdin",text)
+        flat=" ".join(text.split())
+        self.assertIn("Start a session's first save with status",flat)
+        self.assertIn("record reads the JSON payload from stdin",flat)
+        self.assertIn("<<'PROVOST_JSON'",flat)
+        self.assertIn("--input <payload-file> still works",flat)
+        self.assertIn("Record returns the new revision: pass it as --expected for the next record of the same work_id.",flat)
+        self.assertIn("Run status again only when you do not have that revision",flat)
+        self.assertNotIn("Start a save with status",flat)
+        self.assertNotIn("record reads JSON from --input",flat)
 
     def test_operations_guide_has_single_line_record_and_valid_example(self):
         guide=(REPO/"docs"/"native-handoff.md").read_text(encoding="utf-8")
-        line=next(l for l in guide.splitlines() if " record --workspace" in l)
-        self.assertIn('--input "<payload-file>"',line)
-        self.assertFalse(line.rstrip().endswith("\\"))
-        self.assertNotIn(" < ",line)
+        records=[l for l in guide.splitlines() if " record --workspace" in l]
+        line,file_line=records[0],records[1]
+        self.assertIn("<<'PROVOST_JSON'",line)
+        self.assertNotIn("--input",line)
+        self.assertIn('--input "<payload-file>"',file_line)
+        for each in (line,file_line):
+            self.assertFalse(each.rstrip().endswith("\\"))
+            self.assertNotIn(" < ",each)
+        self.assertIn("returned `revision`",guide)
         flat=" ".join(guide.split())
         self.assertIn("single plain command",flat)
         for word in ("heredoc","pipe","command substitution","env-var prefix","line continuation"):

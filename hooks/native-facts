@@ -130,7 +130,7 @@ if [[ "$event" == UserPromptSubmit && "$session_id" =~ ^[A-Za-z0-9-]+$ ]]; then
         if [[ ( -e "${flag}.pending-edit" || -e "${flag}.pending-dispatch" ) && ! -e "${flag}.reminded" ]]; then
             # Remind only when the marker was written, so a failing write cannot repeat it every turn.
             if : 2>/dev/null > "${flag}.reminded"; then
-                msg="Handoff: since the last record this session edited repo files or dispatched a writer subagent. Record the decisions behind them now (status, then record); facts are captured automatically."
+                msg="Handoff: since the last record this session edited repo files or dispatched a writer subagent. Record the decisions behind them now (record; status first only if you lack the last revision); facts are captured automatically."
             fi
         fi
         # A subagent's result arrives as a prompt that starts with its hand-back
@@ -159,7 +159,7 @@ if [[ "$event" == UserPromptSubmit && "$session_id" =~ ^[A-Za-z0-9-]+$ ]]; then
             if [[ -n "$msg" ]]; then
                 msg+=" A subagent result also just arrived: if it changes the work state, record the result milestone too."
             else
-                msg="Handoff: a subagent result just arrived. If it changes the work state, record the result milestone now (status, then record); facts are captured automatically."
+                msg="Handoff: a subagent result just arrived. If it changes the work state, record the result milestone now (record; status first only if you lack the last revision); facts are captured automatically."
             fi
         fi
         # Once per declaration window: the Stop scan found a main-session repo edit and no 分類 line.
