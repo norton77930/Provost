@@ -353,6 +353,12 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Fixed
 
+- A review gate whose `files` are written relative, or in another order than `digest`
+  printed them, no longer stays stale forever (#135). `acceptance.digest()` now makes
+  each name absolute against the gate's cwd, normalises, de-duplicates and sorts it
+  before hashing, the same form the `digest` command prints, so a digest recorded from
+  the command is unchanged, while adding, removing, replacing or editing a file is
+  still a change.
 - The board mod reads an acceptance file the way the Stop gate does (#127). A gate of an
   unknown kind now makes the whole file malformed instead of being dropped, a file with
   a valid top-level `closed` reason is finished and no longer shows its gates, and

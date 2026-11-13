@@ -1131,7 +1131,7 @@ task), commit the acceptance file deliberately or attach it to the PR.
 | `gates[].evidence` | no | string: result summary, observed output, screenshot path or verdict |
 | `gates[].source` | no | string: path or URL of the mockup, spec or issue the gate is judged against |
 | `gates[].tree` | no, `machine`, `live`, `visual` | string: the code tree the check ran on, printed by `digest --tree` (below) and read before the check starts; ignored on `review` and `human` gates |
-| `gates[].files` | no, not `human` | non-empty list of the paths the review or check covered (absolute, or relative to `cwd`); only together with `digest`, both printed by the `digest` command below |
+| `gates[].files` | no, not `human` | non-empty list of the paths the review or check covered (absolute, or relative to `cwd`); the digest treats the list as a set of files (each made absolute against `cwd`, normalised, de-duplicated and sorted), so spelling and order do not matter; only together with `digest`, both printed by the `digest` command below |
 | `gates[].digest` | no, not `human` | string: the digest of `files` when the gate passed; only together with `files` |
 
 Other keys are ignored. `human` gates (release, tag, merge and other outward
@@ -1304,9 +1304,13 @@ Each path is made absolute against `--cwd` (default: the current directory),
 de-duplicated and sorted; paste both values into the gate. A path that cannot be read
 is an error (`{"error": "FILE_UNREADABLE", ...}`, exit 1). The command needs no
 `provost/config.json` and works with handoff off. The digest is SHA-256 over each
-file's bytes with CRLF read as LF, together with the file names as written in `files`
-and their order, so a line-ending-only checkout difference is not a change but an
-edited `files` list is.
+file's bytes with CRLF read as LF, together with the file names. Before hashing, the
+names are made absolute against the gate's `cwd` (the `--cwd` of the command, the
+event's `cwd` for the Stop check), normalised, de-duplicated and sorted, so the same
+files spelled relatively or absolutely, or listed in another order, have the same
+digest, and the Stop check agrees with what the command printed. A line-ending-only
+checkout difference is not a change; adding, removing or replacing a file is, and so
+is changing the content of one.
 
 `python install.py setup` registers it; by hand, add it as its own `Stop` entry
 without `"async"`:

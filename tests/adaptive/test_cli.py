@@ -186,6 +186,16 @@ class CliTests(FixtureCase):
         source.write_bytes(b"print('changed')\n")
         self.assertIn("reviewed files changed", unmet_state(review, None, str(self.root)))
 
+    def test_digest_equals_the_library_digest_of_the_same_files_in_any_spelling_and_order(self):
+        from provost_runtime.acceptance import digest
+        (self.root / "src").mkdir()
+        (self.root / "src" / "app.py").write_bytes(b"print('reviewed')\n")
+        (self.root / "README.md").write_bytes(b"# r\n")
+        result = self.run_cli("digest", "--cwd", str(self.root), "src/app.py", "README.md")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout)["digest"],
+                         digest(["./README.md", "src/../src/app.py", "src/app.py"], str(self.root)))
+
     def test_digest_of_a_missing_file_or_no_file_is_an_error(self):
         for args in (("--cwd", str(self.root), "missing.py"), ("--cwd", str(self.root))):
             with self.subTest(args):
