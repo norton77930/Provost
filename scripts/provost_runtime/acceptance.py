@@ -214,7 +214,8 @@ def unmet_state(gate, edited=None, cwd=None, tree=None):
     never do.
 
     A verdict covers content. Any passed gate but a human one with files and digest is judged by them alone:
-    it is stale when digest() of its files (relative ones read from cwd, the event cwd) no longer matches,
+    it is stale when digest() of its files (relative ones read from cwd, the event cwd; spelling and order do
+    not matter, see canonical_files()) no longer matches,
     whoever changed them: a subagent, Bash or the main session; an unreadable or deleted file counts as
     changed; ranAt is not used.
 
@@ -345,16 +346,26 @@ def last_edit(event):
     return max(times) if times else None
 
 
+def canonical_files(files, cwd=None):
+    """The files of a gate as a set in one spelling: each name made absolute against cwd (the process cwd when
+    None) and normalised, then de-duplicated and sorted. The only place that spelling is decided: digest() hashes
+    it and the `digest` command prints it, so the Stop check and the command cannot disagree. The case of a
+    name is kept (no normcase), so a digest the command printed earlier stays valid."""
+    base = os.path.abspath(cwd) if cwd else os.getcwd()
+    return sorted({os.path.normpath(os.path.join(base, name)) for name in files})
+
+
 def digest(files, cwd=None):
     """The digest of a review gate's files (64 hex characters); OSError when one cannot be read.
 
-    sha256 over the JSON list of [name, sha256 of the file's bytes with CRLF read as LF] in the given order,
-    each name exactly as written (a relative one is read from cwd). Line endings are ignored so a CRLF
-    checkout of the same text does not count as a change; the names and their order are hashed so that
-    editing the gate's files list without a new digest is a change too."""
+    sha256 over the JSON list of [name, sha256 of the file's bytes with CRLF read as LF], where the names are
+    canonical_files(files, cwd): absolute against cwd, normalised, de-duplicated and sorted. So the same files
+    spelled relatively or absolutely, or listed in another order, have the same digest, while adding, removing or
+    replacing a file changes it. Line endings are ignored so a CRLF checkout of the same text does not count
+    as a change."""
     entries = []
-    for name in files:
-        with open(_reviewed_path(name, cwd), "rb") as handle:
+    for name in canonical_files(files, cwd):
+        with open(name, "rb") as handle:
             body = handle.read().replace(b"\r\n", b"\n")
         entries.append([name, hashlib.sha256(body).hexdigest()])
     return hashlib.sha256(json.dumps(entries, ensure_ascii=True, separators=(",", ":")).encode("ascii")).hexdigest()
@@ -467,11 +478,6 @@ def _git_path(raw):
 def _left_out(path):
     """True for a path no tree digest covers: a doc, or an acceptance file."""
     return path.lower().endswith(DOC_SUFFIXES) or _acceptance_path(path)
-
-
-def _reviewed_path(name, cwd):
-    """A gate's file name as a path to open: relative ones against cwd, as session_files() resolves them."""
-    return os.path.join(cwd, name) if cwd and not os.path.isabs(name) else name
 
 
 def _acceptance_path(path):

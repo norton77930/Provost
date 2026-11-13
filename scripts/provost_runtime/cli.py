@@ -88,7 +88,9 @@ def digest_command(args):
 
     Needs no config or handoff: acceptance gates work without them. Each path is made absolute against --cwd
     (default: the current directory) and normalised, so the gate does not depend on the cwd it is checked
-    from; the list is de-duplicated and sorted, and acceptance.digest() hashes it in that order. A path that
+    from; the list is de-duplicated and sorted. That is acceptance.canonical_files(), the same spelling
+    acceptance.digest() applies to whatever list it is given, so the Stop check agrees with what is printed
+    here whatever spelling or order a gate's files end up in. A path that
     cannot be read is an error: a review of a file that is not there is a typo, not a digest."""
     from . import acceptance
     try:
@@ -106,7 +108,7 @@ def digest_command(args):
                 raise StoreError("TREE_UNKNOWN", detail="not a git work tree, or git could not read it in time")
             print(json.dumps({"tree": tree}, ensure_ascii=True))
             return 0
-        files = sorted({os.path.normpath(os.path.join(cwd, path)) for path in options.paths})
+        files = acceptance.canonical_files(options.paths, cwd)
         try:
             value = acceptance.digest(files)
         except OSError as exc:

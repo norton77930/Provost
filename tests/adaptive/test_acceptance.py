@@ -506,7 +506,7 @@ class AcceptanceReviewTests(AcceptanceCase):
         names = list(files) or [str(self.source)]
         return gate("code-review", "pass", kind="review", files=names, digest=digest(names, cwd or str(self.root)))
 
-    def test_digest_ignores_line_endings_and_tracks_content_names_and_order(self):
+    def test_digest_ignores_line_endings_spelling_and_order_and_tracks_content_and_file_set(self):
         from provost_runtime.acceptance import digest
         other = self.root / "src" / "other.py"
         other.write_bytes(b"x = 1\n")
@@ -517,11 +517,37 @@ class AcceptanceReviewTests(AcceptanceCase):
         self.source.write_bytes(b"print('reviewed')\r\n")  # a CRLF checkout of the same text
         self.assertEqual(digest(names, str(self.root)), first)
         self.assertRegex(digest(["src/app.py"], str(self.root)), r"^[0-9a-f]{64}$")  # read from cwd
-        self.assertNotEqual(digest(list(reversed(names)), str(self.root)), first)
+        self.assertEqual(digest(list(reversed(names)), str(self.root)), first)  # order is not a change
+        self.assertEqual(digest(["src/other.py", "src/../src/app.py", "src/app.py"], str(self.root)), first)
+        self.assertEqual(digest(names + names, str(self.root)), first)  # nor is a repeated name
+        self.assertNotEqual(digest(names[:1], str(self.root)), first)  # removing a file is
+        extra = self.root / "src" / "extra.py"
+        extra.write_bytes(b"y = 2\n")
+        self.assertNotEqual(digest(names + [str(extra)], str(self.root)), first)  # adding one is
+        self.assertNotEqual(digest([str(self.source), str(extra)], str(self.root)), first)  # replacing one is
         self.source.write_bytes(b"print('changed')\n")
         self.assertNotEqual(digest(names, str(self.root)), first)
         with self.assertRaises(OSError):
             digest([str(self.root / "missing.py")], str(self.root))
+
+    def test_digest_without_cwd_resolves_against_the_process_cwd(self):
+        from provost_runtime.acceptance import digest
+        previous = os.getcwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, previous)
+        self.assertEqual(digest(["src/app.py"]), digest([str(self.source)]))
+
+    def test_digest_of_a_canonical_list_is_the_value_the_cli_has_always_printed(self):
+        import hashlib
+        from provost_runtime.acceptance import digest
+        other = self.root / "src" / "other.py"
+        other.write_bytes(b"x = 1\n")
+        names = sorted(os.path.normpath(str(path)) for path in (self.source, other))
+        entries = [[name, hashlib.sha256(Path(name).read_bytes().replace(b"\r\n", b"\n")).hexdigest()]
+                   for name in names]  # the formula before canonicalisation: given names, given order
+        pinned = hashlib.sha256(json.dumps(entries, ensure_ascii=True, separators=(",", ":")).encode("ascii"))
+        self.assertEqual(digest(names), pinned.hexdigest())
+        self.assertEqual(digest(names, str(self.root)), pinned.hexdigest())
 
     def test_unchanged_reviewed_files_pass_even_after_an_edit(self):
         self.acceptance("feature.json", [self.reviewed()])
@@ -549,6 +575,18 @@ class AcceptanceReviewTests(AcceptanceCase):
         self.acceptance("feature.json", [self.reviewed("src/app.py")])
         self.assertEqual(self.stop(), {})
         self.source.write_bytes(b"print('changed')\n")
+        self.assertIn("code-review (stale: reviewed files changed", self.stop()["reason"])
+
+    def test_files_spelled_relative_and_reordered_stay_fresh_until_a_file_changes(self):
+        from provost_runtime.acceptance import digest
+        other = self.root / "src" / "other.py"
+        other.write_bytes(b"x = 1\n")
+        canonical = sorted(os.path.normpath(str(path)) for path in (self.source, other))  # what the CLI prints
+        item = gate("code-review", "pass", kind="review", files=["src/other.py", "./src/app.py"],
+                    digest=digest(canonical))
+        self.acceptance("feature.json", [item])
+        self.assertEqual(self.stop(), {})
+        other.write_bytes(b"x = 2\n")
         self.assertIn("code-review (stale: reviewed files changed", self.stop()["reason"])
 
     def test_review_without_files_is_stale_only_after_an_edit(self):
