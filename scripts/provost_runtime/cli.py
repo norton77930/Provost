@@ -110,7 +110,7 @@ def digest_command(args):
             return 0
         files = acceptance.canonical_files(options.paths, cwd)
         try:
-            value = acceptance.digest(files)
+            value = acceptance.digest(files, cwd)
         except OSError as exc:
             raise StoreError("FILE_UNREADABLE", detail=str(exc.filename or "")) from None
         print(json.dumps({"files": files, "digest": value}, ensure_ascii=True))

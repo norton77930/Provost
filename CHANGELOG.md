@@ -359,6 +359,10 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   before hashing, the same form the `digest` command prints, so a digest recorded from
   the command is unchanged, while adding, removing, replacing or editing a file is
   still a change.
+- A Stop no longer passes every gate when one gate lists an unreadable file and an
+  invalid name (#137): naming the readable files could raise on the invalid name and the
+  fail-soft hook then released the turn, so the stale gate and the pending ones were
+  never reported.
 - The board mod reads an acceptance file the way the Stop gate does (#127). A gate of an
   unknown kind now makes the whole file malformed instead of being dropped, a file with
   a valid top-level `closed` reason is finished and no longer shows its gates, and

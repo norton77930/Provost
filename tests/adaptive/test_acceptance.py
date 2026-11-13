@@ -572,6 +572,19 @@ class AcceptanceReviewTests(AcceptanceCase):
         self.assertIn("code-review (stale: reviewed files changed since the review", reason)
         self.assertIn(str(self.source), reason)
 
+    def test_unreadable_file_and_an_invalid_name_still_name_the_gate_and_hold_the_others(self):
+        # The deleted file sorts first, so digest() raises OSError at it before it meets the NUL name; naming
+        # the readable files then hits the NUL name, which raises ValueError (or OSError) and must not escape.
+        invalid = "zzz\x00name"
+        item = gate("code-review", "pass", kind="review", files=[str(self.source), invalid], digest="0" * 64)
+        self.acceptance("feature.json", [item, gate("other", "pending")])
+        self.source.unlink()
+        result = self.stop()
+        self.assertEqual(result.get("decision"), "block", result)
+        self.assertIn("code-review (stale: reviewed files changed since the review", result["reason"])
+        self.assertIn(str(self.source), result["reason"])
+        self.assertIn("other (pending)", result["reason"])
+
     def test_relative_reviewed_files_resolve_against_the_event_cwd(self):
         self.acceptance("feature.json", [self.reviewed("src/app.py")])
         self.assertEqual(self.stop(), {})
