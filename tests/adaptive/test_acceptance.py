@@ -537,6 +537,7 @@ class AcceptanceReviewTests(AcceptanceCase):
         self.addCleanup(os.chdir, previous)
         # Against the process cwd as getcwd() spells it: on macOS a /var temp dir reads back as /private/var.
         self.assertEqual(digest(["src/app.py"]), digest([os.path.join(os.getcwd(), "src", "app.py")]))
+
     def test_digest_of_a_canonical_list_is_the_value_the_cli_has_always_printed(self):
         import hashlib
         from provost_runtime.acceptance import digest
