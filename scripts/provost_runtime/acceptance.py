@@ -214,8 +214,10 @@ def unmet_state(gate, edited=None, cwd=None, tree=None):
     never do.
 
     A verdict covers content. Any passed gate but a human one with files and digest is judged by them alone:
-    it is stale when digest() of its files (relative ones read from cwd, the event cwd; spelling and order do
-    not matter, see canonical_files()) no longer matches,
+    it is stale when digest() of its files (relative ones read from cwd, the event cwd; relative or absolute,
+    `..`, separators and order do not matter, but letter case and the spelling of cwd, such as drive letter case,
+    a junction or an 8.3 short name, are kept as written, so they can make a gate read stale but never hide a
+    change; see canonical_files()) no longer matches,
     whoever changed them: a subagent, Bash or the main session; an unreadable or deleted file counts as
     changed; ranAt is not used.
 
@@ -285,12 +287,13 @@ def _files_changed(gate, cwd):
 
 
 def _readable_digest(files, cwd):
-    """A short digest of those of files that can still be read: what `now` says when one of them cannot."""
+    """A short digest of those of files that can still be read: what `now` says when one of them cannot. Never
+    raises: a name that cannot be read for any reason counts as unreadable."""
     entries = []
     for name in files:
         try:
             entries.append(digest([name], cwd))
-        except OSError:
+        except Exception:  # unreadable, or a name open() rejects (ValueError): either way, not readable
             entries.append(None)
     return hashlib.sha256(json.dumps(entries).encode("ascii")).hexdigest()[:SHORT_DIGEST]
 

@@ -90,7 +90,8 @@ def digest_command(args):
     (default: the current directory) and normalised, so the gate does not depend on the cwd it is checked
     from; the list is de-duplicated and sorted. That is acceptance.canonical_files(), the same spelling
     acceptance.digest() applies to whatever list it is given, so the Stop check agrees with what is printed
-    here whatever spelling or order a gate's files end up in. A path that
+    here whether a gate's files are written relative or absolute, with `..`, either separator or in any
+    order (letter case and the spelling of the cwd are kept). A path that
     cannot be read is an error: a review of a file that is not there is a typo, not a digest."""
     from . import acceptance
     try:
@@ -110,7 +111,7 @@ def digest_command(args):
             return 0
         files = acceptance.canonical_files(options.paths, cwd)
         try:
-            value = acceptance.digest(files)
+            value = acceptance.digest(files, cwd)
         except OSError as exc:
             raise StoreError("FILE_UNREADABLE", detail=str(exc.filename or "")) from None
         print(json.dumps({"files": files, "digest": value}, ensure_ascii=True))
