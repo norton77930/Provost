@@ -155,8 +155,8 @@ Then restart Claude Code and confirm with
 - appends the `<!-- claudex-native:begin -->` / `<!-- claudex-native:end -->`
   markers to `~/.claude/CLAUDE.md` when it has none (the policy only ever goes
   between them, and a malformed pair is refused);
-- adds the eight hook registrations below to `~/.claude/settings.json` when they
-  are missing. Everything else in the file is kept, it is re-serialized with a
+- adds the eight hook registrations below, and the ten handlers of the
+  outward-action gate, to `~/.claude/settings.json` when they are missing. Everything else in the file is kept, it is re-serialized with a
   2-space indent, and a file that is not valid JSON is refused. No value from it
   is ever printed;
 - writes `~/.claude/provost/config.json` with handoff on when it does not exist.
@@ -207,6 +207,14 @@ Replace `<runtime>` with the absolute path of
     {"type": "command", "command": "bash \"<runtime>/hooks/acceptance-gate\"", "timeout": 30}]}]
 }
 ```
+
+`setup` also appends two `PreToolUse` groups for the outward-action gate,
+matcher `Bash` and matcher `PowerShell`, each with five handlers like
+`{"type": "command", "command": "bash \"<runtime>/hooks/outward-gate\" push",
+"if": "Bash(*push*)", "timeout": 15}` for `push`, `merge`, `release`, `publish`
+and `branch` (`PowerShell(*push*)` and so on in the second group). The full JSON is
+in the guide's
+[Outward-action gate](docs/native-handoff.md#outward-action-gate).
 
 The `~/.claude/provost/config.json` it writes:
 
@@ -260,6 +268,10 @@ declaration:
   `.claude/acceptance/<task>.json`. A Stop hook pushes back while a non-human
   gate is pending, failed or stale, and a visual gate is judged against its
   mockup by `acceptance-verifier`, not by the session that did the work.
+- **Outward actions ask first.** A `PreToolUse` hook makes Claude Code ask
+  before `gh pr merge`, `gh release create`, `npm publish`, a force, delete, tag
+  or `main`/`master` `git push` and `git branch -D`, also in auto mode, unless the
+  user's newest own message says 授權. Subagents always get the prompt.
 - **Writers are budgeted.** Normally at most two concurrent writers, three when
   the third is provably independent; ownership of files and shared resources is
   checked before every wave.

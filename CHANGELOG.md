@@ -14,6 +14,23 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Added
 
+- Outward-action gate (`hooks/outward-gate`, `provost_runtime.outward_gate`): a
+  synchronous `PreToolUse` hook on `Bash` and `PowerShell` that answers
+  `permissionDecision: "ask"` before `gh pr merge`, `gh release create`,
+  `npm publish`, a force, delete, tag, `--all`/`--mirror` or `main`/`master`
+  `git push` and `git branch -D`, so Claude Code prompts even in auto mode. It
+  lets the command through, with no decision, when the newest transcript entry
+  marked `origin.kind: "human"` says 授權 as a go-ahead (judged per clause:
+  等我授權, 授權之前, 不可以授權, 授權了嗎？ and 「授權」 do not count); subagent
+  calls always ask, and so does every failure on a candidate command. It never
+  denies. Commands are split on operators and newlines, every `$(...)` and
+  backtick is read as a command of its own, and `git`, `gh` and `npm` are
+  recognised anywhere in a simple command. `install.py setup` registers ten
+  handlers (Bash and PowerShell × push, merge, release, publish, branch), each
+  with an `if` rule such as
+  `Bash(*push*)`, so the hook starts only for commands that mention one of those
+  words; `check` names each missing rule. See the guide's
+  [Outward-action gate](docs/native-handoff.md#outward-action-gate).
 - `tools/memory-review.js`: a read-only report of stale auto memory. It lists
   every `<config>/projects/*/memory` dir on each run, so a new project is covered
   with no setup, and suggests fixes for overdue follow-up dates, bloated memory

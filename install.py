@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 RUNTIME = "provost/runtime/native-pilot-v1"
-HOOKS = ("_python.sh", "runtime", "native-event", "native-facts", "acceptance-gate")
+HOOKS = ("_python.sh", "runtime", "native-event", "native-facts", "acceptance-gate", "outward-gate")
 POLICY_SOURCE = "native/CLAUDE.native.md"
 POLICY_TARGET = "CLAUDE.md"
 BEGIN = b"<!-- claudex-native:begin -->"
@@ -38,7 +38,7 @@ END = b"<!-- claudex-native:end -->"
 KEEP_LOCAL = "skills/handoff/SKILL.md"
 # Hooks that count only when registered without "async": true (an async Stop hook cannot block the turn,
 # and an async PreToolUse hook cannot add context to the dispatch).
-SYNC_HOOKS = ("acceptance-gate",)
+SYNC_HOOKS = ("acceptance-gate", "outward-gate")
 SETTINGS = "settings.json"
 RUNTIME_CONFIG = "provost/config.json"
 # What setup registers, and what check requires (event, matcher and sync mode; not the timeout):
@@ -54,6 +54,17 @@ REGISTRATIONS = (
     ("Stop", None, "native-event", {"async": True, "timeout": 20}),
     ("Stop", None, "acceptance-gate", {"timeout": 30}),
 )
+# The outward-action gate (hooks/outward-gate): one synchronous PreToolUse handler per (tool, keyword), each
+# with an "if" permission rule, so Claude Code starts the hook only for a command that mentions the keyword
+# ("if" holds exactly one rule). setup writes `bash "<runtime>/hooks/outward-gate" <keyword>` (distinct
+# commands, so no two handlers can be merged as duplicates) under matcher <tool>. check accepts, per rule,
+# any synchronous outward-gate entry whose group matcher covers the tool and whose "if" is that rule or
+# absent. KEYWORDS must stay equal to provost_runtime.outward_gate.KEYWORDS and the hook's fast path.
+OUTWARD = "outward-gate"
+OUTWARD_TOOLS = ("Bash", "PowerShell")
+OUTWARD_KEYWORDS = ("push", "merge", "release", "publish", "branch")
+GUARDED = tuple((tool, keyword, f"{tool}(*{keyword}*)") for tool in OUTWARD_TOOLS for keyword in OUTWARD_KEYWORDS)
+GUARDED_EXTRA = {"timeout": 15}
 DEFAULT_CONFIG = {"schema_version": 1, "mode": "adaptive", "workspace_roots": [], "all_workspaces": True,
                   "max_writers": 2, "burst_writers": 3, "handoff": True}
 BOM = b"\xef\xbb\xbf"
@@ -209,11 +220,12 @@ def check_layout(source, config, targets):
 
 def settings_status(config):
     """(status, problems). status is one of
-    ok: every entry of REGISTRATIONS is present;
+    ok: every entry of REGISTRATIONS and every GUARDED rule is present;
     not-registered: one is missing or differs (or the file is absent, or has no hooks);
-    async-duplicate: all are present, but an async acceptance-gate entry runs beside the sync one;
+    async-duplicate: all are present, but an async acceptance-gate or outward-gate entry runs beside the sync one;
     unknown: the file cannot be read or is not valid JSON.
     problems: (event, hook, kind, by_hand, expected) per registration that is not satisfied, in REGISTRATIONS
+    order, then one ("PreToolUse", "outward-gate", "missing", False, "if <rule>") per missing GUARDED rule, in GUARDED
     order; kind is missing, matcher or sync (see _problem); by_hand is True when setup would leave it as it
     is; expected is the registered matcher or sync mode ("sync" or "async") for matcher and sync, taken from
     REGISTRATIONS, never from the file, and None for missing.
@@ -232,10 +244,13 @@ def settings_status(config):
         if kind:
             expected = {"missing": None, "matcher": matcher, "sync": "async" if extra.get("async") else "sync"}[kind]
             problems.append((event, name, kind, _registered(hooks.get(event), name), expected))
+    for tool, _, rule in GUARDED:
+        if not _guarded(hooks.get("PreToolUse"), tool, rule):
+            problems.append(("PreToolUse", OUTWARD, "missing", False, f"if {rule}"))
     if problems:
         return "not-registered", problems
     if any(list(_async_gates(hooks.get(event), name)) for event, _, name, extra in REGISTRATIONS
-           if name in SYNC_HOOKS and not extra.get("async")):
+           if name in SYNC_HOOKS and not extra.get("async")) or list(_async_gates(hooks.get("PreToolUse"), OUTWARD)):
         return "async-duplicate", []
     return "ok", []
 
@@ -253,7 +268,7 @@ def _problem(groups, matcher, name, is_async):
     ("async": true exactly when is_async)."""
     runs = [(group, hook) for group in groups if isinstance(group, dict) and isinstance(group.get("hooks"), list)
             for hook in group["hooks"]
-            if isinstance(hook, dict) and any(_ends_with(text, f"{RUNTIME}/hooks/{name}") for text in _strings(hook))
+            if isinstance(hook, dict) and any(_runs(text, name) for text in _strings(hook))
             ] if isinstance(groups, list) else []
     if not runs:
         return "missing"
@@ -287,7 +302,7 @@ def _covers(matcher):
 
 def _registered(groups, name):
     """True when a hook entry of groups runs RUNTIME/hooks/<name> (synchronously, for SYNC_HOOKS)."""
-    return any(_ends_with(text, f"{RUNTIME}/hooks/{name}")
+    return any(_runs(text, name)
                for text in _hook_strings(groups, sync_only=name in SYNC_HOOKS))
 
 
@@ -315,7 +330,7 @@ def _async_gates(groups, name):
         entries = group.get("hooks") if isinstance(group, dict) else None
         for hook in entries if isinstance(entries, list) else []:
             if (isinstance(hook, dict) and hook.get("async") is True
-                    and any(_ends_with(text, f"{RUNTIME}/hooks/{name}") for text in _strings(hook))):
+                    and any(_runs(text, name) for text in _strings(hook))):
                 yield group, hook
 
 
@@ -328,9 +343,34 @@ def _drop_async(groups, name):
     return bool(found)
 
 
+def _runs(text, name):
+    """True when a command (or argument) string runs RUNTIME/hooks/<name>, alone or followed by arguments
+    (outward-gate handlers pass their keyword)."""
+    suffix = f"{RUNTIME}/hooks/{name}"
+    if _ends_with(text, suffix):
+        return True
+    return re.search(r"(?:^|/)" + re.escape(suffix) + r"[\"']?\s+\S", text.replace("\\", "/").strip()) is not None
+
+
 def _ends_with(text, suffix):
     text = text.replace("\\", "/").strip().rstrip("\"' ")
     return text == suffix or text.endswith("/" + suffix)
+
+
+def _guarded(groups, tool, rule):
+    """True when a synchronous outward-gate entry of groups (PreToolUse) runs for tool under rule: its group
+    matcher covers tool and its "if" is rule, or absent (then it runs for every command of tool)."""
+    for group in groups if isinstance(groups, list) else []:
+        if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+            continue
+        covers = _covers(group.get("matcher", ""))
+        if covers is not None and tool not in covers:
+            continue
+        for hook in group["hooks"]:
+            if (isinstance(hook, dict) and hook.get("async") is not True and hook.get("if", rule) == rule
+                    and any(_runs(text, OUTWARD) for text in _strings(hook))):
+                return True
+    return False
 
 
 def with_markers(config):
@@ -354,7 +394,7 @@ def _unique_keys(pairs):
 
 
 def with_hooks(config):
-    """(settings.json bytes with the missing registrations, events added, events whose async acceptance-gate
+    """(settings.json bytes with the missing registrations, events added, (event, hook) pairs whose async
     entry was dropped); never echoes values."""
     path = config / SETTINGS
     raw = path.read_bytes() if path.is_file() else None
@@ -379,8 +419,8 @@ def with_hooks(config):
         groups = hooks.setdefault(event, [])
         if not isinstance(groups, list):
             raise InstallError(f"{SETTINGS}: hooks.{event} is not a list; nothing was changed")
-        if name in SYNC_HOOKS and _drop_async(groups, name) and event not in dropped:
-            dropped.append(event)
+        if name in SYNC_HOOKS and _drop_async(groups, name) and (event, name) not in dropped:
+            dropped.append((event, name))
         if _registered(groups, name):
             continue
         group = {} if matcher is None else {"matcher": matcher}
@@ -388,6 +428,20 @@ def with_hooks(config):
         groups.append(group)
         if event not in added:
             added.append(event)
+    groups = hooks.setdefault("PreToolUse", [])
+    if not isinstance(groups, list):
+        raise InstallError(f"{SETTINGS}: hooks.PreToolUse is not a list; nothing was changed")
+    if _drop_async(groups, OUTWARD):
+        dropped.append(("PreToolUse", OUTWARD))
+    for tool in OUTWARD_TOOLS:
+        missing = [(keyword, rule) for name, keyword, rule in GUARDED if name == tool and not _guarded(groups, tool, rule)]
+        if not missing:
+            continue
+        groups.append({"matcher": tool, "hooks": [
+            {"type": "command", "command": f'bash "{runtime}/hooks/{OUTWARD}" {keyword}', "if": rule, **GUARDED_EXTRA}
+            for keyword, rule in missing]})
+        if "PreToolUse" not in added:
+            added.append("PreToolUse")
     if not added and not dropped:
         return raw, added, dropped
     text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
@@ -413,7 +467,8 @@ def setup_targets(config):
     if not runtime_config.exists():
         extra.append(Target(RUNTIME_CONFIG, None, status="missing",
                             desired=(json.dumps(DEFAULT_CONFIG, indent=2) + "\n").encode("utf-8")))
-    report = {"markers": markers, "register": added, "drop_async": dropped,
+    report = {"markers": markers, "register": added, "drop_async": list(dict.fromkeys(e for e, _ in dropped)),
+              "drop_async_hooks": [{"event": e, "hook": n} for e, n in dropped],
               "runtime_config": "keep" if runtime_config.exists() else "create"}
     return policy, extra, report
 
@@ -624,11 +679,13 @@ def run_setup(args, config, changes, report):
     would = "would " if args.dry_run else ""
     steps = ([f"{would}add the claudex-native markers to {POLICY_TARGET}"] if report["markers"] else [])
     steps += [f"{would}register the {event} hook in {SETTINGS}" for event in report["register"]]
-    reasons = {"Stop": "an async hook cannot block the turn end, and beside the sync one it spends a second push",
-               "PreToolUse": "an async hook cannot add context to the dispatch"}
-    steps += [f"{would}drop the async acceptance-gate entry from {event} in {SETTINGS} "
-              f"({reasons.get(event, 'it must run synchronously')})"
-              for event in report["drop_async"]]
+    reasons = {("Stop", "acceptance-gate"): "an async hook cannot block the turn end, and beside the sync one it "
+                                            "spends a second push",
+               ("PreToolUse", "acceptance-gate"): "an async hook cannot add context to the dispatch",
+               ("PreToolUse", OUTWARD): "an async hook cannot ask before the command runs"}
+    steps += [f"{would}drop the async {d['hook']} entry from {d['event']} in {SETTINGS} "
+              f"({reasons.get((d['event'], d['hook']), 'it must run synchronously')})"
+              for d in report["drop_async_hooks"]]
     if report["runtime_config"] == "create":
         steps.append(f"{would}create {RUNTIME_CONFIG} (adaptive mode, handoff on)")
     plan = [{"path": t.rel, "action": "create" if t.status == "missing" else "update"} for t in changes]

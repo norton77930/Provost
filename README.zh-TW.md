@@ -138,7 +138,7 @@ python Provost/install.py setup
 
 - 把政策、角色、skill 和 runtime 複製到 `~/.claude`（和 `install` 相同）；
 - `~/.claude/CLAUDE.md` 沒有標記時，在檔尾補上 `<!-- claudex-native:begin -->` / `<!-- claudex-native:end -->`（政策只會寫在兩行之間；標記格式有誤會直接拒絕）；
-- `~/.claude/settings.json` 缺少的 hook 註冊會補上 8 條（內容見 [README.md 的 Install](README.md#install)）。檔案裡其他內容都保留，重新以 2 格縮排寫回；不是合法 JSON 的檔案會拒絕處理，也絕不印出檔案裡的任何值；
+- `~/.claude/settings.json` 缺少的 hook 註冊會補上 8 條，另外加上對外動作閘門的 10 個 handler（內容見 [README.md 的 Install](README.md#install) 和指南的 [Outward-action gate](docs/native-handoff.md#outward-action-gate)）。檔案裡其他內容都保留，重新以 2 格縮排寫回；不是合法 JSON 的檔案會拒絕處理，也絕不印出檔案裡的任何值；
 - `~/.claude/provost/config.json` 不存在時，寫入開啟 handoff 的預設值。
 
 每個要改的檔案都先備份到 `~/.claude/provost/backups/install-<UTC 時間>/`，附 `manifest.json`；失敗會自動回滾。重跑 `setup` 不會再改任何東西。第一次覆蓋內容不同的本機 `skills/handoff/SKILL.md` 時，會先在旁邊另存一份 `SKILL.md.local-<UTC 時間>.bak`。`settings.json` 的備份是完整副本（含其中的憑證），備份不會自動清除。安裝程式支援 `CLAUDE_CONFIG_DIR` 和 `--config-dir`。裝在 `<config dir>/provost/runtime/` 底下的 hook 和 runtime，會用自己所在的 `<config dir>/provost` 資料夾（其中的 `config.json`、`handoffs`、`cache`）；從 checkout 執行時才讀 `~/.claude/provost`。不論哪種，`PROVOST_CONFIG` 都可以覆蓋設定檔位置。
@@ -160,6 +160,7 @@ Provost 有三個部分：主 session 遵循的政策（[`native/CLAUDE.native.m
 - **風險決定用什麼證據結案。** 選「最便宜、但真的抓得到失敗」的證據：聚焦測試、實機執行，或只在兩者都看不出來時派 `code-reviewer`（動到對外介面再加 `architecture-reviewer`）。檔案數、diff 大小、「看起來很複雜」明文不是審查的理由。需要審查的改動就是 **R1**。
 - **R2 先停。** 認證、密鑰、金流、migration、破壞性 public API、跨 repo 或不可逆操作，等使用者決定，並且要審查通過後才算完成。
 - **驗收 gate 擋住這一輪。** 動工前，session 先把 gate（`machine`、`live`、`visual`、`review`、`human`）寫進 `.claude/acceptance/<task>.json`。非 human 的 gate 還沒過、失敗或過期時，Stop hook 會擋回去；visual gate 由 `acceptance-verifier` 對照設計稿判定，而不是由做這份工作的 session 自己判。
+- **對外動作先問。** `PreToolUse` hook 會在 `gh pr merge`、`gh release create`、`npm publish`、強制推送、刪除、推 tag 或推到 `main`/`master` 的 `git push`，以及 `git branch -D` 之前讓 Claude Code 跳出確認，auto mode 也一樣；只有使用者最新一則親自輸入的訊息含「授權」時才直接放行。subagent 一律要確認。
 - **writer 有預算。** 平常最多 2 個同時寫入，第 3 個要證明完全獨立；每一波派工前都檢查檔案和共用資源的歸屬。
 - **完成是有限的。** 所有主張都通過後，只跑預定的最後驗證，不再追加審查、測試或重構。
 

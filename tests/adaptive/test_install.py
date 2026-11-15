@@ -29,7 +29,7 @@ def write(path, data):
 
 
 def make_source(root):
-    for name in ("_python.sh", "runtime", "native-event", "native-facts", "acceptance-gate"):
+    for name in ("_python.sh", "runtime", "native-event", "native-facts", "acceptance-gate", "outward-gate"):
         write(root / "hooks" / name, f"#!/bin/sh\necho {name}\n")
         os.chmod(root / "hooks" / name, 0o755)
     write(root / "hooks" / "native-reminder", "legacy\n")  # not managed
@@ -103,6 +103,10 @@ class InstallCase(unittest.TestCase):
             group = {} if matcher is None else {"matcher": matcher}
             group["hooks"] = [{"type": "command", "command": f'bash "{runtime}/hooks/{name}"', **extra}]
             hooks.setdefault(event, []).append(group)
+        for tool in install.OUTWARD_TOOLS:
+            hooks["PreToolUse"].append({"matcher": tool, "hooks": [
+                {"type": "command", "command": f'bash "{runtime}/hooks/outward-gate" {keyword}', "if": rule}
+                for name, keyword, rule in install.GUARDED if name == tool]})
         write(self.config / "settings.json", json.dumps({"hooks": hooks}))
 
     def run_cli(self, *argv):
@@ -718,6 +722,11 @@ class SettingsTests(InstallCase):
                 hook.setdefault("async", True)
             group = {} if matcher is None else {"matcher": matcher}
             hooks.setdefault(event, []).append({**group, "hooks": [hook]})
+        # The outward-gate handlers: start's command with outward-gate for native-event, one "if" rule each.
+        outward = json.loads(json.dumps(start).replace("native-event", "outward-gate"))
+        for tool in install.OUTWARD_TOOLS:
+            hooks["PreToolUse"].append({"matcher": tool, "hooks": [
+                {"type": "command", **outward, "if": rule} for name, _, rule in install.GUARDED if name == tool]})
         return {"env": {"TOKEN": SECRET}, "hooks": hooks}
 
     def test_plain_command_strings(self):
@@ -985,8 +994,8 @@ class SettingsTests(InstallCase):
         for groups in data["hooks"].values():
             for group in groups:
                 for hook in group["hooks"]:
-                    path = hook.pop("command")[len('bash "'):-1]
-                    hook.update(command=bash, args=[path.replace("/", "\\")])
+                    path, _, rest = hook.pop("command")[len('bash "'):].partition('"')
+                    hook.update(command=bash, args=[path.replace("/", "\\"), *rest.split()])
         code, report, _ = self.check_with(data)
         self.assertEqual((code, report["settings"], report["registrations"]), (0, "ok", []))
 
@@ -1001,12 +1010,67 @@ class SettingsTests(InstallCase):
         self.assertIn("python install.py setup", out)
         self.assertIn("by hand", out)
 
+    def outward_groups(self, data):
+        return [g for g in data["hooks"]["PreToolUse"] if g.get("matcher") in install.OUTWARD_TOOLS]
+
+    def test_each_missing_outward_rule_is_named(self):
+        data = self.set_up()
+        bash = self.outward_groups(data)[0]
+        bash["hooks"] = [h for h in bash["hooks"] if h["if"] != "Bash(*merge*)"]
+        out = self.assert_names(data, "PreToolUse outward-gate: missing (expected if Bash(*merge*))")
+        self.assertIn("python install.py setup", out)
+
+    def test_outward_entries_check_accepts(self):
+        data = self.set_up()
+        # Without "if" an entry runs for every command of its tool: it covers each of that tool's rules.
+        no_if = json.loads(json.dumps(data))
+        for group in self.outward_groups(no_if):
+            group["hooks"] = [{k: v for k, v in group["hooks"][0].items() if k != "if"}]
+        code, report, _ = self.check_with(no_if)
+        self.assertEqual((code, report["settings"]), (0, "ok"))
+        # One group whose matcher lists both tools.
+        merged = json.loads(json.dumps(data))
+        bash, pwsh = self.outward_groups(merged)
+        merged["hooks"]["PreToolUse"].remove(pwsh)
+        bash.update(matcher="Bash|PowerShell", hooks=bash["hooks"] + pwsh["hooks"])
+        code, report, _ = self.check_with(merged)
+        self.assertEqual((code, report["settings"]), (0, "ok"))
+
+    def test_outward_entries_check_rejects(self):
+        data = self.set_up()
+        # A rule under the other tool's matcher does not run for this tool.
+        swapped = json.loads(json.dumps(data))
+        bash, pwsh = self.outward_groups(swapped)
+        bash["matcher"], pwsh["matcher"] = "PowerShell", "Bash"
+        self.assert_names(swapped, *[f"PreToolUse outward-gate: missing (expected if {rule})"
+                                     for _, _, rule in install.GUARDED])
+        # An async entry cannot ask before the call runs.
+        asyn = json.loads(json.dumps(data))
+        hook = self.outward_groups(asyn)[1]["hooks"][2]
+        hook["async"] = True
+        self.assert_names(asyn, f"PreToolUse outward-gate: missing (expected if {hook['if']})")
+        # Another hook with the rule, or a different rule, does not count.
+        other = json.loads(json.dumps(data))
+        first = self.outward_groups(other)[0]["hooks"]
+        first[0]["command"] = first[0]["command"].replace("outward-gate", "native-facts")
+        first[1]["if"] = "Bash(gh pr merge *)"
+        self.assert_names(other, "PreToolUse outward-gate: missing (expected if Bash(*push*))",
+                          "PreToolUse outward-gate: missing (expected if Bash(*merge*))")
+
+    def test_async_outward_duplicate_is_reported(self):
+        data = self.set_up()
+        extra = dict(self.outward_groups(data)[0]["hooks"][0], **{"async": True})
+        data["hooks"]["PreToolUse"].append({"matcher": "Bash", "hooks": [extra]})
+        code, report, _ = self.check_with(data)
+        self.assertEqual((code, report["settings"]), (1, "async-duplicate"))
+
     def test_missing_settings_file_names_every_registration(self):
         (self.config / "settings.json").unlink()
         code, report = self.check_json()
         self.assertEqual(code, 1)
         self.assertEqual(report["registrations"],
-                         [f"{event} {name}: missing" for event, _, name, _ in install.REGISTRATIONS])
+                         [f"{event} {name}: missing" for event, _, name, _ in install.REGISTRATIONS]
+                         + [f"PreToolUse outward-gate: missing (expected if {rule})" for _, _, rule in install.GUARDED])
 
     def test_unreadable_settings_exit_one_and_say_so(self):
         for text in ('{"env": {"TOKEN": "' + SECRET + '"', b"\xff\xfe\x00", "[1, 2]", "[" * 200000):
@@ -1050,17 +1114,25 @@ class SetupTests(InstallCase):
         text = (self.config / "CLAUDE.md").read_text(encoding="utf-8")
         self.assertIn(f"{BEGIN}\n# Policy\n\nline two\n{END}\n", text)
         runtime = (self.config / RUNTIME).as_posix()
+        outward = [f"outward-gate\" {keyword}" for _, keyword, _ in install.GUARDED]
         for event in self.EVENTS:
             names = {"PostToolUse": ["native-facts"], "UserPromptSubmit": ["native-facts"],
                      "PreToolUse": ["acceptance-gate"],
                      "Stop": ["native-event", "acceptance-gate"]}.get(event, ["native-event"])
-            self.assertEqual(self.provost_commands(event), [f'bash "{runtime}/hooks/{n}"' for n in names], event)
+            expected = [f'bash "{runtime}/hooks/{n}"' for n in names]
+            if event == "PreToolUse":
+                expected += [f'bash "{runtime}/hooks/{n}' for n in outward]
+            self.assertEqual(self.provost_commands(event), expected, event)
         stop, gate = (group["hooks"][0] for group in self.settings_data()["hooks"]["Stop"])
         self.assertEqual((stop.get("async"), stop.get("timeout")), (True, 20))
         self.assertEqual((gate.get("async"), gate.get("timeout")), (None, 30))
-        (group,) = self.settings_data()["hooks"]["PreToolUse"]
+        group, bash, pwsh = self.settings_data()["hooks"]["PreToolUse"]
         self.assertEqual((group["matcher"], group["hooks"][0].get("async"), group["hooks"][0].get("timeout")),
                          ("Agent", None, 30))
+        for tool, guarded in (("Bash", bash), ("PowerShell", pwsh)):
+            self.assertEqual(guarded["matcher"], tool)
+            self.assertEqual([(h["if"], h.get("async"), h["timeout"]) for h in guarded["hooks"]],
+                             [(rule, None, 15) for name, _, rule in install.GUARDED if name == tool])
         config = json.loads((self.config / "provost/config.json").read_text(encoding="utf-8"))
         self.assertEqual((config["mode"], config["handoff"], config["max_writers"]), ("adaptive", True, 2))
 
@@ -1116,8 +1188,33 @@ class SetupTests(InstallCase):
         self.assertEqual(data["hooks"]["Stop"][:2], [{"hooks": [mine]}, {"hooks": [sync]}])
         self.assertEqual([h for g in data["hooks"]["Stop"] for h in g["hooks"] if h.get("async") is True
                           and "acceptance-gate" in h["command"]], [])
-        self.assertEqual(data["hooks"]["PreToolUse"], [{"matcher": "Agent", "hooks": [sync]}])
+        self.assertEqual(data["hooks"]["PreToolUse"][0], {"matcher": "Agent", "hooks": [sync]})
         self.assertIn("async", out)
+        self.assertEqual(self.check_json()[1]["settings"], "ok")
+        before = self.snapshot()
+        self.assertEqual(self.run_setup()[0], 0)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_setup_adds_only_the_missing_outward_rules(self):
+        self.assertEqual(self.run_setup()[0], 0)
+        data = self.settings_data()
+        bash = [g for g in data["hooks"]["PreToolUse"] if g.get("matcher") == "Bash"][0]
+        removed = bash["hooks"].pop(1)
+        asyn = dict(bash["hooks"][0], **{"async": True})
+        data["hooks"]["PreToolUse"].append({"matcher": "PowerShell", "hooks": [asyn]})
+        write(self.config / "settings.json", json.dumps(data))
+        code, out, _ = self.run_setup("--dry-run", "--json")
+        report = json.loads(out)
+        self.assertEqual((code, report["drop_async"], report["drop_async_hooks"]),
+                         (0, ["PreToolUse"], [{"event": "PreToolUse", "hook": "outward-gate"}]))
+        code, out, _ = self.run_setup("--dry-run")
+        self.assertIn("drop the async outward-gate entry from PreToolUse", out)
+        self.assertNotIn("acceptance-gate entry", out)
+        code, out, _ = self.run_setup()
+        self.assertEqual(code, 0)
+        hooks = self.settings_data()["hooks"]["PreToolUse"]
+        self.assertEqual(hooks[-1], {"matcher": "Bash", "hooks": [removed]})  # only the missing one is added
+        self.assertEqual([h for g in hooks for h in g["hooks"] if h.get("async")], [])
         self.assertEqual(self.check_json()[1]["settings"], "ok")
         before = self.snapshot()
         self.assertEqual(self.run_setup()[0], 0)

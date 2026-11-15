@@ -64,7 +64,8 @@ def runtime_hash(root=RUNTIME_ROOT):
     """Line-ending-insensitive digest of the runtime files; a missing file changes it."""
     root = Path(root)
     rels = {p.relative_to(root).as_posix() for p in (root / "scripts" / "provost_runtime").glob("*.py")}
-    rels |= {"hooks/runtime", "hooks/native-event", "hooks/native-facts", "hooks/acceptance-gate", "hooks/_python.sh"}
+    rels |= {"hooks/runtime", "hooks/native-event", "hooks/native-facts", "hooks/acceptance-gate", "hooks/outward-gate",
+             "hooks/_python.sh"}
     digest = hashlib.sha256()
     for rel in sorted(rels):
         try:

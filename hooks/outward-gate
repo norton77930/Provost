@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Outward-action gate entrypoint. Register it for PreToolUse (synchronous) on Bash and PowerShell, one
+# handler per keyword "if" rule (install.py setup writes them): Claude Code then starts it only for a
+# command that mentions push, merge, release, publish or branch.
+# Claude Code calls "if" best-effort (an input it cannot split runs every hook), so the command is checked
+# here again with bash builtins only: a command without one of those words (any case) exits 0 with no
+# output before any interpreter starts (each process costs about 0.5 s on Windows). A command field this
+# test cannot read goes to Python.
+# Otherwise provost_runtime.outward_gate decides: a permissionDecision "ask" for gh pr merge, gh release
+# create, npm publish, a force, delete, tag or main/master git push and git branch -D, unless the person's
+# last own message says 授權; else no output. It never denies. When Python cannot run, a candidate
+# command gets "ask" too (fail closed: approving the prompt lets it run). Always exits 0.
+set -uo pipefail
+input=""
+IFS= read -r -d '' input || true
+command_re='"command"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)"'
+command="$input"
+if [[ "$input" =~ $command_re ]]; then
+    command="${BASH_REMATCH[1]}"
+fi
+shopt -s nocasematch
+case "$command" in
+    *push* | *merge* | *release* | *publish* | *branch*) ;;
+    *) exit 0 ;;
+esac
+shopt -u nocasematch
+_src="${BASH_SOURCE[0]//\\//}"
+[[ "$_src" == */* ]] || _src="./${_src}"
+# shellcheck source=_python.sh
+source "${_src%/*}/_python.sh"
+if provost_find_python 2>/dev/null &&
+    output="$("${PROVOST_PY[@]}" -m provost_runtime.outward_gate <<< "$input" 2>/dev/null)"; then
+    [[ -z "$output" ]] || printf '%s\n' "$output"
+    exit 0
+fi
+printf '%s\n' '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask", "permissionDecisionReason": "Provost outward gate could not start Python 3.11+ to check this command; approve it here if it is intended."}}'
+exit 0

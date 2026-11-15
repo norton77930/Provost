@@ -950,7 +950,8 @@ migrated entries as they are.
 A new installation uses `python install.py setup`, which also registers all eight
 hook entries (SessionStart, PreCompact, PostCompact, PreToolUse, PostToolUse,
 UserPromptSubmit, and Stop twice: the async declaration scan and the synchronous
-[acceptance gate](#acceptance-gates)) in `settings.json` and writes
+[acceptance gate](#acceptance-gates)) and the ten handlers of the
+[outward-action gate](#outward-action-gate) in `settings.json` and writes
 `provost/config.json`. `python install.py install` is for upgrading an existing
 installation and never touches `settings.json`. The full
 registration JSON is under [Install](../README.md#install) in the README.
@@ -1062,7 +1063,9 @@ not at the session's real start.
 `python install.py setup` registers every hook; to register them by hand, use the
 JSON under "What setup registers, to do it by hand" in the
 [README](../README.md#install). It lists all eight entries, including the two
-acceptance-gate ones described under [Acceptance gates](#acceptance-gates).
+acceptance-gate ones described under [Acceptance gates](#acceptance-gates), and the
+outward-gate handlers described under [Outward-action gate](#outward-action-gate),
+which `check` reports as `PreToolUse outward-gate: missing (expected if <rule>)`.
 
 `python install.py check` reports `settings: not-registered` until every entry that
 `setup` writes is present: all eight registrations, each on its event, with a matcher
@@ -1379,3 +1382,127 @@ adds context at dispatch time and never denies, asks or blocks one:
 
 `python install.py setup` registers it, and `check` reports `settings: not-registered`
 (drift, exit 1) while it is missing or marked `"async": true`.
+
+## Outward-action gate
+
+The policy says outward actions (merge, release, tag, force push) wait for the
+user's fresh approval; until now only the model's own discipline and auto mode's
+classifier enforced that. `hooks/outward-gate`, a synchronous `PreToolUse` hook on
+`Bash` and `PowerShell`, makes Claude Code ask instead. It answers with
+`{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask",
+"permissionDecisionReason": "..."}}`, which Claude Code shows as a permission prompt,
+also in auto mode, where the classifier does not decide an `ask`. The reason names
+the action and says why. It never denies, and for any other command it prints
+nothing, so the normal permission flow decides.
+
+**What asks.** The command is split into simple commands the way a shell would
+(`&&`, `||`, `;`, `|`, `&`, newlines with `\` and `` ` `` line continuations
+joined, subshells and braces, PowerShell's `{...}` without spaces too). Every
+`$(...)` and, in a Bash call, every backtick substitution is read as a command of its
+own wherever it stands (quoted, glued to a word, inside a `bash -c` string; single
+quotes are not honoured, so a quoted `'$(x)'` is read too) and stays in place as a
+computed value; `$(git branch --show-current)`, `$(git rev-parse --abbrev-ref HEAD)`
+and `$(git symbolic-ref --short HEAD)` count as `HEAD`. The body of a heredoc fed to
+`cat` (a commit message or PR body in `"$(cat <<'EOF' ... EOF)"`) is data and is not
+read; a heredoc fed to anything else is. A redirect and its target (`2>&1`,
+`>/dev/null`, PowerShell `*> $null`) are left out. `git`, `gh` and `npm` are
+recognised at any position of a simple command, so `if ...; then gh pr merge`,
+`sudo -u me git push -f`, `xargs -I {} git branch -D {}` and `env A=1 npm publish`
+are all seen; the string of `bash -c`, `sh -c`, `pwsh -Command`, `powershell -c`,
+`cmd /c` and `eval` is read as a command too. A command that merely mentions such
+words (`echo gh pr merge`) asks as well: the check errs toward asking. In a Bash
+call a backslash is read both as an escape and as a Windows path separator
+(`C:\tools\gh.exe pr merge 5`). A simple command asks when it is:
+
+- `gh pr merge` or `gh release create` (flags may sit between the words:
+  `gh pr -R owner/repo merge 5`);
+- `npm publish` (any `npm` call with a `publish` argument, so `npm run publish`
+  asks too);
+- `git push` with `-f`, `--force`, `--force-with-lease` or a `+refspec`; with
+  `--delete`, `-d` or a `:ref`; with `--tags`, `--follow-tags`, `tag <name>` or a
+  `refs/tags/` ref; with `--all`, `--mirror` or `--branches`; to `main` or `master`
+  (as the destination of a refspec, `refs/heads/` included); with a computed
+  refspec (`git push origin $(...)`); or with no refspec or `HEAD` while the
+  repository has `main` or `master` checked out, read from its `HEAD` file. The
+  repository is the event's `cwd`, changed by a preceding `cd`, `pushd`,
+  `Set-Location` or `Push-Location` (Git Bash `/d/x` paths included) or `git -C`;
+  when the command names the directory that way and its branch cannot be read, or
+  the directory is not spelled out (`cd "$MAIN"`, `cd $env:X`, `git -C "$(...)"`,
+  `cd -`), the push asks as `branch unknown`;
+- `git branch -D`, or `-d`/`--delete` together with `-f`/`--force`.
+
+A tag pushed by its bare name (`git push origin v1.0`) is not recognised, and
+neither is a command hidden in a script file, an alias, a heredoc fed to `cat` and
+then piped to a shell, or `gh api`. A child session (`claude -p "授權 ..."`) is not
+checked either: its own gate reads its own transcript. The gate catches routine
+slips; it is not a sandbox.
+
+**授權 lets it through.** When the person's newest own message says 授權, the
+hook gives no decision and the command runs as it would without the gate. "Own
+message" means the newest transcript entry Claude Code marks `origin.kind:
+"human"` and not `isSidechain` or `isCompactSummary`: a typed prompt (`type:
+"user"`, text or text-and-image content) or a message sent while the turn runs (an
+attachment of type `queued_command`). Subagent hand-backs (`peer`), background
+notices (`task-notification`), compact summaries, slash-command output and tool
+results never count, so no model output can approve. Each 授權 is judged within
+its clause, the text between the nearest punctuation marks or line breaks around
+it. It counts only as a go-ahead: the clause text before it is empty or a short
+affirmation (好、好的、OK、yes、可以、同意、我、那就、就、嗯、對、是、現在、直接:
+授權, 好，授權 merge, 我授權你 merge #140), and the text after it does not make it
+a time or a noun (前、後、之前、之後、時、的、條款、流程、碼、規則 …: 授權之前,
+授權條款). So 等我授權, 之後我會授權 and OAuth 授權流程壞了 do not count. A negation
+before it in the clause (不、未、沒、別、無、非、勿、免、取消、撤銷、撤回、收回、
+拒絕、停止、暫緩: 不可以授權, 取消授權) or a question anywhere in the clause (?、？、
+嗎、呢、為什麼、是否、要不要、能不能、可不可以: 授權了嗎？) refuses the whole
+message. A 授權 in quotes (「授權」, "授權") is a mention and neither counts nor
+refuses. The message lets commands through only when at least one 授權 counts and
+none refuses. The transcript is read backwards from
+its end, at most 64 MiB.
+
+It always asks for a call made by a subagent (the event has `agent_id`): a
+message cannot authorize a subagent. It also asks when the transcript cannot be
+read or holds no message of the person's within that range, when the check itself
+fails on a command that mentions one of the keywords below, and when no Python
+3.11+ can be started (the bash part answers that one itself).
+
+**Cost.** Each handler carries an `if` rule, so Claude Code starts the hook only
+for a command that mentions `push`, `merge`, `release`, `publish` or `branch`
+(Claude Code applies `if` per subcommand and calls it best-effort: a command it
+cannot split runs the hook anyway). The bash part checks the same five words (any
+case) with builtins before any interpreter starts, so such a call costs one bash
+start; a candidate costs one Python start more. `install.py setup` registers one
+handler per tool and keyword, with distinct commands so that no two are merged as
+duplicates:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "Bash", "hooks": [
+        {"type": "command", "command": "bash \"<runtime>/hooks/outward-gate\" push", "if": "Bash(*push*)", "timeout": 15},
+        {"type": "command", "command": "bash \"<runtime>/hooks/outward-gate\" merge", "if": "Bash(*merge*)", "timeout": 15},
+        {"type": "command", "command": "bash \"<runtime>/hooks/outward-gate\" release", "if": "Bash(*release*)", "timeout": 15},
+        {"type": "command", "command": "bash \"<runtime>/hooks/outward-gate\" publish", "if": "Bash(*publish*)", "timeout": 15},
+        {"type": "command", "command": "bash \"<runtime>/hooks/outward-gate\" branch", "if": "Bash(*branch*)", "timeout": 15}
+      ]},
+      {"matcher": "PowerShell", "hooks": [
+        {"type": "command", "command": "bash \"<runtime>/hooks/outward-gate\" push", "if": "PowerShell(*push*)", "timeout": 15},
+        {"type": "command", "command": "bash \"<runtime>/hooks/outward-gate\" merge", "if": "PowerShell(*merge*)", "timeout": 15},
+        {"type": "command", "command": "bash \"<runtime>/hooks/outward-gate\" release", "if": "PowerShell(*release*)", "timeout": 15},
+        {"type": "command", "command": "bash \"<runtime>/hooks/outward-gate\" publish", "if": "PowerShell(*publish*)", "timeout": 15},
+        {"type": "command", "command": "bash \"<runtime>/hooks/outward-gate\" branch", "if": "PowerShell(*branch*)", "timeout": 15}
+      ]}
+    ]
+  }
+}
+```
+
+`python install.py check` accepts, for each of the ten rules, any synchronous
+`outward-gate` entry whose group matcher covers the tool and whose `if` is that
+rule or absent (an entry without `if` runs for every command of its tool, which
+covers all five, at the cost of a bash start per call). Each missing rule is a
+`register` line `PreToolUse outward-gate: missing (expected if Bash(*push*))`
+(drift, exit 1, fixed by `setup`, which adds only the missing handlers). An entry
+marked `"async": true` cannot ask before the call runs: it does not count, `check`
+reports `settings: async-duplicate` when one runs beside the synchronous ones, and
+`setup` drops it.
