@@ -14,6 +14,12 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Added
 
+- `tools/memory-review.js`: a read-only report of stale auto memory. It lists
+  every `<config>/projects/*/memory` dir on each run, so a new project is covered
+  with no setup, and suggests fixes for overdue follow-up dates, bloated memory
+  files, index problems (missing, oversize, broken or missing links) and old
+  status words such as `CURRENT`. It never edits a file. Its output can quote
+  private memory text, so read it before sharing.
 - Reviewer eval lessons from pstack (#56): `reviewer-eval.js run --inject
   DEST=SRC` puts files such as the current `REVIEW.md` into the archived tree, so
   an eval sees the context a real review sees; the temp tree is now `wt-*` with

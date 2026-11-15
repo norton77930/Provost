@@ -193,6 +193,7 @@ runtime 在 `~/.claude/provost/handoffs`（若 runtime 裝在別的 provost 資�
 | [`skills/verification-before-completion/`](skills/verification-before-completion/) | 宣告完成前的驗證紀律 | `skills/` |
 | [`skills/handoff/`](skills/handoff/) | `/handoff` skill（存檔、接續、搜尋） | `skills/handoff/` |
 | [`tools/dispatch-report.js`](tools/dispatch-report.js) | 從 transcript 統計過往派工的成本與結果 | `experiments/` |
+| [`tools/memory-review.js`](tools/memory-review.js) | 唯讀回報過期的 auto memory：逾期的後續事項、過大的檔案、索引問題、舊的狀態字 | — |
 | [`mods/`](mods/) | `board` 和 `idle-guard` 兩個 plugin | 用 `/plugin` 安裝 |
 | [`install.py`](install.py) | 安裝程式與唯讀漂移檢查 | — |
 

@@ -307,6 +307,7 @@ See [`docs/native-handoff.md`](docs/native-handoff.md).
 | [`skills/verification-before-completion/`](skills/verification-before-completion/) | Completion-claim discipline | `skills/` |
 | [`skills/handoff/`](skills/handoff/) | The `/handoff` skill (save, resume, search) | `skills/handoff/` |
 | [`tools/dispatch-report.js`](tools/dispatch-report.js) | Cost and outcome report of past dispatches, from transcripts | `experiments/` |
+| [`tools/memory-review.js`](tools/memory-review.js) | Read-only report of stale auto memory: overdue follow-ups, bloated files, index problems, old status words | — |
 | [`mods/`](mods/) | The `board` and `idle-guard` plugins | installed with `/plugin` |
 | [`install.py`](install.py) | Installer and read-only drift check | — |
 
