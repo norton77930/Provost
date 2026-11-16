@@ -20,12 +20,23 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   `npm publish`, a force, delete, tag, `--all`/`--mirror` or `main`/`master`
   `git push` and `git branch -D`, so Claude Code prompts even in auto mode. It
   lets the command through, with no decision, when the newest transcript entry
-  marked `origin.kind: "human"` says 授權 as a go-ahead (judged per clause:
-  等我授權, 授權之前, 不可以授權, 授權了嗎？ and 「授權」 do not count); subagent
+  marked `origin.kind: "human"` is, as a whole message, a 授權 go-ahead: up to two
+  leads (好, OK, 我 ...), 授權, then only target words (merge, push, release,
+  合併, 安裝, PR, `#141`, `v1.2.0` ...) and final punctuation, so 授權取消,
+  授權等 CI 過了再說, 授權了嗎？, 等我授權 and 「授權」是什麼 do not count; subagent
   calls always ask, and so does every failure on a candidate command. It never
   denies. Commands are split on operators and newlines, every `$(...)` and
   backtick is read as a command of its own, and `git`, `gh` and `npm` are
-  recognised anywhere in a simple command. `install.py setup` registers ten
+  recognised anywhere in a simple command, with abbreviated long options
+  (`--tag`, `--del`, `--mirr`). The check fails closed: a candidate command passes
+  silently only when it is plain, and anything else asks as `unreadable command`
+  (a comment, a heredoc other than `cat <<WORD` with its exact terminator, a
+  here-string, a substitution other than a `cat` heredoc or the current-branch
+  idioms, a Bash subshell, a variable, splat or call operator, a brace expansion,
+  a line continuation glued to a word, a shell reading a script, pipe or stdin, a
+  PowerShell backtick escape, unbalanced quotes, nesting deeper than four levels,
+  more than 50,000 characters to read); a push to a computed remote or refspec or
+  from a directory the command does not spell out asks too. `install.py setup` registers ten
   handlers (Bash and PowerShell × push, merge, release, publish, branch), each
   with an `if` rule such as
   `Bash(*push*)`, so the hook starts only for commands that mention one of those

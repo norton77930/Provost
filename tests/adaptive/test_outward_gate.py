@@ -228,7 +228,7 @@ class OutwardActionsTests(unittest.TestCase):
                 with self.subTest(command):
                     self.assertOutward(command, "branch unknown", cwd=tmp)
             self.assertEqual(gate.outward_actions("cd $env:MAIN; git push", tmp, powershell=True),
-                             ["git push (branch unknown)"])
+                             ["git push (branch unknown)", "unreadable command (variable)"])
             self.assertEqual(gate.outward_actions(f"Push-Location {repo}; git push", tmp, powershell=True),
                              ["git push (to main)"])
             self.assertInward("git push", cwd=tmp)
@@ -240,11 +240,274 @@ class OutwardActionsTests(unittest.TestCase):
         self.assertEqual(gate.outward_actions("C:\\tools\\gh.exe pr merge 5", powershell=True), ["gh pr merge"])
 
 
+class UnreadableCommandTests(unittest.TestCase):
+    """Review round 3 (2026-11-16): a candidate command the parser cannot read with certainty asks."""
+
+    def assertUnreadable(self, command, what, also=None, cwd=None, powershell=False):
+        actions = gate.outward_actions(command, cwd, powershell=powershell)
+        self.assertIn(f"unreadable command ({what})", actions, command)
+        if also:
+            self.assertIn(also, " ".join(actions), command)
+
+    def feature_repo(self):
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        for repo, branch in ((root, "feature"), (root / "mainrepo", "main")):
+            (repo / ".git").mkdir(parents=True)
+            (repo / ".git" / "HEAD").write_text(f"ref: refs/heads/{branch}\n", encoding="utf-8")
+        return root
+
+    def test_heredoc_terminators_it_cannot_find(self):
+        # I1, verbatim: a delimiter the old regex cut short, and a terminator glued to ")".
+        self.assertUnreadable("git commit -F - <<END-MSG\nx\nEND-MSG\ngit push --force", "heredoc", "force")
+        self.assertUnreadable("git commit -m \"$(cat <<'EOF'\nx\nEOF)\"\ngit push --force", "heredoc", "force")
+        self.assertUnreadable('git commit -F - "$(cat <<END-MSG\nx\nEND-MSG\n)"\ngit push --force', "heredoc", "force")
+        for command in ("cat <<EOF\nx\ngit push --force", "cat <<EOF\nx\nEOF \ngit push --force",
+                        "cat <<-EOF\nx\n  EOF\ngit push --force", "cat <<'EOF\"\nx\nEOF\ngit push --force",
+                        "cat <<E'O'F\nx\nEOF\ngit push --force", "cat <<\nx\ngit push --force"):
+            with self.subTest(command):
+                self.assertUnreadable(command, "heredoc", "force")
+
+    def test_heredocs_it_can_read(self):
+        self.assertEqual(gate.outward_actions("cat <<-EOF\n\tgit push --force\n\tEOF"), [])
+        self.assertEqual(gate.outward_actions('cat <<"EOF"\ngit push -f\nEOF\ngit status'), [])
+        # Review round 4: only cat <<WORD is plain; the second heredoc of cat <<A <<B is not.
+        self.assertEqual(gate.outward_actions("cat <<A <<B\ngit push -f\nA\necho\nB\ngit status"),
+                         ["unreadable command (heredoc)"])
+        self.assertEqual(gate.outward_actions("bash <<'EOF'\ngit push --force\nEOF"),
+                         ["git push (force)", "unreadable command (heredoc)", "unreadable command (shell input)"])
+        self.assertEqual(gate.outward_actions("cat <<< 'git push -f' && git status"),
+                         ["unreadable command (here-string)"])
+
+    def test_powershell_braced_variables(self):
+        # I2, verbatim: the brace padding split ${...} and lost the command.
+        self.assertUnreadable("git -C ${repo} push --force", "${...}", "force", powershell=True)
+        self.assertUnreadable("cd ${env:MAIN}; git push", "${...}", "branch unknown", powershell=True)
+        self.assertUnreadable('pwsh -Command "git -C ${r} push -f"', "${...}", "force")
+        self.assertEqual(gate.outward_actions("git push origin ${x}"),
+                         ["git push (computed refspec)", "unreadable command (variable)"])
+
+    def test_nested_and_unclosed_substitutions(self):
+        self.assertUnreadable("echo $(echo $(npm publish))", "nested substitution", "npm publish")
+        self.assertUnreadable("echo $(echo `git push -f`)", "nested substitution", "force")
+        self.assertUnreadable("echo `echo $(git push origin feature)`", "nested substitution")
+        self.assertUnreadable("echo $(git push origin feature", "unclosed substitution")
+        self.assertUnreadable("echo `git push origin feature", "unclosed substitution")
+        self.assertEqual(gate.outward_actions("echo $(ls"), [])  # no keyword: nothing to ask about
+
+    def test_too_deep(self):
+        self.assertUnreadable("eval eval eval eval eval eval git push origin feature", "too deep")
+        self.assertUnreadable("echo $(echo $(echo $(echo $(echo $(echo $(git push origin feature))))))",
+                              "too deep")
+
+    def test_bounded_work(self):
+        # Coordinator follow-up: a hook timeout would let the command run, so no command may take long.
+        import time
+        for command in ("eval " * 30 + "git push -f", "a;" * 5000 + "git push -f",
+                        "bash -c " + "sh -c " * 20 + "x " * 3000 + "git push -f",
+                        "a;" * 400000 + "git push -f", "$(" * 2000 + "git push -f" + ")" * 2000,
+                        "x <<A " * 50000 + "\ngit push --force", "x <<A " * 8000 + "\ngit push --force"):
+            with self.subTest(command[:40], length=len(command)):
+                start = time.perf_counter()
+                actions = gate.outward_actions(command)
+                self.assertLess(time.perf_counter() - start, 1.0)
+                self.assertTrue(any(a.startswith("unreadable command") or "force" in a for a in actions), actions)
+        self.assertIn("unreadable command (too long)", gate.outward_actions("a;" * 400000 + "git push -f"))
+
+    def test_powershell_backtick_escapes(self):
+        self.assertUnreadable("g`it push -f", "escape", powershell=True)
+        self.assertUnreadable("git push origin ma`in", "escape", powershell=True)
+        self.assertEqual(gate.outward_actions("git push `\n  origin feature", powershell=True), [])
+
+    def test_unbalanced_quotes(self):
+        self.assertUnreadable("git push 'unbalanced -f", "quotes", "force")
+
+    def test_push_with_a_computed_remote_or_refspec(self):
+        root = str(self.feature_repo())
+        for command in ("git push origin $BRANCH", "git push $REMOTE", "git push $(echo origin main)",
+                        "git push origin %B%", "git push origin `echo main`", "git push origin feat${x}"):
+            with self.subTest(command):
+                self.assertIn("computed refspec", " ".join(gate.outward_actions(command, root)))
+        self.assertIn("computed refspec", " ".join(gate.outward_actions("git push origin $env:B", root, powershell=True)))
+        self.assertEqual(gate.outward_actions("git push -u origin $(git branch --show-current)", root), [])
+
+    def test_directories_after_an_unresolved_one(self):
+        root = self.feature_repo()
+        posix = root.as_posix()  # forward slashes: a Bash backslash is also read as an escape
+        for command in ('cd "$MAIN"; cd sub; git push', 'cd "$MAIN" && cd sub && git push origin HEAD',
+                        'git -C "$X" -C sub push', f"pushd {posix}/feat; popd; git push",
+                        "cd $(dirname x)/sub && git push"):
+            with self.subTest(command):
+                self.assertIn("git push (branch unknown)", gate.outward_actions(command, str(root)))
+        self.assertIn("git push (branch unknown)",
+                      gate.outward_actions("Push-Location x; Pop-Location; git push", str(root), powershell=True))
+        self.assertEqual(gate.outward_actions(f'cd -; cd {posix}; git push', str(root)), [])
+        self.assertEqual(gate.outward_actions(f'cd "$MAIN"; cd {posix}/mainrepo; git push', str(root)),
+                         ["git push (to main)", "unreadable command (variable)"])
+
+    def test_routine_commands_still_pass(self):
+        root = str(self.feature_repo())
+        commit = "git commit -m \"$(cat <<'EOF'\nDocs: explain git push --force and gh pr merge\nEOF\n)\""
+        for command in ("git status", "git log --oneline -5", "git push", "git push -u origin HEAD",
+                        "git push -u origin feature-x", "gh pr create --title merge", commit,
+                        commit + " && git push -u origin HEAD", "gh pr view 141", "npm test",
+                        "git push -u origin $(git branch --show-current)"):
+            with self.subTest(command):
+                self.assertEqual(gate.outward_actions(command, root), [])
+                self.assertEqual(gate.outward_actions(command, root, powershell=True), [])
+
+
+class PlainCommandTests(unittest.TestCase):
+    """Review round 4 (2026-11-16): a candidate command passes silently only when it is plain."""
+
+    def setUp(self):
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        for name, branch in (("main", "main"), ("feat", "feature")):
+            (self.root / name / ".git").mkdir(parents=True)
+            (self.root / name / ".git" / "HEAD").write_text(f"ref: refs/heads/{branch}\n", encoding="utf-8")
+        self.main, self.feat = str(self.root / "main"), str(self.root / "feat")
+
+    def assertUnreadable(self, command, what, also=None, cwd=None, powershell=False):
+        actions = gate.outward_actions(command, cwd, powershell=powershell)
+        self.assertIn(f"unreadable command ({what})", actions, command)
+        if also:
+            self.assertIn(also, " ".join(actions), command)
+
+    def test_comments(self):
+        # I1a: the apostrophes pair up across the lines, so only the label shows; it asks either way.
+        self.assertUnreadable("# don't force\ngit push --force\n# that's it", "comment")
+        self.assertUnreadable("gh pr merge 141 # squash", "comment", "gh pr merge")
+        self.assertUnreadable("git status;# x\ngit push origin feature", "comment")
+        self.assertUnreadable("# x\ngit push origin feature", "comment", powershell=True)
+        self.assertUnreadable("<# x #> git push origin feature", "comment", powershell=True)
+        self.assertEqual(gate.outward_actions('git commit -m "fix #12" && git push', self.feat), [])
+        self.assertEqual(gate.outward_actions("git commit -m 'fix #12' && git push a#b", self.feat), [])
+
+    def test_heredocs_outside_the_standard_form(self):
+        self.assertUnreadable("cat > a.txt <<'EOF'\nDon't edit\nEOF\ngit push --force\n# it's done",
+                              "heredoc")  # I1b
+        self.assertUnreadable("git commit -F - <<'EOF'\nx\nEOF\ngit push origin feature", "heredoc")
+        self.assertUnreadable("cat <<< 'x' && git push origin feature", "here-string")
+        self.assertUnreadable("@'\nx\n'@ | Set-Content a; git push origin feature", "here-string", powershell=True)
+        self.assertUnreadable('$m = @"\nx\n"@; git push origin feature', "here-string", powershell=True)
+
+    def test_substitutions(self):
+        self.assertUnreadable('echo "$(echo "(")" ; git push -f ; echo ")"', "substitution")  # I1c
+        self.assertUnreadable("X=$(cd ../feat && pwd); git push", "substitution", cwd=self.main)  # I2b
+        self.assertUnreadable('GH=$(command -v gh); "$GH" pr merge 141 --squash', "substitution")  # I3b
+        self.assertUnreadable("echo `date` && git push origin feature", "substitution")
+        self.assertUnreadable("git push origin $(git config x.target)", "substitution", "computed refspec")
+        # The plain forms: the current-branch idioms and a cat heredoc, and an escaped backtick (a literal).
+        for command in ("git push -u origin $(git branch --show-current)",
+                        'git push -u origin "$(git rev-parse --abbrev-ref HEAD)"',
+                        "git commit -m \"Fix \\`push\\` docs\" && git push"):
+            with self.subTest(command):
+                self.assertEqual(gate.outward_actions(command, self.feat), [])
+
+    def test_subshells(self):
+        self.assertUnreadable("(cd ../feat && git status); git push", "subshell", cwd=self.main)  # I2a
+        self.assertUnreadable("(git push origin feature)", "subshell")
+        self.assertUnreadable("if ($x) { Set-Location ../feat }; git push", "subshell", cwd=self.main,
+                              powershell=True)
+        self.assertUnreadable("& { cd ../feat }; git push", "subshell", cwd=self.main, powershell=True)
+        self.assertEqual(gate.outward_actions("Get-Date; git push", self.feat, powershell=True), [])
+        self.assertNotIn("unreadable command (subshell)",
+                         gate.outward_actions("if ($ok) { gh pr merge 1 }", powershell=True))
+        self.assertEqual(gate.outward_actions('git commit -m "a (b)" && git push', self.feat), [])
+
+    def test_variables_and_splats(self):
+        self.assertUnreadable("$gh = 'C:\\Program Files\\GitHub CLI\\gh.exe'; & $gh pr merge 141 --squash",
+                              "variable", powershell=True)  # I3a
+        self.assertUnreadable("git push @a", "variable", cwd=self.feat, powershell=True)  # I3c
+        self.assertUnreadable("& gh pr merge 141", "variable", "gh pr merge", powershell=True)
+        self.assertUnreadable("git push origin $R", "variable", "computed refspec", cwd=self.feat)
+        self.assertUnreadable('git push origin "$R"', "variable", cwd=self.feat)
+        self.assertEqual(gate.outward_actions("git commit -m 'costs $5' && git push", self.feat), [])
+        self.assertEqual(gate.outward_actions("git push 2>&1 | Select-Object -Last 3", self.feat, powershell=True), [])
+        self.assertEqual(gate.outward_actions("git push origin {feature,main}"),
+                         ["unreadable command (brace expansion)"])
+        for command in ("git push origin mai?", "git push origin 'refs/heads/*'", "git push or?gin main", "git push origin [m]ain"):
+            with self.subTest(command):
+                self.assertIn("computed refspec", " ".join(gate.outward_actions(command, self.feat)))
+
+    def test_continuations(self):
+        self.assertUnreadable("git push origin ma\\\nin", "continuation", "to main", cwd=self.feat)  # I5a
+        self.assertUnreadable("git push --for\\\nce origin feature", "continuation", "force", cwd=self.feat)  # I5b
+        self.assertUnreadable("git push origin ma`\nin", "continuation", cwd=self.feat, powershell=True)
+        self.assertEqual(gate.outward_actions("git push \\\n  origin feature", self.feat), [])
+        self.assertEqual(gate.outward_actions("git push `\n  origin feature", self.feat, powershell=True), [])
+
+    def test_shell_input(self):
+        for command, powershell in (('echo "git push --force" | bash', False), ("bash <<< 'git push'", False),
+                                    ("bash deploy.sh && git push origin feature", False),
+                                    ("'git push -f' | iex", True), ("pwsh -ec abc; git push origin feature", True),
+                                    ("cmd < x.txt & git push origin feature", False)):
+            with self.subTest(command):
+                self.assertUnreadable(command, "shell input", powershell=powershell)
+        for command in ("bash -c 'git status' && git push", "bash -lc 'git status' && git push",
+                        'pwsh -NoProfile -Command "git status"; git push', "eval 'git status'; git push"):
+            with self.subTest(command):
+                self.assertEqual(gate.outward_actions(command, self.feat), [])
+
+    def test_abbreviated_long_options(self):
+        for command, label in (("git push --tag", "tags"), ("git push origin --del old", "delete"),
+                               ("git push --mirr backup", "all branches"), ("git push --al origin", "all branches"),
+                               ("git push --force-with-l origin x", "force"), ("git push --forc origin x", "force"),
+                               ("git push --follow origin x", "tags"), ("git push --bra origin", "all branches"),
+                               ("git branch --del --force x", "git branch -D"), ("git branch --d --forc x", "git branch -D")):
+            with self.subTest(command):
+                self.assertIn(label, " ".join(gate.outward_actions(command, self.feat)))
+        for command in ("git push --dry-run origin feature", "git push --set-upstream origin feature",
+                        "git branch --format=%(refname) --delete x", "git push --no-verify origin feature"):
+            with self.subTest(command):
+                actions = gate.outward_actions(command, self.feat)
+                self.assertEqual([a for a in actions if a.startswith("git ")], [], actions)
+        self.assertEqual(gate.outward_actions("git push --dry-run origin feature", self.feat), [])
+
+    def test_routine_flow_stays_silent(self):
+        commit = "git commit -m \"$(cat <<'EOF'\nDocs: explain git push --force and gh pr merge\n\nCo-Authored-By: x\nEOF\n)\""
+        body = "gh pr create --title \"x\" --body \"$(cat <<'EOF'\n## Summary\n- merge #12 first\nEOF\n)\""
+        for command in ("git status", "git push", "git push -u origin HEAD", "git push -u origin feature-x",
+                        "git push -u origin $(git branch --show-current)",
+                        'git push -u origin "$(git branch --show-current)"', commit, commit + " && git push", body,
+                        "gh pr create --title merge", "gh pr view 141", "git branch --show-current",
+                        "git log --oneline main..HEAD"):
+            with self.subTest(command):
+                self.assertEqual(gate.outward_actions(command, self.feat), [])
+        for command in ("git status", "git push", "git push -u origin HEAD", "gh pr view 141",
+                        "git branch --show-current", "git push 2>&1 | Out-Null"):
+            with self.subTest(command, powershell=True):
+                self.assertEqual(gate.outward_actions(command, self.feat, powershell=True), [])
+
+
 class AuthorizesTests(unittest.TestCase):
-    def test_words(self):
-        for text in ("授權", "授權 merge", "好，授權", "我授權你 merge #140", "授權。"):
+    """Review round 3 (2026-11-16): only a whole message shaped as a go-ahead counts."""
+
+    def test_whole_message_shape(self):
+        for text in ("授權", "授權。", "好，授權", "好 授權", "OK 授權", "我授權", "好，我授權", "授權 merge #141",
+                     "授權 merge PR #141", "授權合併並安裝", "授權 release v1.2.0", "授權 merge #140 並安裝",
+                     "  授權！ ", "ok, 授權 push", "授權 merge 和 install", "授權!"):
             with self.subTest(text):
                 self.assertTrue(gate.authorizes(text))
+        for text in ("授權取消", "授權撤回，先不要 merge", "授權等 CI 過了再說", "授權是什麼意思", "授權了嗎？",
+                     "授權?", "不授權", "取消授權", "先不要 merge，等我授權", "等我授權", "之後再授權",
+                     "OAuth 授權流程壞了", "「授權」是什麼", "授權 don't merge", "授權 merge 嗎", "授權\nmerge",
+                     "我授權你 merge #140", "中文", "", None, 3, "好好好授權", "授權 merged",
+                     "授權 1" + "1" * 300 + "x"):
+            with self.subTest(text):
+                self.assertFalse(gate.authorizes(text))
+
+    def test_words(self):
+        for text in ("授權", "授權 merge", "好，授權", "授權。"):
+            with self.subTest(text):
+                self.assertTrue(gate.authorizes(text))
+        # A 授權 inside a longer sentence no longer counts (review round 3).
+        self.assertFalse(gate.authorizes("我授權你 merge #140"))
         for text in ("", "好", "merge 吧", "不授權", "先不要授權", "沒有授權", "未經授權", "別授權",
                      "要授權嗎", "需要授權?", "授權 merge，但不授權 release", None, "授", "授 權",
                      # review finding I2, 2026-11-16
@@ -258,11 +521,15 @@ class AuthorizesTests(unittest.TestCase):
                 self.assertFalse(gate.authorizes(text))
 
     def test_a_quoted_mention_beside_a_real_word(self):
-        self.assertTrue(gate.authorizes("我知道「授權」的規則了，授權"))
-        self.assertTrue(gate.authorizes("授權 merge。下一題"))
-        for text in ("OK 授權", "好的，授權 merge 和 install", "可以授權", "我授權", "那就授權吧", "授權給你 merge"):
+        # Review round 3: text around the go-ahead makes the whole message not count.
+        self.assertFalse(gate.authorizes("我知道「授權」的規則了，授權"))
+        self.assertFalse(gate.authorizes("授權 merge。下一題"))
+        for text in ("OK 授權", "好的，授權 merge 和 install", "可以授權", "我授權", "那就授權"):
             with self.subTest(text):
                 self.assertTrue(gate.authorizes(text))
+        for text in ("那就授權吧", "授權給你 merge"):
+            with self.subTest(text):
+                self.assertFalse(gate.authorizes(text))
 
 
 class TranscriptTests(unittest.TestCase):
@@ -323,12 +590,20 @@ class DecideTests(TranscriptTests):
     def test_asks_without_authorization(self):
         path = self.write(human("merge 吧"))
         self.assertAsk(gate.decide(self.event("gh pr merge 1", path)), "gh pr merge", "授權")
+        # Review round 4: the reason names the go-ahead shape, not just the word.
+        self.assertAsk(gate.decide(self.event("gh pr merge 1", self.write(human("授權取消")))),
+                       "is not a go-ahead such as 授權 or 授權 merge #141")
         self.assertAsk(gate.decide(self.event("gh pr merge 1", path, tool="PowerShell")), "gh pr merge")
 
     def test_authorized_message_gives_no_decision(self):
         path = self.write(human("授權"), assistant("merging"))
         self.assertEqual(gate.decide(self.event("gh pr merge 1 --squash", path)), {})
         self.assertEqual(gate.decide(self.event("gh pr merge 1", path, tool="PowerShell")), {})
+
+    def test_unreadable_commands_ask_unless_authorized(self):
+        command = "git commit -m \"$(cat <<'EOF'\nx\nEOF)\"\ngit push --force"
+        self.assertAsk(gate.decide(self.event(command, self.write(human("授權取消")))), "unreadable command (heredoc)")
+        self.assertEqual(gate.decide(self.event(command, self.write(human("授權")))), {})
 
     def test_subagents_always_ask(self):
         path = self.write(human("授權"))

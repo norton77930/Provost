@@ -271,7 +271,8 @@ declaration:
 - **Outward actions ask first.** A `PreToolUse` hook makes Claude Code ask
   before `gh pr merge`, `gh release create`, `npm publish`, a force, delete, tag
   or `main`/`master` `git push` and `git branch -D`, also in auto mode, unless the
-  user's newest own message says 授權. Subagents always get the prompt.
+  user's newest own message, as a whole, is a 授權 go-ahead (授權, 好，授權,
+  授權 merge #141). Subagents always get the prompt.
 - **Writers are budgeted.** Normally at most two concurrent writers, three when
   the third is provably independent; ownership of files and shared resources is
   checked before every wave.

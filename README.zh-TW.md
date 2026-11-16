@@ -160,7 +160,7 @@ Provost 有三個部分：主 session 遵循的政策（[`native/CLAUDE.native.m
 - **風險決定用什麼證據結案。** 選「最便宜、但真的抓得到失敗」的證據：聚焦測試、實機執行，或只在兩者都看不出來時派 `code-reviewer`（動到對外介面再加 `architecture-reviewer`）。檔案數、diff 大小、「看起來很複雜」明文不是審查的理由。需要審查的改動就是 **R1**。
 - **R2 先停。** 認證、密鑰、金流、migration、破壞性 public API、跨 repo 或不可逆操作，等使用者決定，並且要審查通過後才算完成。
 - **驗收 gate 擋住這一輪。** 動工前，session 先把 gate（`machine`、`live`、`visual`、`review`、`human`）寫進 `.claude/acceptance/<task>.json`。非 human 的 gate 還沒過、失敗或過期時，Stop hook 會擋回去；visual gate 由 `acceptance-verifier` 對照設計稿判定，而不是由做這份工作的 session 自己判。
-- **對外動作先問。** `PreToolUse` hook 會在 `gh pr merge`、`gh release create`、`npm publish`、強制推送、刪除、推 tag 或推到 `main`/`master` 的 `git push`，以及 `git branch -D` 之前讓 Claude Code 跳出確認，auto mode 也一樣；只有使用者最新一則親自輸入的訊息含「授權」時才直接放行。subagent 一律要確認。
+- **對外動作先問。** `PreToolUse` hook 會在 `gh pr merge`、`gh release create`、`npm publish`、強制推送、刪除、推 tag 或推到 `main`/`master` 的 `git push`，以及 `git branch -D` 之前讓 Claude Code 跳出確認，auto mode 也一樣；只有使用者最新一則親自輸入的訊息整則就是「授權」放行句（如「授權」「好，授權」「授權 merge #141」）時才直接放行。subagent 一律要確認。
 - **writer 有預算。** 平常最多 2 個同時寫入，第 3 個要證明完全獨立；每一波派工前都檢查檔案和共用資源的歸屬。
 - **完成是有限的。** 所有主張都通過後，只跑預定的最後驗證，不再追加審查、測試或重構。
 

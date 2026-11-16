@@ -2,18 +2,28 @@
 
 python -m provost_runtime.outward_gate reads one PreToolUse event on stdin. When the command would
 merge a pull request, publish a release or package, or force, delete, tag or main/master-push with git,
-it prints a permissionDecision "ask" unless the person's most recent own message says 授權; otherwise it
-prints nothing (no decision: the normal permission flow, auto mode's classifier included, decides).
+it prints a permissionDecision "ask" unless the person's most recent own message is a 授權 go-ahead;
+otherwise it prints nothing (no decision: the normal permission flow, auto mode's classifier included,
+decides).
 
 The person's messages are the transcript entries Claude Code marks origin.kind "human": typed prompts
 (type "user") and messages sent mid-turn (a "queued_command" attachment). Subagent hand-backs ("peer"),
 background notices ("task-notification"), compact summaries and slash-command output carry another or no
-origin and never authorize. A call from a subagent (agent_id) always asks.
+origin and never authorize. A call from a subagent (agent_id) always asks. A message authorizes only when
+the whole of it, one line, is the go-ahead shape: at most two short leads (好, OK, 我 ...), 授權, then only
+target words (merge, push, release, 合併, 安裝, PR, #141, v1.2.0 ...) and final punctuation (see
+authorizes); any other text in the message, a negation, a question or a condition, makes it not count.
 
-The command check errs toward asking: git, gh and npm are recognised anywhere in a simple command
-(after if/then/do, braces, sudo -u, xargs -I ...), so a command that only mentions them as plain words
-(echo gh pr merge) asks too. Every failure on a candidate command asks; nothing here ever denies.
-Stdlib only, no store access.
+The command check fails closed: git, gh and npm are recognised anywhere in a simple command (after
+if/then/do, braces, sudo -u, xargs -I ...), so a command that only mentions them as plain words (echo gh pr
+merge) asks too, and a candidate command (one with a KEYWORDS word) passes silently only when it is plain.
+Anything else adds "unreadable command (<what>)": a comment, a heredoc other than cat <<WORD with its exact
+terminator, a here-string, a substitution other than a cat heredoc or the current-branch idioms, a Bash
+subshell (or a PowerShell directory change beside parentheses or braces), a variable, splat or call
+operator, a line continuation glued to a word, a shell reading a script, pipe or stdin, a PowerShell
+backtick escape, a brace expansion, unbalanced quotes, nesting deeper than MAX_DEPTH, or more than BUDGET
+characters to read. Every failure on a candidate command asks; nothing here ever denies. Stdlib only, no
+store access.
 """
 import json
 import os
@@ -26,24 +36,34 @@ MAX_INPUT = 1024 * 1024
 CHUNK = 1024 * 1024
 TAIL_LIMIT = 64 * 1024 * 1024  # transcript bytes read back from the end before giving up (then: ask)
 MAX_DEPTH = 4                  # nested bash -c / $(...) levels followed
+# Characters the command check may lex, summed over every level, every reading and every starting argument
+# of a bash -c string (each text read also costs READ_COST; heredoc bodies fed to cat are free): about 0.2 s
+# of work at most (one long unterminated quote is the slowest input). A hook that times out lets the
+# command run, so once this is spent the check stops and asks ("unreadable command (too long)").
+BUDGET = 50_000
+READ_COST = 64
 # Lower-case substrings every outward command contains; hooks/outward-gate uses the same list for its
 # fast path and install.py for the handlers' "if" rules.
 KEYWORDS = ("push", "merge", "release", "publish", "branch")
 PROTECTED = ("main", "master")
-# A 授權 counts only in the shape of a go-ahead: it opens its clause (the text between punctuation marks),
-# after nothing or a short affirmation (LEADS), and is not followed by a word that makes it a noun or a
-# time (FOLLOWERS: 授權條款, 授權之前). Any 授權 with a negation before it or a question in its clause makes
-# the whole message not count; a 授權 in quotes is a mention and neither counts nor refuses.
-LEADS = re.compile(r"(?:好|好的|ok|okay|yes|可以|同意|我|那就|那|就|嗯|對|是|現在|直接)*")
-FOLLOWERS = ("前", "後", "之前", "之後", "以前", "以後", "時", "的", "條款", "流程", "碼", "書", "機制", "規則",
-             "問題", "範圍", "方式", "設定", "檔")
-NEGATIONS = ("不", "未", "沒", "別", "無", "非", "勿", "免", "取消", "撤銷", "撤回", "收回", "拒絕", "停止", "暫緩")
-QUESTIONS = ("?", "？", "嗎", "呢", "為什麼", "是否", "要不要", "能不能", "可不可以", "可以嗎")
-CLAUSE_END = "，,。.！!？?；;：:\n、"
-QUOTES_OPEN, QUOTES_CLOSE = "「『\"“'‘", "」』\"”'’"
+# A message authorizes only as a whole: [lead [separator]]{0,2} 授權 [targets] [final punctuation], one
+# line, nothing else (see authorizes). Leads and targets are matched case-insensitively.
+LEADS = ("好的", "好", "okay", "ok", "yes", "可以", "同意", "我", "那就")
+TARGETS = ("merge", "push", "release", "publish", "install", "setup", "合併", "推送", "發布", "發版", "安裝",
+           "並", "和", "跟", "及", "然後", "pr")
+_SEPARATOR = r"[\s，,、]"
+_GO_AHEAD = re.compile(
+    rf"(?:(?:{'|'.join(LEADS)}){_SEPARATOR}*){{0,2}}{WORD}"
+    # Each target atomic and digits never split, so a long message cannot make the match backtrack.
+    rf"(?:{_SEPARATOR}*+(?>{'|'.join(TARGETS)}|#\d++|v?\d++(?:\.\d++)++|\d++))*+[。.!！]*+",
+    re.IGNORECASE)
 
-SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "pwsh", "powershell", "cmd", "eval", "iex", "invoke-expression"}
+POSIX_SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
+POWERSHELLS = {"pwsh", "powershell", "iex", "invoke-expression"}
+SHELLS = POSIX_SHELLS | POWERSHELLS | {"cmd", "eval"}  # cmd and eval keep the dialect they are called from
 CHDIR = {"cd", "pushd", "set-location", "sl", "chdir", "push-location"}
+POPDIR = {"popd", "pop-location"}  # back to a directory the command does not name
+COMMAND_WORDS = SHELLS | {"git", "gh", "npm"}
 # A substitution with one of these texts names the checked-out branch: it is read as HEAD.
 CURRENT_BRANCH = ("git branch --show-current", "git rev-parse --abbrev-ref head", "git symbolic-ref --short head")
 GIT_VALUE_OPTIONS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--super-prefix",
@@ -56,21 +76,68 @@ _OPERATOR = set("();<>|&")
 
 def outward_actions(command, cwd=None, powershell=False):
     """The outward actions command would take, as short labels in order of appearance, without repeats.
-    powershell: backslashes are path separators, not escapes."""
+    powershell: backslashes are path separators, not escapes. A command with a KEYWORDS word that some
+    part of cannot be read with certainty also gets "unreadable command (<what>)" labels, after the
+    actions that were found."""
     found = []
+    problems = _Problems()  # shared by both readings: one budget per command
     # A backslash in a bash command is an escape, but a Windows path (C:\tools\gh.exe) typed into the Bash
     # tool means a separator: read such a command both ways and report what either reading finds.
     readings = (powershell,) if powershell or "\\" not in str(command) else (False, True)
     for reading in readings:
-        state = {"cwd": cwd, "named": False, "powershell": reading, "depth": 0}
-        for tokens in _segments(command, 0, reading):
+        # That second reading of a Bash command is a guess made to find more actions: what it cannot read
+        # is not noted (Bash text is not plain PowerShell), but it spends the same budget.
+        sink = problems if reading == powershell else _Problems(problems.left)
+        state = {"cwd": cwd, "named": False, "powershell": reading, "depth": 0, "problems": sink}
+        for tokens in _segments(command, 0, reading, sink):
             for label in _classify(tokens, state):
                 if label not in found:
                     found.append(label)
+        if sink is not problems:
+            problems.left = sink.left
+            for what in ("too deep", "too long"):
+                if what in sink:
+                    _note(problems, what)
+    if problems and isinstance(command, str) and _candidate(command):
+        found += [f"unreadable command ({what})" for what in problems]
     return found
 
 
-def _lex(command, powershell):
+class _Problems(dict):
+    """What could not be read, in order of discovery (the keys: a dict as an ordered set), and the part of
+    BUDGET still left to read."""
+
+    def __init__(self, budget=BUDGET):
+        super().__init__()
+        self.left = budget
+
+
+def _note(problems, what):
+    if problems is not None:
+        problems.setdefault(what)
+
+
+def _spend(problems, amount):
+    """Take amount from the budget: False, with "too long" noted, once it is spent."""
+    problems.left -= amount
+    if problems.left < 0:
+        _note(problems, "too long")
+        return False
+    return True
+
+
+def _afford(problems, amount):
+    """Whether amount more may be read (always, without a budget to take it from)."""
+    return problems is None or ("too long" not in problems and _spend(problems, amount))
+
+
+def _stopped(problems):
+    """Whether reading further cannot change the outcome: the check already asks for being too deep or
+    too long."""
+    return problems is not None and ("too deep" in problems or "too long" in problems)
+
+
+def _lex(command, powershell, problems=None):
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
@@ -79,26 +146,58 @@ def _lex(command, powershell):
             lexer.escape = ""
         return list(lexer)
     except ValueError:  # unbalanced quotes: a plain split, which may find more commands, never fewer
+        _note(problems, "quotes")
         return re.findall(r"[();<>|&]+|[^\s();<>|&]+", command.replace('"', " ").replace("'", " "))
 
 
-def _segments(command, depth, powershell=False):
+def _segments(command, depth, powershell=False, problems=None):
     """Simple commands of command (token lists): split on shell operators and newlines, with every $(...)
     and (outside PowerShell) backtick substitution read as a command of its own wherever it stands, in
-    quotes or glued to a word, and left in place as one placeholder word."""
-    if depth > MAX_DEPTH or not isinstance(command, str) or not command.strip():
+    quotes or glued to a word, and left in place as one placeholder word. Whatever is not plain (see
+    _scan and the module docstring) is noted in problems, which also holds the budget left."""
+    if not isinstance(command, str) or not command.strip():
         return
-    command = _drop_cat_heredocs(command.replace("\r\n", "\n").replace("\r", "\n"))
-    # Line continuations (bash \, PowerShell `) join lines; any other newline ends a command.
-    command = re.sub(r"[\\`]\n", " ", command).replace("\n", " ; ")
-    inner = []
-    command = _substitute(command, powershell, inner)
-    for text in inner:
-        yield from _segments(text, depth + 1, powershell)
+    if problems is None:
+        problems = _Problems()
+    if depth > MAX_DEPTH:
+        _note(problems, "too deep")
+        return
+    if "too long" in problems or not _spend(problems, len(command) + READ_COST):
+        return
+    command = _heredocs(command.replace("\r\n", "\n").replace("\r", "\n"), problems)
+    # Line continuations join lines: a Bash \<newline> disappears, a PowerShell `<newline> (and, read as
+    # PowerShell, a \<newline>) is a space. One glued to a word may join it to the next line's word.
+    if re.search(r"\S[\\`]\n", command):
+        _note(problems, "continuation")
     if powershell:
-        # Script-block braces need no spaces in PowerShell: {gh pr merge 5}, % {git push -f}.
-        command = re.sub(r"[{}]", r" \g<0> ", command)
-    tokens = _lex(command, powershell)
+        command = re.sub(r"[\\`]\n", " ", command)
+    else:
+        command = command.replace("\\\n", "").replace("`\n", " ")
+    command = command.replace("\n", " ; ")  # any other newline ends a command
+    inner = []
+    command = _substitute(command, powershell, inner, problems)
+    for text in inner:
+        yield from _segments(text, depth + 1, powershell, problems)
+    _scan(command, powershell, problems)
+    if powershell:
+        # ${...} may name a variable with any characters, braces and operators included: it is not read.
+        if "${" in command:
+            _note(problems, "${...}")
+        # Script-block braces need no spaces in PowerShell: {gh pr merge 5}, % {git push -f}; ${...} stays
+        # one word.
+        padded = re.sub(r"\$\{[^}]*\}|[{}]", lambda m: m[0] if len(m[0]) > 1 else f" {m[0]} ", command)
+        if not _spend(problems, len(padded) - len(command)):
+            return
+        command = padded
+    tokens = _lex(command, powershell, problems)
+    if powershell:
+        # A PowerShell backtick inside a word escapes the next character (g`it is git): it is not read.
+        if any("`" in token for token in tokens):
+            _note(problems, "escape")
+        # Parentheses and braces are expressions and script blocks in PowerShell, and a directory change
+        # inside one may or may not last: with both in one command, the directory is not known.
+        if ("(" in command or "{" in command) and any(_name(t) in CHDIR or _name(t) in POPDIR for t in tokens):
+            _note(problems, "subshell")
     current, i = [], 0
     while i < len(tokens):
         token = tokens[i]
@@ -122,12 +221,20 @@ def _segments(command, depth, powershell=False):
         yield current
 
 
-def _substitute(command, powershell, inner):
+def _substitute(command, powershell, inner, problems=None):
     """command with each $(...) (and, outside PowerShell, each `...`) replaced by a placeholder word, or by
-    HEAD when its text names the checked-out branch; the texts are appended to inner. An unclosed one runs
-    to the end. Single quotes are not honoured: a quoted '$(x)' is read as a command too (asks more)."""
+    HEAD when its text names the checked-out branch; the texts are appended to inner. Each one is noted in
+    problems as a "substitution" unless it names the checked-out branch or is a plain cat heredoc ("$(cat
+    <<'EOF' ... EOF)", marked by _heredocs); an unclosed one runs to the end and, like one whose text holds
+    another $( or backtick, is noted too. In Bash a backslash makes the next character literal (\` is a
+    backtick, not a substitution). Single quotes are not honoured: a quoted '$(x)' is read as a command too
+    (asks more)."""
     out, i, n = [], 0, len(command)
     while i < n:
+        if command[i] == "\\" and not powershell:
+            out.append(command[i:i + 2])
+            i += 2
+            continue
         if command.startswith("$(", i):
             level, j = 0, i + 1
             while j < n:
@@ -144,26 +251,135 @@ def _substitute(command, powershell, inner):
             out.append(command[i])
             i += 1
             continue
+        if j >= n:
+            _note(problems, "unclosed substitution")
+        if "$(" in text or "`" in text:
+            _note(problems, "nested substitution")
         inner.append(text)
-        out.append("HEAD" if " ".join(text.split()).lower() in CURRENT_BRANCH else PLACEHOLDER)
+        plain = " ".join(text.replace(";", " ").split()).lower()
+        if plain not in CURRENT_BRANCH and plain != "cat " + CAT_HEREDOC:
+            _note(problems, "substitution")
+        out.append("HEAD" if plain in CURRENT_BRANCH else PLACEHOLDER)
         i = j + 1
     return "".join(out)
 
 
-def _drop_cat_heredocs(command):
-    """command without the bodies of heredocs fed to cat (commit messages, PR bodies): they are data. A
-    heredoc fed to anything else (bash <<EOF) keeps its body, which is then read as commands."""
-    out, end = [], None
+# A delimiter word, bare or wholly quoted, ending at whitespace, the end of the line or an operator.
+_DELIMITER = re.compile(r"[ \t]*(?:([A-Za-z_][A-Za-z0-9_]*)|'([A-Za-z_][A-Za-z0-9_]*)'"
+                        r"|\"([A-Za-z_][A-Za-z0-9_]*)\")(?=[\s();<>|&]|$)")
+CAT_HEREDOC = "\x01"  # left where a plain cat heredoc stood, so "$(cat <<'EOF' ... EOF)" reads as plain
+
+
+def _heredocs(command, problems=None):
+    """command with each heredoc operator (<<EOF, <<-'EOF') and terminator line taken out. A plain heredoc
+    is cat <<WORD (cat right before the operator, WORD bare or wholly quoted): its body (a commit message,
+    a PR body) is data and is dropped, and CAT_HEREDOC marks its place. Any other heredoc (bash <<EOF,
+    cat > f <<EOF) is noted in problems and keeps its body, which is then read as commands; so is a <<<
+    here-string. When a delimiter is not a simple word or its terminator line (the delimiter exactly;
+    for <<- after leading tabs) is missing, the command is returned unchanged, every line read as
+    commands, and the heredoc is noted. Linear in the length of command."""
+    out, pending = [], []  # pending: [delimiter, strip_tabs, data] of the heredocs whose body comes next
     for line in command.split("\n"):
-        if end is not None:
-            if line.strip() == end:
-                end = None
-            continue
-        out.append(line)
-        match = re.search(r"\bcat\s+<<-?\s*(['\"]?)([A-Za-z_]\w*)\1", line)
-        if match:
-            end = match.group(2)
+        if pending:
+            delimiter, strip_tabs, data = pending[0]
+            if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+                pending.pop(0)
+                continue
+            if data:
+                continue
+        pieces, position, found = [], 0, []
+        start = line.find("<<")
+        while start >= 0:
+            if line.startswith("<<<", start):
+                _note(problems, "here-string")
+                end = start + 3
+                while end < len(line) and line[end] == "<":
+                    end += 1
+                start = line.find("<<", end)
+                continue
+            strip_tabs = line.startswith("-", start + 2)
+            word = _DELIMITER.match(line, start + 2 + strip_tabs)
+            if not word:
+                _note(problems, "heredoc")
+                return command
+            before = start  # cat must stand right before the operator, after at least one space or tab
+            while before > position and line[before - 1] in " \t":
+                before -= 1
+            data = (before < start and line.endswith("cat", position, before)
+                    and (before == 3 or not (line[before - 4].isalnum() or line[before - 4] in "_-.")))
+            if not data:
+                _note(problems, "heredoc")
+            found.append([next(group for group in word.groups() if group), strip_tabs, data])
+            pieces.append(line[position:start] + (f" {CAT_HEREDOC} " if data else " "))
+            position = word.end()
+            start = line.find("<<", position)
+        out.append("".join(pieces) + line[position:])
+        # A heredoc opened inside a body read as commands ends before the one around it.
+        pending[:0] = found
+    if pending:
+        _note(problems, "heredoc")
+        return command
     return "\n".join(out)
+
+
+_BREAK = set(" \t;&|()<>{}")  # characters after which a word starts
+
+
+def _scan(command, powershell, problems):
+    """Note in problems what makes command (after heredocs and substitutions) not plain, honouring quotes:
+    a # starting a word ("comment"); a $ outside single quotes ("variable"); in Bash a ( or ) outside
+    quotes ("subshell") and a {a,b} or {1..3} brace expansion; in PowerShell an @word splat ("variable"),
+    an @' or @" here-string ("here-string") and the call operator & at the start of a command
+    ("variable"). Linear in the length of command."""
+    escape = "`" if powershell else "\\"
+    quote, i, n = None, 0, len(command)
+    braces_seen = 0  # a { before this was looked at by an earlier one's lookahead
+    while i < n:
+        c = command[i]
+        if quote == "'":
+            if c == "'":
+                quote = None
+            i += 1
+            continue
+        if c == escape:
+            i += 2
+            continue
+        if quote == '"':
+            if c == '"':
+                quote = None
+            elif c == "$":
+                _note(problems, "variable")
+            i += 1
+            continue
+        start = i == 0 or command[i - 1] in _BREAK
+        if c in "'\"":
+            quote = c
+        elif c == "$":
+            _note(problems, "variable")
+        elif c == "#" and start:
+            _note(problems, "comment")
+        elif not powershell and c in "()":
+            _note(problems, "subshell")
+        elif not powershell and c == "{" and i >= braces_seen:
+            end = i + 1
+            while end < n and command[end] not in " \t;&|()<>'\"}":
+                end += 1
+            braces_seen = end
+            if end < n and command[end] == "}" and ("," in command[i:end] or ".." in command[i:end]):
+                _note(problems, "brace expansion")
+        elif powershell and c == "@" and start and i + 1 < n:
+            following = command[i + 1]
+            if following in "'\"":
+                _note(problems, "here-string")
+            elif following.isalnum() or following == "_":
+                _note(problems, "variable")
+        elif powershell and c == "&" and command[i + 1:i + 2] != "&" and command[i - 1:i] != "&":
+            back = i
+            while back > 0 and command[back - 1] in " \t":
+                back -= 1
+            if back == 0 or command[back - 1] in ";|{(=":
+                _note(problems, "variable")
+        i += 1
 
 
 def _name(token):
@@ -174,18 +390,25 @@ def _name(token):
     return base
 
 
-def _join(base, target):
+def _computed(word):
+    return PLACEHOLDER in word or any(mark in word for mark in "$%`")
+
+
+def _join(base, target, named=False):
     """target (from cd or git -C) made absolute against base when possible; None when the command does not
-    say which directory it is (a variable, a substitution, cd -)."""
-    if target == "-" or PLACEHOLDER in target or any(mark in target for mark in "$%`"):
+    say which directory it is (a variable, a substitution, cd -, or a relative path after such a one:
+    base None while named)."""
+    if target == "-" or _computed(target):
         return None
     target = os.path.expanduser(target)
     match = re.fullmatch(r"/([A-Za-z])(/.*)?", target.replace("\\", "/"))
     if os.name == "nt" and match:  # Git Bash spelling of a drive path: /d/x is D:/x
         target = f"{match.group(1).upper()}:{match.group(2) or '/'}"
-    if base and not os.path.isabs(target):
+    if os.path.isabs(target):
+        return target
+    if base:
         return os.path.join(base, target)
-    return target
+    return None if named else target
 
 
 def _classify(tokens, state):
@@ -193,12 +416,23 @@ def _classify(tokens, state):
     position, not only the first, so keywords (if, then, do), braces and wrappers with options
     (sudo -u me, xargs -I {}) cannot hide them."""
     found = []
+    directory_words = CHDIR | POPDIR
+    first_directory = next((k for k, t in enumerate(tokens) if _name(t) in directory_words), -1)
     for i, token in enumerate(tokens):
-        name, args = _name(token), tokens[i + 1:]
-        if name in CHDIR and i == next((k for k, t in enumerate(tokens) if _name(t) in CHDIR), -1):
+        name = _name(token)
+        if name not in directory_words and name not in COMMAND_WORDS:
+            continue
+        # Reading the arguments costs their count, so a long run of command words stays within BUDGET.
+        if not _afford(state.get("problems"), len(tokens) - i):
+            break
+        args = tokens[i + 1:]
+        if name in directory_words and i == first_directory:
+            if name in POPDIR:
+                state["cwd"], state["named"] = None, True
+                continue
             target = next((a for a in args if a == "-" or not a.startswith("-")), None)
             if target:
-                state["cwd"] = _join(state.get("cwd"), target)
+                state["cwd"] = _join(state.get("cwd"), target, state.get("named", False))
                 state["named"] = True
         elif name == "git":
             found.append(_git(args, state))
@@ -208,14 +442,21 @@ def _classify(tokens, state):
             found.append("npm publish")
         elif name in SHELLS:
             # bash -c "git push -f", pwsh -NoProfile -Command git push -f, eval "...": options and their
-            # values come first, so the command text is read from every starting argument.
+            # values come first, so the command text is read from every starting argument, in the dialect
+            # of the shell (cmd and eval keep the one they are called from). A shell given no command text
+            # to read here (a script file, a pipe, stdin, -EncodedCommand) is not plain.
+            if not _inline(name, args):
+                _note(state.get("problems"), "shell input")
             depth = state.get("depth", 0) + 1
             if depth > MAX_DEPTH:
+                _note(state.get("problems"), "too deep")
+            if _stopped(state.get("problems")):  # it asks already; more reading only costs time
                 continue
-            inner_state = {**state, "depth": depth}
+            powershell = name in POWERSHELLS or (name not in POSIX_SHELLS and state.get("powershell", False))
+            inner_state = {**state, "depth": depth, "powershell": powershell}
             for start in range(min(len(args), 64)):
                 for inner in _segments(" ".join(a for a in args[start:] if a != PLACEHOLDER), depth,
-                                       state.get("powershell", False)):
+                                       powershell, state.get("problems")):
                     found += _classify(inner, inner_state)
     return [label for label in dict.fromkeys(found) if label]
 
@@ -224,15 +465,14 @@ def _gh(args):
     lowered = [a.lower() for a in args]
     for (first, second), label in GH_PAIRS.items():
         for k, word in enumerate(lowered):
-            if word == first and _gh_sub(lowered[k + 1:]) == second:
+            if word == first and _gh_sub(lowered, k + 1) == second:
                 return label
     return None
 
 
-def _gh_sub(args):
-    """The subcommand word at the start of args, skipping flags and their values (gh pr -R o/r merge).
-    After a flag the next word could be its value or the subcommand: a protected word there counts."""
-    i = 0
+def _gh_sub(args, i=0):
+    """The subcommand word at args[i:], skipping flags and their values (gh pr -R o/r merge). After a
+    flag the next word could be its value or the subcommand: a protected word there counts."""
     while i < len(args):
         arg = args[i]
         if not arg.startswith("-"):
@@ -250,7 +490,7 @@ def _git(args, state):
         option = args[i]
         if option in GIT_VALUE_OPTIONS and i + 1 < len(args):
             if option == "-C":
-                directory, named = _join(directory, args[i + 1]), True
+                directory, named = _join(directory, args[i + 1], named), True
             i += 2
         else:
             i += 1
@@ -292,13 +532,13 @@ def _flags(args, value_options=()):
 def _push(args, directory, named):
     long, short, positional = _flags(args, PUSH_VALUE_OPTIONS)
     reasons = []
-    if long & {"--force", "--force-with-lease", "--force-if-includes"} or "f" in short:
+    if _given(long, "--force", "--force-with-lease", "--force-if-includes") or "f" in short:
         reasons.append("force")
-    if "--delete" in long or "d" in short:
+    if _given(long, "--delete") or "d" in short:
         reasons.append("delete")
-    if long & {"--tags", "--follow-tags"}:
+    if _given(long, "--tags", "--follow-tags"):
         reasons.append("tags")
-    if long & {"--all", "--mirror", "--branches"}:
+    if _given(long, "--all", "--mirror", "--branches"):
         reasons.append("all branches")
 
     def checked_out():
@@ -310,6 +550,9 @@ def _push(args, directory, named):
             reasons.append("branch unknown")
 
     refspecs = positional[1:]
+    # A computed remote may carry the refspecs too; a glob (mai?, *) may match a file named like a branch.
+    if positional and (_computed(positional[0]) or any(mark in positional[0] for mark in "*?[")):
+        reasons.append("computed refspec")
     previous = None
     for spec in refspecs:
         if previous == "tag":
@@ -317,7 +560,7 @@ def _push(args, directory, named):
         previous = spec
         if spec == "tag":
             continue
-        if PLACEHOLDER in spec:
+        if _computed(spec) or any(mark in spec for mark in "*?["):
             reasons.append("computed refspec")
             continue
         if spec.startswith("+"):
@@ -340,11 +583,31 @@ def _push(args, directory, named):
     return f"git push ({', '.join(unique)})" if unique else None
 
 
+def _given(long, *names):
+    """Whether long holds one of names or an abbreviation of it: git takes any unambiguous prefix of a
+    long option (--tag, --del, --mirr), and an ambiguous one fails, so every prefix counts."""
+    return any(len(option) > 2 and name.startswith(option) for option in long for name in names)
+
+
+def _inline(name, args):
+    """Whether shell name is given its command text in args (bash -c, pwsh -Command, cmd /c, eval x)."""
+    lowered = [a.lower() for a in args]
+    if name in ("eval", "iex", "invoke-expression"):
+        return bool(args)
+    if name == "cmd":
+        return any(a in ("/c", "/k") for a in lowered)
+    if name in POWERSHELLS:
+        if any(a in ("-e", "-ec") or (len(a) > 2 and "-encodedcommand".startswith(a)) for a in lowered):
+            return False
+        return any(len(a) > 1 and ("-command".startswith(a) or a.startswith("-command")) for a in lowered)
+    return any(a.startswith("-") and not a.startswith("--") and "c" in a for a in args)
+
+
 def _branch(args):
     long, short, _ = _flags(args)
     if "D" in short:
         return "git branch -D"
-    if ("--delete" in long or "d" in short) and ("--force" in long or "f" in short):
+    if (_given(long, "--delete") or "d" in short) and (_given(long, "--force") or "f" in short):
         return "git branch -D"
     return None
 
@@ -442,33 +705,20 @@ def _is_human(origin):
 
 
 def authorizes(text):
-    """True when text has a 授權 shaped as a go-ahead and none that is refused or asked. Per occurrence, its
-    clause is the text between the nearest punctuation marks (CLAUSE_END) around it. A negation
-    (NEGATIONS) before it in the clause or a question (QUESTIONS) anywhere in the clause refuses the whole
-    message. It counts only when the clause text before it is empty or a short affirmation (LEADS: 好，
-    OK, 我, 可以) and the text after it does not start with a FOLLOWERS word (授權之前, 授權條款), so
-    等我授權, 之後再授權 and OAuth 授權流程 do not count. A 授權 in quotes (「授權」) is a mention: it neither
-    counts nor refuses."""
-    if not isinstance(text, str) or WORD not in text:
+    """True when the whole of text, stripped and on one line, is a go-ahead:
+    [lead [separator]]{0,2} 授權 [targets] [final punctuation]. A lead is one of LEADS (好, 好的, OK, okay,
+    yes, 可以, 同意, 我, 那就); a separator is whitespace, ，, , or 、. The targets are words from TARGETS
+    (merge, push, release, publish, install, setup, 合併, 推送, 發布, 發版, 安裝, 並, 和, 跟, 及, 然後, PR), #141,
+    141 or a version (v1.2.0), each after optional separators (合併並安裝 may be glued); the final
+    punctuation is any run of 。 . ! ！. So 授權, 好，我授權, 授權 merge PR #141 and 授權合併並安裝 count, and
+    any other text makes the message not count: 授權取消, 授權等 CI 過了再說, 授權了嗎？, 等我授權,
+    「授權」是什麼, 我授權你 merge #140."""
+    if not isinstance(text, str):
         return False
-    counted = False
-    start = 0
-    while (index := text.find(WORD, start)) >= 0:
-        end = index + len(WORD)
-        start = end
-        before, after = text[index - 1:index], text[end:end + 1]
-        if before and after and before in QUOTES_OPEN and after in QUOTES_CLOSE:
-            continue
-        left = max(text.rfind(mark, 0, index) for mark in CLAUSE_END) + 1
-        stops = [pos for pos in (text.find(mark, end) for mark in CLAUSE_END) if pos >= 0]
-        right = min(stops) + 1 if stops else len(text)
-        lead, clause = text[left:index], text[left:right]
-        if any(word in lead for word in NEGATIONS) or any(word in clause for word in QUESTIONS):
-            return False
-        shaped = LEADS.fullmatch("".join(lead.split()).lower()) is not None
-        if shaped and not text[end:].lstrip().startswith(FOLLOWERS):
-            counted = True
-    return counted
+    text = text.strip()
+    if len(text.splitlines()) != 1:
+        return False
+    return _GO_AHEAD.fullmatch(text) is not None
 
 
 def ask(actions, why):
@@ -502,7 +752,7 @@ def decide(event):
         return ask(actions, "No message of yours could be read from the transcript")
     if authorizes(text):
         return {}
-    return ask(actions, f"Your last message does not say {WORD}")
+    return ask(actions, f"Your last message is not a go-ahead such as {WORD} or {WORD} merge #141")
 
 
 def _candidate(raw):

@@ -1402,17 +1402,71 @@ joined, subshells and braces, PowerShell's `{...}` without spaces too). Every
 own wherever it stands (quoted, glued to a word, inside a `bash -c` string; single
 quotes are not honoured, so a quoted `'$(x)'` is read too) and stays in place as a
 computed value; `$(git branch --show-current)`, `$(git rev-parse --abbrev-ref HEAD)`
-and `$(git symbolic-ref --short HEAD)` count as `HEAD`. The body of a heredoc fed to
-`cat` (a commit message or PR body in `"$(cat <<'EOF' ... EOF)"`) is data and is not
-read; a heredoc fed to anything else is. A redirect and its target (`2>&1`,
+and `$(git symbolic-ref --short HEAD)` count as `HEAD`. The body of a plain heredoc,
+`cat <<WORD` (a commit message or PR body in `"$(cat <<'EOF' ... EOF)"`), is data and
+is not read; any other heredoc body is. A redirect and its target (`2>&1`,
 `>/dev/null`, PowerShell `*> $null`) are left out. `git`, `gh` and `npm` are
 recognised at any position of a simple command, so `if ...; then gh pr merge`,
 `sudo -u me git push -f`, `xargs -I {} git branch -D {}` and `env A=1 npm publish`
 are all seen; the string of `bash -c`, `sh -c`, `pwsh -Command`, `powershell -c`,
-`cmd /c` and `eval` is read as a command too. A command that merely mentions such
-words (`echo gh pr merge`) asks as well: the check errs toward asking. In a Bash
-call a backslash is read both as an escape and as a Windows path separator
-(`C:\tools\gh.exe pr merge 5`). A simple command asks when it is:
+`cmd /c` and `eval` is read as a command too, in the shell's own dialect (`pwsh`,
+`powershell` and `Invoke-Expression` as PowerShell, `bash`, `sh`, `zsh`, `dash` and
+`ksh` as Bash; `cmd` and `eval` as the call they sit in). A command that merely
+mentions such words (`echo gh pr merge`) asks as well: the check errs toward
+asking. In a Bash call a backslash is read both as an escape and as a Windows path
+separator (`C:\tools\gh.exe pr merge 5`).
+
+**Only plain commands pass silently.** The check fails closed: a command that
+mentions one of the keywords below passes without a prompt only when it is plain.
+Anything else asks as `unreadable command (<what>)`, besides whatever actions were
+found in it:
+
+- `comment`: a `#` that starts a word outside quotes (`#12` inside a quoted
+  message is fine), in Bash and PowerShell (`<# ... #>` too);
+- `heredoc`: any heredoc other than `cat <<WORD`, `cat <<'WORD'`, `cat <<"WORD"` or
+  `cat <<-WORD` (so `cat > a.txt <<'EOF'`, `bash <<EOF` and `git commit -F - <<EOF`
+  ask); a delimiter that is not a simple word (letters, digits, `_`) followed by a
+  space, the line end or an operator (`<<END-MSG`); or a missing terminator line,
+  which must be the delimiter exactly, after leading tabs for `<<-` and nothing else
+  trimmed (`EOF)"` and `EOF ` do not end it). Without a terminator the command is
+  read with every line as a command;
+- `here-string`: a Bash `<<<` or a PowerShell `@'` / `@"`;
+- `substitution`: any `$(...)` or Bash backtick substitution other than a plain
+  `cat` heredoc and the three current-branch idioms; a backslash-escaped backtick
+  (`` \` ``) in Bash is a literal, not a substitution. `nested substitution` (one
+  whose text holds another `$(` or backtick) and `unclosed substitution` (a `$(`
+  without its `)`, a lone backtick in Bash) are named too;
+- `subshell`: a `(` or `)` outside quotes in Bash; in PowerShell, a directory
+  change (`cd`, `Set-Location`, `Push-Location`, `popd` ...) in a command that also
+  holds a `(` or `{`, since the change may or may not last;
+- `variable`: a `$` outside single quotes (`$BRANCH`, `"$R"`, `$env:X`), a
+  PowerShell `@name` splat or the call operator `&` at the start of a command;
+  `${...}` in PowerShell is also named `${...}` (the name stays one word, so the
+  actions around it are still found);
+- `brace expansion`: a Bash `{a,b}` or `{1..3}` outside quotes;
+- `continuation`: a line continuation (Bash `\`, PowerShell `` ` ``) glued to the
+  word before it, which may join two words (`ma\` + `in` is `main`); a Bash `\` line
+  continuation is removed without a space, as Bash does;
+- `shell input`: a shell that is not given its command text inline (`bash`
+  without `-c`, `pwsh` without `-Command` or with `-EncodedCommand`, `cmd` without
+  `/c`, `eval` or `iex` without arguments): it reads a script file, a pipe or stdin
+  (`echo "git push --force" | bash`);
+- `escape`: a PowerShell backtick inside a word (``g`it`` is `git`) other than a
+  line continuation;
+- `quotes`: unbalanced quotes (the command is then split on spaces and operators
+  and read that way too);
+- `too deep`: more than four levels of `bash -c` strings or substitutions;
+- `too long`: more than 50,000 characters to read, counted over every level and
+  reading from the raw command; the check then stops, so no command can keep it
+  past a fraction of a second (a hook that timed out would let the command run).
+
+In a Bash call that also gets the PowerShell reading (because of a backslash), only
+the Bash reading names what is not plain. Routine commands stay plain: `git push`,
+`git push -u origin HEAD`, `git push -u origin "$(git branch --show-current)"`, a
+`git commit -m "$(cat <<'EOF' ... EOF)"` or `gh pr create --body "$(cat <<'EOF' ...
+EOF)"`, `gh pr view 141`.
+
+A simple command asks when it is:
 
 - `gh pr merge` or `gh release create` (flags may sit between the words:
   `gh pr -R owner/repo merge 5`);
@@ -1420,44 +1474,51 @@ call a backslash is read both as an escape and as a Windows path separator
   asks too);
 - `git push` with `-f`, `--force`, `--force-with-lease` or a `+refspec`; with
   `--delete`, `-d` or a `:ref`; with `--tags`, `--follow-tags`, `tag <name>` or a
-  `refs/tags/` ref; with `--all`, `--mirror` or `--branches`; to `main` or `master`
+  `refs/tags/` ref; with `--all`, `--mirror` or `--branches` (any prefix of these
+  long options counts, as git accepts abbreviations: `--tag`, `--del`, `--mirr`,
+  `--force-with-l`); to `main` or `master`
   (as the destination of a refspec, `refs/heads/` included); with a computed
-  refspec (`git push origin $(...)`); or with no refspec or `HEAD` while the
-  repository has `main` or `master` checked out, read from its `HEAD` file. The
-  repository is the event's `cwd`, changed by a preceding `cd`, `pushd`,
-  `Set-Location` or `Push-Location` (Git Bash `/d/x` paths included) or `git -C`;
-  when the command names the directory that way and its branch cannot be read, or
-  the directory is not spelled out (`cd "$MAIN"`, `cd $env:X`, `git -C "$(...)"`,
-  `cd -`), the push asks as `branch unknown`;
-- `git branch -D`, or `-d`/`--delete` together with `-f`/`--force`.
+  remote or refspec (one holding a substitution, `$`, `%` or a backtick:
+  `git push origin $(...)`, `git push origin $BRANCH`, `git push $REMOTE`); or with
+  no refspec or `HEAD` while the repository has `main` or `master` checked out,
+  read from its `HEAD` file. The repository is the event's `cwd`, changed by a
+  preceding `cd`, `pushd`, `Set-Location` or `Push-Location` (Git Bash `/d/x` paths
+  included) or `git -C`; when the command names the directory that way and its
+  branch cannot be read, or the directory is not spelled out (`cd "$MAIN"`,
+  `cd $env:X`, `git -C "$(...)"`, `cd -`, a relative `cd sub` after one of those,
+  `popd`, `Pop-Location`), the push asks as `branch unknown`;
+- `git branch -D`, or `-d`/`--delete` together with `-f`/`--force` (prefixes of
+  the long options count too).
 
 A tag pushed by its bare name (`git push origin v1.0`) is not recognised, and
-neither is a command hidden in a script file, an alias, a heredoc fed to `cat` and
-then piped to a shell, or `gh api`. A child session (`claude -p "授權 ..."`) is not
+neither is a command hidden in a script run directly (`./deploy.sh`), an alias,
+or `gh api`. A glob in a `git push` remote or refspec (`mai?`, `*`) asks as a
+computed refspec, since it may match a file named like a branch. A child session
+(`claude -p "授權 ..."`) is not
 checked either: its own gate reads its own transcript. The gate catches routine
 slips; it is not a sandbox.
 
-**授權 lets it through.** When the person's newest own message says 授權, the
-hook gives no decision and the command runs as it would without the gate. "Own
+**授權 lets it through.** When the person's newest own message is a 授權
+go-ahead, the hook gives no decision and the command runs as it would without the
+gate. "Own
 message" means the newest transcript entry Claude Code marks `origin.kind:
 "human"` and not `isSidechain` or `isCompactSummary`: a typed prompt (`type:
 "user"`, text or text-and-image content) or a message sent while the turn runs (an
 attachment of type `queued_command`). Subagent hand-backs (`peer`), background
 notices (`task-notification`), compact summaries, slash-command output and tool
-results never count, so no model output can approve. Each 授權 is judged within
-its clause, the text between the nearest punctuation marks or line breaks around
-it. It counts only as a go-ahead: the clause text before it is empty or a short
-affirmation (好、好的、OK、yes、可以、同意、我、那就、就、嗯、對、是、現在、直接:
-授權, 好，授權 merge, 我授權你 merge #140), and the text after it does not make it
-a time or a noun (前、後、之前、之後、時、的、條款、流程、碼、規則 …: 授權之前,
-授權條款). So 等我授權, 之後我會授權 and OAuth 授權流程壞了 do not count. A negation
-before it in the clause (不、未、沒、別、無、非、勿、免、取消、撤銷、撤回、收回、
-拒絕、停止、暫緩: 不可以授權, 取消授權) or a question anywhere in the clause (?、？、
-嗎、呢、為什麼、是否、要不要、能不能、可不可以: 授權了嗎？) refuses the whole
-message. A 授權 in quotes (「授權」, "授權") is a mention and neither counts nor
-refuses. The message lets commands through only when at least one 授權 counts and
-none refuses. The transcript is read backwards from
-its end, at most 64 MiB.
+results never count, so no model output can approve. The whole message, trimmed
+and on one line, must have the go-ahead shape and nothing else: up to two leads
+(好、好的、OK、okay、yes、可以、同意、我、那就, each optionally followed by a space,
+`，`, `,` or `、`), then 授權, then only target words, each optionally after such a
+separator: merge、push、release、publish、install、setup、合併、推送、發布、發版、
+安裝、並、和、跟、及、然後、PR (any case), `#141`, `141` or a version (`v1.2.0`),
+then only final punctuation (`。`, `.`, `!`, `！`). So 授權, 授權。, 好，授權, OK 授權,
+好，我授權, 授權 merge PR #141, 授權合併並安裝, 授權 release v1.2.0 and
+授權 merge #140 並安裝 count, and any other text makes the message not count:
+授權取消, 授權撤回，先不要 merge, 授權等 CI 過了再說, 授權是什麼意思, 授權了嗎？,
+不授權, 等我授權, OAuth 授權流程壞了, 「授權」是什麼, 授權 don't merge, any message of
+more than one line, and also 我授權你 merge #140 (你 is not a target word).
+The transcript is read backwards from its end, at most 64 MiB.
 
 It always asks for a call made by a subagent (the event has `agent_id`): a
 message cannot authorize a subagent. It also asks when the transcript cannot be
