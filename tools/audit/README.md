@@ -15,6 +15,7 @@ before sharing it.
 | `measure2.js` | main-session requests by class (work, text-only, notification-only, handoff-only and so on), counted once per message id across resumed and forked transcripts; long subagent runs; files read by several agents | `node tools/audit/measure2.js 2026-10-27T00:00:00Z` |
 | `hook-timing.js` | hook duration p50/p90 and timeouts per period, for named and anonymous (`command hook N`) records | `node tools/audit/hook-timing.js 2026-10-27T00:00:00Z 2026-11-03 2026-11-09` (the dates are optional period boundaries; without them periods are 7 days) |
 | `count_acceptance.js` | acceptance files per repository and worktree: closed, every non-human gate passed but not closed, unmet, unparseable | `node tools/audit/count_acceptance.js --list <dir-of-repos>` |
+| `count_verified.js` | agent commits (a `Claude-Session:` or `Co-Authored-By: Claude` line) with a `Verified:` trailer per kind, `none` with or without a reason, malformed and missing; it reads `git log --all`, so a squash-merged PR counts once for its branch commits and once for the merge commit; it reads commit messages and prints subjects with `--list`, so read the output before sharing | `node tools/audit/count_verified.js --since 2026-11-18 --list <repo>` |
 | `time_gate.py` | time spent in `session_files`, `last_edit` and `tree_digest` for a given transcript size | `python -B tools/audit/time_gate.py` |
 | `time_sessionstart.py` | child processes and time per `SessionStart` source, profiled against a copy of the store | see the header of the file |
 
