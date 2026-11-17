@@ -43,7 +43,7 @@ For each claim, ask how its failure would show, then pick the cheapest evidence 
 
 **R2 — governance-grade (STOP before implementing):** auth/authorization; credentials, secrets, crypto; payments; schema, serialization, or data migration; breaking changes to a public API or dependency boundary; cross-repo/workspace changes; destructive or irreversible operations (data deletion, release, deploy); formal audit needs or an explicit user request for fixed-scope evidence. Auth, secrets and crypto count when the diff changes how they decide, persist or protect; UI, wording, tests and behavior-preserving refactors of such code are at most R1. On R2: stop, name the matched trigger, and wait for the user to choose the path — typically raising the main session's effort and continuing right here; implementation stays in this lane unless the user says otherwise. Never silently continue. An R2 task is done only after `code-reviewer` (plus `architecture-reviewer` when an architectural boundary is touched) has passed the finished work, and any irreversible operation runs only after that review.
 
-**Repository floor:** when the repository's root `REVIEW.md` has an `## Always review` section, read it while classifying; a change touching a listed path is at least the tier listed for it (R1: finish, then `code-reviewer`; R2: stop as above), the declaration names the matched path, and nothing in the negative list lowers that floor.
+**Repository floor:** when the repository's root `REVIEW.md` has an `## Always review` section, read it while classifying; a change touching a listed path is at least the tier listed for it (R1: finish, then `code-reviewer`; R2: stop as above), the declaration names the matched path, and nothing in the negative list lowers that floor. When the diff changes `REVIEW.md` itself, classify by the base-branch copy (`git show origin/<default branch>:REVIEW.md`) and paste that copy into the `code-reviewer` brief: a change never picks the rules that judge it.
 
 **Negative list — none of the following is a reason to review or escalate:** file count or diff size; the task "looking complex" or "non-trivial" (that is the difficulty axis, which only picks the implementer); routine docs/UI copy, styling, or formatting (these exempt code review, not visual acceptance against a mockup); UI behavior that live verification can confirm; a bounded fail-soft bug fix; purely internal refactoring that touches no exposed interface; a mass deletion of code that build, typecheck and grep can verify. Do not dispatch a reviewer, an analyst, or any role merely to gain extra confidence.
 
@@ -92,7 +92,9 @@ Keep this in existing progress/handoff records when available; no new manifest.
   a time (two when the suite is known to be light), while workers keep running
   focused tests in their own loop. A failure that appears only under parallel load
   (timeouts, out-of-memory, timing tests) is load, not a regression: rerun it alone
-  before acting on it.
+  before acting on it. A test that still fails now and then when run alone is flaky:
+  find the root cause, or delete the test and give the reason in the commit message;
+  never make it pass with a sleep, a retry or a skip.
 - Main merges isolated branches into the integration branch one at a time and
   verifies the merged state after each merge before taking the next.
 - Count all implementation writers: implementer, mech-executor, any other
@@ -138,6 +140,8 @@ Before dispatch, write the acceptance file `.claude/acceptance/<task>.json` (sch
 | release / outward | `human` | the user's approval |
 
 A gate passes only on evidence from the surface it names: an inconclusive run, another surface or a proxy (it compiles, a worker's self-report) is not a pass. Compare pixels only when the mockup is marked pixel-exact; otherwise the verdict is a judged diff list. Never edit a gate's `check`, `source`, baseline or fixture data to make it pass; report a wrong gate instead of rewriting it.
+
+Every commit you create carries a `Verified:` trailer in its trailer block, beside the attribution lines: the evidence kinds that passed for the committed content, in the gate vocabulary (`Verified: machine, review`), or `Verified: none — <reason>` when no check ran on it. An audit counts these trailers, so never name a kind whose check did not run on this content.
 
 Keep the plan visible as a task list: when an approved plan has three or more steps, create every step with `TaskCreate` before starting the first, set a step `in_progress` with `TaskUpdate` before working on it or dispatching its role, and set it `completed` once its claims pass. Record added or dropped steps the same way. Simple tasks skip this.
 
