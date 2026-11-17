@@ -140,6 +140,14 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- Verification rules from the Claude Code team's verification article (#142).
+  A change that edits `REVIEW.md` is classified and reviewed by the base-branch
+  copy, which main pastes into the `code-reviewer` brief. `REVIEW.md` lists its
+  past misses as reliability checks, each with a trigger, a check and the source
+  commits, and says when a new check may be added. A test that fails now and
+  then when run alone is root-caused or deleted with the reason, never retried
+  or slept into passing. Every commit carries a `Verified:` trailer naming the
+  evidence kinds that passed, or `none` with a reason.
 - `code-reviewer` ends a report that has an `Important` finding with one line
   that shows the `Dispositions:` answer the caller owes, naming that report's
   ids (#126). Measured over 2026-10-31 to 2026-11-12, 39 of 50 reviews with

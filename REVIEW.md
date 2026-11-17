@@ -10,24 +10,56 @@ What failure looks like in this repository, for `code-reviewer` and for people.
   expected revision, or carrying a credential, private path or raw transcript.
 - **State across runs:** the store is read by later runs, other sessions, retries,
   `migrate`, `prune`, `search` and hooks, so check each written or deleted value
-  from their side. Past misses here:
-  - a file identity check (`st_dev`/`st_ino`) that matches a deleted lock file
-    whose inode a recreated one reused;
-  - a replay of the same request handled differently from its first attempt, or
-    a phase like `done` compared differently in different modules;
-  - `prune` judging idleness from a time that `migrate` keeps old while it
-    rewrites the file, or missing a source `migrate` reads (`archive/`), so it
-    deletes what was just written or will be imported again;
-  - a correction (`supersedes`) that leaves the replaced entry current;
-  - a reader treating a newer `snapshot_version` as its own, a prefix that
-    matches several cards, or an error payload quoting card text unredacted;
-  - a hook exclusion pattern that also matches legitimate content (a result
-    that merely mentions `SubagentHandback`).
+  from their side. The reliability checks below list the past misses of this kind.
 - **Installer:** `install.py` changing a file without a backup, a rollback that
   does not restore the previous state, or `check` reporting healthy when it is not.
 - **Policy and docs:** they lie — a rule in `native/CLAUDE.native.md`, a role
   file, `README.md`, `README.zh-TW.md` or the operations guide that contradicts
   another or describes behaviour the code does not have.
+
+## Reliability checks
+
+Each check names a trigger you can read from the diff, what to check, and the
+commits that fixed the miss behind it. Read the diff, then apply only the checks
+whose trigger it matches.
+
+- **File identity.** Trigger: the diff compares files by `st_dev`/`st_ino`, or
+  deletes and recreates a lock or store file. Check: a recreated file can reuse a
+  deleted file's inode, so identity must not match across a delete.
+  Source: 5ff7d26.
+- **Replayed requests.** Trigger: record, join or adoption code that handles a
+  repeated request id. Check: a replay gets the same result as its first attempt,
+  including a first attempt that logged nothing or that created the card.
+  Source: 630583d, fdbd0c5.
+- **Phase comparisons.** Trigger: code that compares a phase or state string such
+  as `done`. Check: every module compares the same way (`store.is_done`), not with
+  its own literal. Source: fdbd0c5.
+- **Deletion by age.** Trigger: `prune` or other code that deletes by idle time or
+  expiry, or lists the sources it may delete. Check: no writer keeps the time old
+  while it rewrites the file (`migrate` keeps the legacy `at`), and every source a
+  later run reads (`archive/`) counts, so nothing just written, or about to be
+  imported again, is deleted. Source: 03812f3.
+- **Corrections.** Trigger: `supersedes`, `updates` or duplicate detection in
+  records. Check: the replaced entry stops being current, also when an earlier
+  entry of the same record replaced it. Source: 630583d.
+- **Reading stored records.** Trigger: code that reads `snapshot_version`, matches
+  card ids or prefixes, or quotes stored text in an error. Check: a newer version
+  is not read as the reader's own, a prefix that matches several cards is refused
+  as ambiguous, and quoted card text is redacted. Source: 2d254db.
+- **Hook exclusion patterns.** Trigger: a pattern that makes a hook skip content
+  (notice filters, exclude lists). Check: it does not also match legitimate
+  content, such as a real result that mentions `SubagentHandback`.
+  Source: 31b7a4f.
+
+## Adding a check
+
+Add a reliability check only when its failure class appeared in at least two
+PRs, or when the original diff, replayed to `code-reviewer` three times, showed
+the defect in at least two runs although the original review missed it on a
+small diff. A miss that meets neither stays an eval case (#56). Every check
+states its trigger, check and source commits. The checks above share one class,
+state read by later runs, which appeared in #20, #21, #23 and #26. Remove a check
+when its trigger no longer matches any code.
 
 ## Always review
 

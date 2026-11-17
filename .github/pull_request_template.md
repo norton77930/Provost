@@ -19,6 +19,9 @@ plainly when reverting the merge is enough.
 
 List commands run and current results. Note checks that could not be run.
 
+Each commit ends with a `Verified:` trailer: the evidence kinds that passed for
+it (`machine`, `live`, `visual`, `review`), or `none — <reason>`.
+
 ## Documentation and attribution
 
 - [ ] Status/claims remain consistent across relevant documentation.
