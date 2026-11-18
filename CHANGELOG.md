@@ -141,6 +141,12 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- Dispositions reasons are checkable (#142, measured on #56): an `intentional`
+  reason names where the decision is written down, and an `unproven` reason
+  names the run that did not show the failure; a finding whose `Reproduce:`
+  step never ran is not `unproven`. Since 2026-10-01, 2 of the 3 findings main
+  dropped were real defects fixed later: one marked `intentional`, one marked
+  `unproven` without a run.
 - Verification rules from the Claude Code team's verification article (#142).
   A change that edits `REVIEW.md` is classified and reviewed by the base-branch
   copy, which main pastes into the `code-reviewer` brief. `REVIEW.md` lists its
