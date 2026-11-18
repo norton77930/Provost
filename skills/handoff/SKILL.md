@@ -33,7 +33,7 @@ A Python invocation is also documented in the operations guide (the SessionStart
    assignments, sources) is replaced in full each time. Decisions and evidence go
    to the work's append-only log: put only entries that are NEW since this
    session's last record in `new_decisions` (`{text, refs?, supersedes?}`) and
-   `new_evidence` (`{claim, state, ref, updates?}`); the old `decisions` /
+   `new_evidence` (`{claim, state, ref, updates?}`); `decisions` and
    `evidence` fields are refused. Follow Writing entries below. Exclude
    credentials and full transcripts. Never treat an unfilled template as saved work.
 3. Write the payload to a file with the Write tool, then run one plain command:

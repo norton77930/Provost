@@ -141,6 +141,10 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- Prompt-audit wording fixes: `code-reviewer` caps `Nit` findings at three
+  unless the repository's `REVIEW.md` sets another number, which settles which
+  limit wins when the two differ; the `handoff` skill names the refused
+  `decisions` and `evidence` fields without calling them "old".
 - Dispositions reasons are checkable (#142, measured on #56): an `intentional`
   reason names where the decision is written down, and an `unproven` reason
   names the run that did not show the failure; a finding whose `Reproduce:`
