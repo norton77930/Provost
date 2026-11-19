@@ -7,6 +7,7 @@ import subprocess
 import time
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -217,6 +218,58 @@ class AcceptanceStopTests(AcceptanceCase):
         self.assertIn("g1", reason)
         self.assertIn(str(bad), reason)
 
+    def test_a_deeply_nested_file_is_malformed_alone_and_the_others_are_still_judged(self):  # #139
+        healthy = self.acceptance("a-healthy.json", [gate("healthy-pending")])
+        deep = self.acceptance("b-deep.json", None, raw="[" * 100000)  # json raises RecursionError, not ValueError
+        result = self.stop()
+        self.assertEqual(result.get("decision"), "block", result)
+        self.assertIn("healthy-pending", result["reason"])
+        self.assertIn(str(healthy), result["reason"])
+        self.assertRegex(result["reason"], re.escape(str(deep)) + r": nested too deeply")
+
+    def test_a_deeply_nested_file_of_another_session_stays_ignored(self):  # #139
+        self.acceptance("a-healthy.json", [gate("healthy-pending")])
+        self.acceptance("b-deep.json", None, raw="[" * 100000, mine=False)
+        result = self.stop()
+        self.assertIn("healthy-pending", result["reason"])
+        self.assertNotIn("b-deep.json", result["reason"])
+
+    def test_an_unexpected_error_in_one_file_is_that_files_reason_and_the_others_are_still_judged(self):  # #139
+        from provost_runtime import acceptance
+        real = acceptance.load
+        healthy = self.acceptance("a-healthy.json", [gate("healthy-pending")])
+        odd = self.acceptance("b-odd.json", [gate("odd")])
+
+        def load(path):
+            if Path(path).name == "b-odd.json":
+                raise RuntimeError("boom")
+            return real(path)
+        with mock.patch("provost_runtime.acceptance.load", side_effect=load):
+            result = self.stop()
+        self.assertEqual(result.get("decision"), "block", result)
+        self.assertIn("healthy-pending", result["reason"])
+        self.assertIn(str(healthy), result["reason"])
+        self.assertIn(str(odd), result["reason"])
+        self.assertIn("malformed", result["reason"].lower())
+        self.assertNotIn("boom", result["reason"])  # a message may quote content
+
+    def test_an_unexpected_error_in_one_gate_is_that_gates_stale_reason_and_the_others_are_still_judged(self):  # #139
+        from provost_runtime import acceptance
+        real = acceptance.unmet_state
+        self.acceptance("a-healthy.json", [gate("healthy-pending")])
+        self.acceptance("b-odd.json", [gate("odd", "pass"), gate("odd-pending")])
+
+        def unmet_state(item, *args):
+            if item["id"] == "odd":
+                raise RuntimeError("boom")
+            return real(item, *args)
+        with mock.patch("provost_runtime.acceptance.unmet_state", side_effect=unmet_state):
+            result = self.stop()
+        self.assertEqual(result.get("decision"), "block", result)
+        self.assertIn("healthy-pending (pending)", result["reason"])
+        self.assertIn("odd-pending (pending)", result["reason"])
+        self.assertIn("odd (stale: could not be judged, RuntimeError)", result["reason"])
+
     def test_valid_optional_fields_pass(self):
         self.acceptance("feature.json", [gate("g", "pass", ranAt="2026-10-21T03:00:00Z", evidence="12 passed",
                                               source="docs/spec.md")])
@@ -350,6 +403,16 @@ def clock(when):
     return time.strftime("%H:%M:%S", time.localtime(when))
 
 
+class NoLocalTime(datetime):
+    """An aware datetime that cannot be converted to local time, as the platform's C library refuses for some years."""
+    error = None
+
+    def astimezone(self, tz=None):
+        if tz is None:
+            raise self.error
+        return super().astimezone(tz)
+
+
 class AcceptanceStaleTests(AcceptanceCase):
     """A machine, live or visual gate passed before the main session's last edit is stale (#46); so is a
     review gate without files/digest (#71)."""
@@ -427,6 +490,38 @@ class AcceptanceStaleTests(AcceptanceCase):
         self.assertEqual(result.get("decision"), "block", result)
         self.assertIn("cli (pending)", result["reason"])
         self.assertNotIn("unit-tests", result["reason"])
+
+    def test_a_ran_at_with_no_local_time_makes_only_that_gate_stale_and_named(self):  # #139
+        # Which ranAt cannot be shown as local time depends on the platform and zone (OverflowError east of UTC for
+        # year 9999, OSError on Windows outside 1970..3000), so the conversion is made to fail for those years.
+        from provost_runtime import acceptance
+        real = acceptance._when
+
+        def when(text):
+            parsed = real(text)
+            if parsed is None or not text[:4] in ("0001", "9999"):
+                return parsed
+            return NoLocalTime(parsed.year, parsed.month, parsed.day, parsed.hour, parsed.minute, parsed.second,
+                               tzinfo=parsed.tzinfo)
+        edited = self.now - 30 * 60
+        self.edit(edited)
+        cases = (("later-than-now", OverflowError("date value out of range"), "9999-12-31T23:59:59Z",
+                  "later than now"),
+                 ("before-the-edit", OSError(22, "Invalid argument"), "0001-01-01T00:00:00Z", "is before the last edit"))
+        for index, (name, error, ran_at, text) in enumerate(cases):
+            with self.subTest(name):
+                for old in self.directory.glob("*.json") if self.directory.exists() else ():
+                    old.unlink()
+                NoLocalTime.error = error
+                self.acceptance("a-clocked.json", [gate("clocked", "pass", ranAt=ran_at)])
+                self.acceptance("b-healthy.json", [gate("healthy-pending"), gate("fresh", "pass",
+                                                                                   ranAt=iso(self.now - 20 * 60))])
+                with mock.patch("provost_runtime.acceptance._when", side_effect=when):
+                    result = self.stop(session_id="clock-%d" % index)  # each case its own push budget
+                self.assertEqual(result.get("decision"), "block", result)
+                self.assertIn("healthy-pending (pending)", result["reason"])
+                self.assertRegex(result["reason"], r"clocked \(stale: ranAt %s\S* .*%s" % (ran_at[:10], text))
+                self.assertNotIn("fresh (", result["reason"])  #the other gate was judged, and is fresh
 
     def test_naive_ran_at_after_an_edit_is_stale_with_the_zone_message(self):
         self.edit(self.now - 30 * 60)
@@ -584,6 +679,30 @@ class AcceptanceReviewTests(AcceptanceCase):
         self.assertIn("code-review (stale: reviewed files changed since the review", result["reason"])
         self.assertIn(str(self.source), result["reason"])
         self.assertIn("other (pending)", result["reason"])
+
+    def test_an_invalid_name_makes_the_gate_stale_and_named_whatever_its_sort_order(self):  # #139
+        # NUL sorts before "z", so digest() meets the invalid name first and raises ValueError, not OSError.
+        invalid, missing = "aaa\x00name", str(self.root / "zzz-missing.py")
+        orders = {"invalid-first": [invalid, missing], "unreadable-first": [str(self.root / "aaa-missing.py"),
+                                                                            "zzz\x00name"]}
+        for index, (name, files) in enumerate(orders.items()):
+            with self.subTest(name):
+                for old in self.directory.glob("*.json") if self.directory.exists() else ():
+                    old.unlink()
+                item = gate("code-review", "pass", kind="review", files=files, digest="0" * 64)
+                self.acceptance("a-bad.json", [item])
+                self.acceptance("b-healthy.json", [gate("other", "pending")])
+                result = self.stop(session_id="order-%d" % index)  # each case its own push budget
+                self.assertEqual(result.get("decision"), "block", result)
+                self.assertIn("other (pending)", result["reason"])
+                self.assertIn("code-review (stale: reviewed files changed since the review", result["reason"])
+
+    def test_an_invalid_name_is_named_in_the_stale_reason(self):  # #139
+        from provost_runtime.acceptance import unmet_state
+        item = gate("code-review", "pass", kind="review", files=["aaa\x00name", str(self.source)], digest="0" * 64)
+        state = unmet_state(item, None, str(self.root))
+        self.assertIsNotNone(state)
+        self.assertIn("stale: reviewed files changed since the review (invalid file name 'aaa\\x00name'", state)
 
     def test_relative_reviewed_files_resolve_against_the_event_cwd(self):
         self.acceptance("feature.json", [self.reviewed("src/app.py")])

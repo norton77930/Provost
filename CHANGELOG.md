@@ -379,6 +379,7 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Fixed
 
+- One bad gate or acceptance file no longer drops every gate's verdict in the Stop check (#139). An exception while judging one gate makes only that gate stale (`could not be judged, <error class>`), and one that reads one file makes only that file malformed; the other files and gates are still judged. A file name the system rejects (for example one holding a NUL) in a review gate's `files` now makes the gate stale with the name in the reason, whatever order the files sort in; before, it could read fresh. A `ranAt` the platform cannot show as local time keeps the gate stale with the ISO text in the reason, and a file nested too deeply is reported malformed on its own.
 - `tools/audit/count_acceptance.js` reads acceptance files that start with a UTF-8 BOM (the Stop gate already decodes `utf-8-sig`) instead of counting them as unparseable, and splits all-pass files that are not closed into `waitingHuman` (a human gate is still pending) and `allDone` (nothing left but `closed`).
 - A review gate whose `files` are written relative, or in another order than `digest`
   printed them, no longer stays stale forever (#135). `acceptance.digest()` now makes
