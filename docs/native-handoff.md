@@ -1209,8 +1209,12 @@ answers at every main-turn end:
   cannot be read or written only means no dedupe.
 - Otherwise, and on any internal error (an unreadable transcript, an unexpected
   exception, invalid hook input), it returns no decision and the turn ends: a broken
-  check never traps a session. It needs no `provost/config.json` and works with
-  handoff off.
+  check never traps a session. An error while judging one gate or one file does not
+  take the rest with it: that gate is reported stale (`could not be judged`), that
+  file malformed, and every other gate and file is still judged. A file nested too
+  deeply for the JSON parser is malformed (`nested too deeply`), and a `ranAt` that
+  the platform cannot show as local time is named by its ISO text in the reason. It
+  needs no `provost/config.json` and works with handoff off.
 
 The person-prompt reset runs in `hooks/native-facts`' synchronous `UserPromptSubmit`
 registration (which `install.py setup` adds), with bash builtins only: when the
@@ -1291,8 +1295,10 @@ those files no longer matches, whoever changed them (the main session, a subagen
 Bash or PowerShell command); a deleted or unreadable file counts as changed and is
 named in the reason. Without them it goes stale like a `machine` gate without `ranAt`:
 as soon as the session has edited anything. A stale review gate needs a re-review of
-the changed files (after fixes, the fix diff) and a fresh `files` and `digest`. When
-the digest cannot be computed for any other reason, the gate does not hold the turn.
+the changed files (after fixes, the fix diff) and a fresh `files` and `digest`. A file
+name the system rejects (for example one holding a NUL character) makes the gate stale
+too, and is named in the reason, whichever order the files sort in. When the digest
+cannot be computed for any other reason, the gate does not hold the turn.
 When the review passes, print both from the files it covered:
 
 ```bash

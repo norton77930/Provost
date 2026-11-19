@@ -12,7 +12,8 @@ only human gates unmet, it returns {}. A malformed file is named
 in the block reason, so a typo cannot switch enforcement off unnoticed. A subagent's Stop, running background work
 and a stated blocker line end the turn, it blocks at most three times per episode, and it does not repeat an
 unchanged stale block after the person's prompt (see check()).
-Any internal error returns {}: a broken check must never trap a session.
+An error while judging one gate or one file is reported as that gate's stale or that file's malformed reason,
+and the others are still judged. Any other internal error returns {}: a broken check must never trap a session.
 """
 import hashlib
 import json
@@ -106,10 +107,19 @@ def check(event, config_path=None):
             except Malformed as exc:
                 malformed.append((path, str(exc)))
                 continue
+            except Exception as exc:  # one file that cannot be judged is reported alone, the rest are judged
+                malformed.append((path, "could not be read (%s)" % type(exc).__name__))
+                continue
             if "closed" in data:  # finished work: load() guarantees the reason
                 continue
-            held = [(item["id"], state) for item in data["gates"]
-                    for state in (unmet_state(item, edited, event["cwd"], tree),) if state]
+            held = []
+            for item in data["gates"]:
+                try:
+                    state = unmet_state(item, edited, event["cwd"], tree)
+                except Exception as exc:  # one gate that cannot be judged is stale and named, the rest are judged
+                    state = "stale: could not be judged, %s" % type(exc).__name__
+                if state:
+                    held.append((item["id"], state))
             if held:
                 unmet.append((path, held))
         counter = _counter(event, config_path)
@@ -279,11 +289,28 @@ def _files_changed(gate, cwd):
         current = digest(gate["files"], cwd)
     except OSError as exc:  # deleted or unreadable: changed, and named
         return "%s (%s unreadable, now %s)" % (reason, exc.filename or "a file", _readable_digest(gate["files"], cwd))
+    except ValueError:  # a name open() rejects (NUL, a lone surrogate): changed, whichever file sorts first
+        return "%s (invalid file name %s, now %s)" % (reason, _invalid_names(gate["files"], cwd),
+                                                      _readable_digest(gate["files"], cwd))
     except Exception:
         # Fail-open, as for an unreadable edit history: a digest that cannot be computed for any other
         # reason is an unknown state, and an unknown state never holds the turn.
         return None
     return None if current == gate["digest"] else "%s (now %s)" % (reason, current[:SHORT_DIGEST])
+
+
+def _invalid_names(files, cwd):
+    """The names of files that open() rejects as invalid, as escaped text (a NUL never reaches the reason raw).
+    Never raises."""
+    names = []
+    for name in files:
+        try:
+            digest([name], cwd)
+        except ValueError:
+            names.append(ascii(name))
+        except Exception:  # unreadable or anything else: not an invalid name
+            pass
+    return ", ".join(names) or "a name"
 
 
 def _readable_digest(files, cwd):
@@ -488,8 +515,13 @@ def _acceptance_path(path):
 
 
 def _clock(when):
-    """Local wall-clock time for a reason line."""
-    return when.astimezone().strftime("%H:%M:%S")
+    """Local wall-clock time for a reason line. A time the platform cannot show as local time (a year the C
+    library refuses: OverflowError, or OSError on Windows) is written as the ISO 8601 text it carries instead, so
+    one odd ranAt cannot take the verdict of every gate with it."""
+    try:
+        return when.astimezone().strftime("%H:%M:%S")
+    except (OverflowError, OSError, ValueError):
+        return when.isoformat(timespec="seconds")
 
 
 def acceptance_directory(event):
@@ -598,6 +630,8 @@ def load(path):
         data = json.loads(raw.decode("utf-8-sig"))
     except ValueError:  # includes UnicodeDecodeError
         raise Malformed("not valid UTF-8 JSON") from None
+    except RecursionError:  # arrays or objects nested past the interpreter's limit
+        raise Malformed("nested too deeply") from None
     if not isinstance(data, dict):
         raise Malformed("not a JSON object")
     if not isinstance(data.get("task"), str):
