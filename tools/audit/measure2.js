@@ -1,9 +1,23 @@
 // Read-only second pass over Claude Code transcripts: main requests by class (work, text-only,
 // push-only, handoff-only, ...) deduplicated across files by message id, subagent run lengths,
 // and read overlap between agents of one session.
+// Also counts main-session turns (system records with subtype turn_duration, deduplicated by uuid
+// across files) and prints one summary line after TOTAL: sessions kept/skipped, turns, push-only
+// count and ratio to turns, ceremony count and share (every class except work and text-only).
 // Usage: node measure2.js <sinceISO>
+// Optional environment variables, all off by default:
+//   UNTIL=<ISO>            skip records with a timestamp after it
+//   SFROM=<ISO> SUNTIL=<ISO>  count only main transcripts whose first timestamp is in [SFROM, SUNTIL);
+//                          the others are skipped and counted as skipped sessions
+//   NOSUB=1                skip subagent transcripts (faster)
 const fs = require("fs"), path = require("path"), os = require("os"), readline = require("readline");
 const SINCE = Date.parse(process.argv[2]);
+const UNTIL = process.env.UNTIL ? Date.parse(process.env.UNTIL) : Infinity;
+const SFROM = process.env.SFROM ? Date.parse(process.env.SFROM) : -Infinity;
+const SUNTIL = process.env.SUNTIL ? Date.parse(process.env.SUNTIL) : Infinity;
+const NOSUB = !!process.env.NOSUB;
+const turnIds = new Set(); // turn_duration uuids (main only), deduplicated across files
+let sessKept = 0, sessSkipped = 0;
 if (Number.isNaN(SINCE)) { console.error("usage: node measure2.js <sinceISO>"); process.exit(2); }
 const root = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"), "projects");
 const PRICES = {
@@ -32,7 +46,22 @@ function cat(b) {
   }
   return "work";
 }
+// Timestamp of the first record that has one, read from the head of the file.
+function firstTs(file) {
+  const fd = fs.openSync(file, "r");
+  try {
+    const buf = Buffer.alloc(262144);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    const m = buf.slice(0, n).toString("utf8").match(/"timestamp":"([^"]+)"/);
+    return m ? Date.parse(m[1]) : null;
+  } finally { fs.closeSync(fd); }
+}
 async function scan(file, kind, role, sess, fileIdx, sessReads) {
+  if (kind === "main") {
+    const f0 = firstTs(file);
+    if (f0 === null || f0 < SFROM || f0 >= SUNTIL) { sessSkipped++; return; }
+    sessKept++;
+  }
   const byId = new Map(), order = [];
   let compacted = 0;
   const myReads = new Set();
@@ -40,10 +69,14 @@ async function scan(file, kind, role, sess, fileIdx, sessReads) {
   for await (const line of rl) {
     if (!line) continue;
     if (line.startsWith('{"type":"api-request') || line.startsWith('{"type":"file-history')) continue;
-    if (!line.includes('"assistant"') && !line.includes("compact_boundary")) continue;
+    if (!line.includes('"assistant"') && !line.includes("compact_boundary") && !line.includes("turn_duration")) continue;
     let o; try { o = JSON.parse(line); } catch { continue; }
     const ts = o.timestamp ? Date.parse(o.timestamp) : null;
-    if (ts !== null && ts < SINCE) continue;
+    if (ts !== null && (ts < SINCE || ts > UNTIL)) continue;
+    if (o.type === "system" && o.subtype === "turn_duration") {
+      if (kind === "main") turnIds.add(o.uuid || (file + o.timestamp));
+      continue;
+    }
     if (o.type === "system" && o.subtype === "compact_boundary") { compacted++; continue; }
     if (o.type !== "assistant" || !o.message) continue;
     const m = o.message, u = m.usage;
@@ -112,6 +145,7 @@ async function scan(file, kind, role, sess, fileIdx, sessReads) {
       }
     }
     for (const f of fs.readdirSync(pd)) {
+      if (NOSUB) continue;
       const sd = path.join(pd, f, "subagents");
       if (f.endsWith(".jsonl") || !fs.existsSync(sd)) continue;
       sessions[f] = sessions[f] || [];
@@ -140,6 +174,9 @@ async function scan(file, kind, role, sess, fileIdx, sessReads) {
   let tot = 0, totN = 0; for (const c of Object.values(R.classes)) { tot += c.usd; totN += c.n; }
   for (const [k, c] of Object.entries(R.classes).sort((a, b) => b[1].usd - a[1].usd)) console.log(` ${k.padEnd(40)} n=${String(c.n).padStart(6)} (${(100 * c.n / totN).toFixed(1)}%) usd=${c.usd.toFixed(2).padStart(8)} (${(100 * c.usd / tot).toFixed(1)}%) out=${c.out} avgCacheRead=${Math.round(c.cr / c.n)}`);
   console.log(" TOTAL n", totN, "usd", tot.toFixed(2));
+  const po = (R.classes["push-only"] || { n: 0 }).n;
+  let cer = 0; for (const [k, c] of Object.entries(R.classes)) if (k !== "work" && k !== "text-only") cer += c.n;
+  console.log(" SESSIONS kept", sessKept, "skipped", sessSkipped, "| TURNS (turn_duration, dedup)", turnIds.size, "| push-only", po, "ratio push-only/turn", (turnIds.size ? po / turnIds.size : 0).toFixed(3), "| ceremony", cer, (totN ? 100 * cer / totN : 0).toFixed(1) + "%");
   console.log("\nrecord calls", R.recordCalls, "with --join", R.joins);
   console.log("\nmain Write path shapes top:"); for (const [k, v] of top(R.writeShapes)) console.log(` ${String(v).padStart(5)} ${k}`);
   console.log("\nsub dispatch files by role / with >=1 compaction / turns>60 / turns>100");

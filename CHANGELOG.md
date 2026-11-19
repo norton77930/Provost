@@ -14,6 +14,7 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Added
 
+- `tools/audit/measure2.js` measures a time window: `UNTIL` cuts records, `SFROM`/`SUNTIL` keep only main sessions that started in a range, `NOSUB=1` skips subagent transcripts, and a new summary line prints turns (`turn_duration`, de-duplicated by uuid across resumed transcripts), push-only requests per turn and the ceremony share. Without the variables the class lines are unchanged. `docs/analysis/2026-11-19-remeasure.md` records the 2026-11-19 re-measure of the 2026-11-12 audit with these options; compare the push-only ratio only with same-method numbers (the audit's 0.53 used turn counts that count resumed transcripts twice; the same-method baseline is 0.587).
 - `tools/audit/count_verified.js`: counts the `Verified:` trailers on agent commits (#142): per kind, `none` with or without a reason, and commits that lack one. Agent commits are the ones with a `Claude-Session:` or `Co-Authored-By: Claude` line; GitHub squash merges that split the trailer block still count.
 - `tools/memory-review.js`: a read-only report of stale auto memory. It lists
   every `<config>/projects/*/memory` dir on each run, so a new project is covered
@@ -378,6 +379,7 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Fixed
 
+- `tools/audit/count_acceptance.js` reads acceptance files that start with a UTF-8 BOM (the Stop gate already decodes `utf-8-sig`) instead of counting them as unparseable, and splits all-pass files that are not closed into `waitingHuman` (a human gate is still pending) and `allDone` (nothing left but `closed`).
 - A review gate whose `files` are written relative, or in another order than `digest`
   printed them, no longer stays stale forever (#135). `acceptance.digest()` now makes
   each name absolute against the gate's cwd, normalises, de-duplicates and sorts it
