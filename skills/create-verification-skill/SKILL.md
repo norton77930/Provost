@@ -51,7 +51,7 @@ Write `.claude/skills/verify-<app>/SKILL.md` with frontmatter (`name: verify-<ap
 - **Not covered.** The parts that this skill cannot drive and the reason.
 - **Using the map for acceptance.** Section 4 of this skill, written out for this project. It is the last section of the generated skill.
 
-Put helper scripts in `.claude/skills/verify-<app>/scripts/` and show each one's invocation in the skill body. Add the evidence directory to `.gitignore` unless the project already commits such files.
+Put helper scripts in `.claude/skills/verify-<app>/scripts/` and show each one's invocation in the skill body. Add the evidence directory to `.gitignore` unless the project already commits such files. Where an acceptance record stamps a verdict with the state of the code tree, evidence written to a tracked or unignored path changes that state the moment the capture runs, so such a project keeps gate evidence in an ignored directory and commits a copy afterwards if it wants one.
 
 ### When a state cannot be reached
 
@@ -117,7 +117,7 @@ This mapping is what lets a session know at dispatch time how the work will be a
 - Each statement under "What the user must be able to tell or do" is named in the `check` of at least one gate, with the file it is judged on (a statement about the first screen is judged on `<id>.png`, not on the whole page).
 - A state the change adds is defined before dispatch. The main session decides its id, the accessible names and the fixed wording its reach conditions rely on, writes them into the state definitions, and puts them into the brief as names the implementation must use.
 - A touched state that is not capturable gets an entry of its own in the acceptance record, naming what covers it instead (a unit test, or nothing), and appears in the acceptance report.
-- Evidence is captured once, on the content that will be judged. The manifest records the commit and whether the tree was clean, so a capture the subagent made on that same content is the gate's evidence and is not repeated.
+- Evidence is captured once, on the content that will be judged. The manifest records the commit and whether the tree was clean, so a capture the subagent made on that same content is the gate's evidence and is not repeated. A capture on uncommitted work identifies no content by its commit: where the session's acceptance tooling can print a digest of the tree, the brief asks the subagent to read it before capturing and to report it.
 - When a change adds, removes or alters a state, the same change updates the feature file and the state definitions. A map that lags the app turns every later verdict into a guess.
 - A design source that no longer matches the app for reasons outside the task (it predates later features, or its data changed) is reported to the user with the list of differences. It is not used as a gate until the user has it redrawn or records the accepted differences beside it. Until then its rows are `live` gates judged on their observable result; the table keeps the path in the design source column, and the feature's `Gotchas` says that it is suspended and why.
 

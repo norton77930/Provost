@@ -1127,7 +1127,7 @@ task), commit the acceptance file deliberately or attach it to the PR.
 | `gates[].kind` | yes | `machine`, `live`, `visual`, `review` or `human` |
 | `gates[].check` | yes | string: what closes the gate (command, steps, state and fixture data) |
 | `gates[].status` | yes | `pass`, `fail` or `pending` |
-| `gates[].ranAt` | no | ISO 8601 time the check last ran, read from the clock in UTC with a zone: `date -u +%Y-%m-%dT%H:%M:%SZ` in Bash, `(Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')` in PowerShell (where `date -u` prints local time labelled `Z`); a time without a zone makes a passed gate stale once the session has edited, and a zoned time more than 5 minutes ahead of now is stale too |
+| `gates[].ranAt` | no | ISO 8601 time the check last ran (for a gate a verifier judges on captured evidence: when the verdict came back if the gate has a `tree`, the capture time if it has none), read from the clock in UTC with a zone: `date -u +%Y-%m-%dT%H:%M:%SZ` in Bash, `(Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')` in PowerShell (where `date -u` prints local time labelled `Z`); a time without a zone makes a passed gate stale once the session has edited, and a zoned time more than 5 minutes ahead of now is stale too |
 | `gates[].evidence` | no | string: result summary, observed output, screenshot path or verdict |
 | `gates[].source` | no | string: path or URL of the mockup, spec or issue the gate is judged against |
 | `gates[].tree` | no, `machine`, `live`, `visual` | string: the code tree the check ran on, printed by `digest --tree` (below) and read before the check starts; ignored on `review` and `human` gates |
