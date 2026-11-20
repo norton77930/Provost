@@ -43,6 +43,9 @@ def make_source(root):
     write(root / "agents/code-reviewer.md", "reviewer\n")
     write(root / "skills/verification-before-completion/SKILL.md", "verify\n")
     write(root / "skills/handoff/SKILL.md", "repo handoff\n")
+    write(root / "skills/create-verification-skill/SKILL.md", "generator\n")
+    write(root / "skills/create-verification-skill/NOTICE.md", "notice\n")
+    write(root / "skills/create-verification-skill/references/feature-map.md", "map\n")
     write(root / "tools/dispatch-report.js", "console.log(1)\n")
     write(root / "native/CLAUDE.native.md", "# Policy\n\nline two\n")
     write(root / "install.py", "# placeholder\n")
@@ -567,6 +570,19 @@ class InstallTests(InstallCase):
         self.assertEqual(self.run_cli("install")[0], 0)
         self.assertEqual((self.config / "skills/verification-before-completion/SKILL.md").read_bytes(),
                          b"verify\n")
+
+    def test_create_verification_skill_installed_with_its_reference_and_notice(self):
+        # SKILL.md points at references/feature-map.md and NOTICE.md; one without the others is a broken skill.
+        self.assertEqual(self.run_cli("install")[0], 0)
+        base = self.config / "skills/create-verification-skill"
+        self.assertEqual((base / "SKILL.md").read_bytes(), b"generator\n")
+        self.assertEqual((base / "NOTICE.md").read_bytes(), b"notice\n")
+        self.assertEqual((base / "references/feature-map.md").read_bytes(), b"map\n")
+
+    def test_create_verification_skill_missing_reference_is_an_error(self):
+        (self.source / "skills/create-verification-skill/references/feature-map.md").unlink()
+        with self.assertRaises(install.InstallError):
+            install.source_targets(self.source)
 
     def test_agents_dir_other_files_untouched(self):
         self.assertEqual(self.run_cli("install")[0], 0)

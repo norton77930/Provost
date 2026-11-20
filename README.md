@@ -306,6 +306,7 @@ See [`docs/native-handoff.md`](docs/native-handoff.md).
 | [`hooks/`](hooks/), [`scripts/provost_runtime/`](scripts/provost_runtime/) | Handoff runtime and its hooks | `provost/runtime/native-pilot-v1/` |
 | [`skills/verification-before-completion/`](skills/verification-before-completion/) | Completion-claim discipline | `skills/` |
 | [`skills/handoff/`](skills/handoff/) | The `/handoff` skill (save, resume, search) | `skills/handoff/` |
+| [`skills/create-verification-skill/`](skills/create-verification-skill/) | `/create-verification-skill`: generates a project's `verify-<app>` skill (launch, scenarios, doctor, capture, evidence) and a feature map whose states become acceptance gates | `skills/create-verification-skill/` |
 | [`tools/dispatch-report.js`](tools/dispatch-report.js) | Cost and outcome report of past dispatches, from transcripts | `experiments/` |
 | [`tools/memory-review.js`](tools/memory-review.js) | Read-only report of stale auto memory: overdue follow-ups, bloated files, index problems, old status words | — |
 | [`mods/`](mods/) | The `board` and `idle-guard` plugins | installed with `/plugin` |
