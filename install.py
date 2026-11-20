@@ -36,6 +36,9 @@ END = b"<!-- claudex-native:end -->"
 # A local copy of this file that differs is kept beside it (<name>.local-<UTC time>.bak) before the
 # installer first overwrites it; once such a copy exists, later installs only use the backup dir.
 KEEP_LOCAL = "skills/handoff/SKILL.md"
+# The generator skill reads its reference and carries a third-party notice, so the three install together.
+GENERATOR_SKILL = "skills/create-verification-skill"
+GENERATOR_FILES = ("SKILL.md", "NOTICE.md", "references/feature-map.md")
 # Hooks that count only when registered without "async": true (an async Stop hook cannot block the turn,
 # and an async PreToolUse hook cannot add context to the dispatch).
 SYNC_HOOKS = ("acceptance-gate",)
@@ -88,6 +91,7 @@ def source_targets(source):
     pairs.append((KEEP_LOCAL, KEEP_LOCAL))
     pairs.append(("skills/verification-before-completion/SKILL.md",
                   "skills/verification-before-completion/SKILL.md"))
+    pairs += [(f"{GENERATOR_SKILL}/{name}", f"{GENERATOR_SKILL}/{name}") for name in GENERATOR_FILES]
     pairs.append(("tools/dispatch-report.js", "experiments/dispatch-report.js"))
     targets = []
     for src, rel in pairs:

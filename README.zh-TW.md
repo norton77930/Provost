@@ -192,6 +192,7 @@ runtime 在 `~/.claude/provost/handoffs`（若 runtime 裝在別的 provost 資�
 | [`hooks/`](hooks/)、[`scripts/provost_runtime/`](scripts/provost_runtime/) | handoff runtime 與 hook | `provost/runtime/native-pilot-v1/` |
 | [`skills/verification-before-completion/`](skills/verification-before-completion/) | 宣告完成前的驗證紀律 | `skills/` |
 | [`skills/handoff/`](skills/handoff/) | `/handoff` skill（存檔、接續、搜尋） | `skills/handoff/` |
+| [`skills/create-verification-skill/`](skills/create-verification-skill/) | `/create-verification-skill`：替專案產生 `verify-<app>` skill（啟動、情境、doctor、截圖、證據）和 feature map，其中的 state 直接當驗收 gate | `skills/create-verification-skill/` |
 | [`tools/dispatch-report.js`](tools/dispatch-report.js) | 從 transcript 統計過往派工的成本與結果 | `experiments/` |
 | [`tools/memory-review.js`](tools/memory-review.js) | 唯讀回報過期的 auto memory：逾期的後續事項、過大的檔案、索引問題、舊的狀態字 | — |
 | [`mods/`](mods/) | `board` 和 `idle-guard` 兩個 plugin | 用 `/plugin` 安裝 |
