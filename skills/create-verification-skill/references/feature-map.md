@@ -6,10 +6,10 @@ The feature map lives in `.claude/skills/verify-<app>/features/`. It is the main
 
 The index holds what every feature shares:
 
-- **Baseline.** The launch command, the default scenario, the doctor command.
+- **Baseline.** The launch command, the default scenario (or a line saying that the capture builds each scenario), the doctor command.
 - **Variants.** The viewport widths, themes and locales this project verifies, how the capture command selects them, and the rule used to decide which combinations get a row (see "Which combinations to list").
 - **State id format.** `<feature>-<state>-<variant values>`, lowercase with hyphens, for example `loans-overdue-390-dark`. An id never changes once a gate has used it; a retired state is deleted, not renamed.
-- **Proof rules.** What every state's evidence must show (for a UI: the page identity visible, which screenshot is compared with a design source; for a CLI: the command, stdout, stderr and exit code), and which console errors or failed requests count as a defect.
+- **Proof rules.** What every state's evidence must show (for a UI: what tells the verifier which screen this is (a visible address or title, or the manifest's start entry where the surface has neither), which screenshot is compared with a design source; for a CLI: the command, stdout, stderr and exit code; for a product with two kinds of user: which file holds each one's side), and which console errors or failed requests count as a defect.
 - **Features.** One line per feature file with its number of states.
 
 ## One file per feature
@@ -30,7 +30,7 @@ Each file starts with an H1 title and one paragraph that describes the behavior 
 | `scenario` | The named data state from the skill's Scenarios table, or `(none)` when no scenario provides it. |
 | variant columns | One column per variant the project verifies (for example `width`, `theme`). |
 | `observable result` | What the evidence must show, written so that it can be checked without knowing the app. It names scenario values by what they are and does not quote them; the figures are in the manifest's `expected`. |
-| `design source` | The path of the mockup or baseline for this state, or `none`. |
+| `design source` | The path of the mockup or baseline for this state, or `none` (`null` in the definitions and the manifest). |
 | `capturable` | `yes`, or `no` with the reason and a pointer to `Gotchas`. |
 
 ### Which combinations to list
@@ -40,6 +40,7 @@ List only combinations that differ in what the user sees.
 - The main state of a feature with a design source gets a row for every width and theme the design source covers.
 - The main state of a feature without a design source gets two rows: the narrowest width in the default theme, and the widest width in the other theme. Together they show every width and every theme once.
 - Every other state gets one row, at the narrowest width in the default theme.
+- When width is not a variant, apply the same rules to the variants that remain: a main state without a design source gets two rows that together show each value of each variant once.
 - Add a second row for another state only when the page arranges that state's content differently at the other width, such as a table that becomes cards. When in doubt, keep one row.
 
 ## The state definitions file
@@ -51,8 +52,8 @@ The definitions add what only the capture needs:
 | Field | Content |
 |---|---|
 | entry | The route or command where the state starts. |
-| steps | The user actions after the entry (click a named link, choose an option, type a value). Empty when the entry alone shows the state. |
-| reach conditions | What must be present or absent before the evidence is taken, as stable handles: a role with an accessible name, a label, a route. A raw selector is the last resort. |
+| steps | The user actions after the entry (click a named link, choose an option, type a value). Empty when the entry alone shows the state. A step may belong to either kind of user, and may start a call without waiting for it; a later step collects the answer, or the state ends with the call still open. |
+| reach conditions | What must be present or absent before the evidence is taken, as stable handles: a role with an accessible name, a label, a route. A raw selector is the last resort. Wording that differs by locale is named by its message key. |
 | scenario values | Which values the capture reads from the scenario's files and looks for on the page: a name for the value, the file and field it is read from, and where on the page it should appear. They are read at run time and written into the manifest as `expected` with the value and whether it was found, never typed into the definitions. |
 | preconditions | Properties of the scenario that this state depends on (the record has no history, there is exactly one week). Checked against the scenario's files before the app is driven. Only for states that other plausible data in the same scenario would turn into a different state. |
 | record rule | When the state is about a record chosen by a property and not by a fixed identifier: the rule, resolved from the scenario's files at run time. The chosen record goes into the manifest. |

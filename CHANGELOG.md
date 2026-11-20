@@ -143,6 +143,7 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
 
 ### Changed
 
+- `skills/create-verification-skill/`: rules for apps that are not a web page with data fixtures, from its first run on an unfamiliar project (a browser extension). A scenario can be a sequence of actions the capture performs; a product can have two kinds of user whose evidence shares one state id; a step can leave a call open. The skill now covers surfaces without an address, content that scrolls inside a container, runs that take over the desktop, one instance per machine, parts the host draws, several built artefacts, setup steps left to the user, and a missing download found only when the prerequisite check runs. A failed state's before file is held back until the state is reached, and the proof run corrects rows that described the app wrongly.
 - Prompt-audit wording fixes: `code-reviewer` caps `Nit` findings at three
   unless the repository's `REVIEW.md` sets another number, which settles which
   limit wins when the two differ; the `handoff` skill names the refused
