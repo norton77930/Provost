@@ -23,6 +23,12 @@ and the plugin distribution are archived at tag `archive/tier2-foreman`.
   files, index problems (missing, oversize, broken or missing links) and old
   status words such as `CURRENT`. It never edits a file. Its output can quote
   private memory text, so read it before sharing.
+- `tools/reviewer-cases.js commits` (#142 item 3): lists clean-case candidates from git
+  alone, since Claude Code deletes transcripts after 30 days, the same age a clean case
+  needs. It keeps single-parent commits at least `--fix-days` (30) old with 250 to 1250
+  changed lines (`--min-lines`, `--max-lines`) that no later fix or revert commit touched,
+  with the suggested claim per row. `candidates` no longer takes a merge commit named in a
+  claim (such as "based on main 2246db3") as the head (#154).
 - Reviewer eval lessons from pstack (#56): `reviewer-eval.js run --inject
   DEST=SRC` puts files such as the current `REVIEW.md` into the archived tree, so
   an eval sees the context a real review sees; the temp tree is now `wt-*` with
