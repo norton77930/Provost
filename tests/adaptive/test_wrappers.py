@@ -365,3 +365,37 @@ class AcceptanceGateFastPathTests(FixtureCase):
                                            stdin=self.event(self.root, kind), env={"BASH_ENV": startup.as_posix()})
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn("-m provost_runtime.cli acceptance-hook", self.log.read_text(encoding="utf-8"))
+
+    def started(self, stdin, env=None):
+        self.log.unlink(missing_ok=True)
+        result = self.run_bash(REPO / "hooks" / "acceptance-gate", path_dirs=[self.bin], stdin=stdin, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return self.log.exists()
+
+    def test_a_pending_review_marker_sends_only_its_sessions_stop_to_python(self):
+        # The Dispositions check (#155): <config dir>/cache/acceptance/<session>.review-<tool_use_id>.
+        cache = self.config_path.parent / "cache" / "acceptance"
+        cache.mkdir(parents=True)
+        (cache / "s1.pushes").write_text("1", encoding="utf-8")
+        (cache / "other.review-toolu_1").write_text('"t"', encoding="utf-8")
+        (cache / "s1.review-").mkdir()  # no tool id: not a marker
+        self.assert_no_interpreter(self.root)
+        (cache / "s1.review-toolu_1").write_text('"t"', encoding="utf-8")
+        self.assertTrue(self.started(self.event(self.root, "Stop")))
+        self.assertFalse(self.started(self.event(self.root, "PreToolUse")))  # an implementer dispatch
+
+    def test_marker_folder_of_an_installed_runtime_without_provost_config(self):
+        cache = self.provost_home / ".claude" / "provost" / "cache" / "acceptance"  # HOME is provost_home here
+        cache.mkdir(parents=True)
+        (cache / "s1.review-toolu_1").write_text('"t"', encoding="utf-8")
+        self.assertTrue(self.started(self.event(self.root, "Stop"), env={"PROVOST_CONFIG": ""}))
+
+    def test_a_code_reviewer_dispatch_reaches_python_without_an_acceptance_file(self):
+        dispatch = json.dumps({"session_id": "s1", "transcript_path": str(self.root / "t.jsonl"),
+                               "cwd": str(self.root), "hook_event_name": "PreToolUse", "tool_name": "Agent",
+                               "tool_input": {"subagent_type": "code-reviewer", "prompt": "Review it."},
+                               "tool_use_id": "toolu_1"})
+        self.assertTrue(self.started(dispatch))
+        quoted = json.loads(dispatch)
+        quoted["tool_input"] = {"subagent_type": "implementer", "prompt": '"subagent_type": "code-reviewer"'}
+        self.assertFalse(self.started(json.dumps(quoted)))  # the words inside a brief are not the role

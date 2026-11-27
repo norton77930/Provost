@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import acceptance as acceptance_gates, dispatch_reminder, facts
+from . import acceptance as acceptance_gates, dispatch_reminder, dispositions, facts
 from .config import ConfigError, handoff_home, load_config, resolve_mode, workspace_key
 from .notifications import PARTIAL, notice
 from .search import evidence_claims, redact
@@ -669,6 +669,17 @@ def _event_key(event, checkpoint):
                               "revision": checkpoint["revision"] if checkpoint else None}, sort_keys=True))
 
 
+def _with_dispositions(gate, asked):
+    """One Stop answer from the acceptance gates' decision and the Dispositions check's reason (or None): both
+    reasons in one block when both ask. The Dispositions check keeps its own once-per-review state, so its block
+    neither spends nor resets the gates' push budget."""
+    if not asked:
+        return gate
+    if isinstance(gate, dict) and gate.get("decision") == "block":
+        return dict(gate, reason=gate.get("reason", "") + "\n\n" + asked)
+    return {"decision": "block", "reason": asked}
+
+
 def handle_event(event, config_path, acceptance=False):
     """acceptance: the event came from hooks/acceptance-gate (the synchronous Stop and PreToolUse Agent
     registrations), which answers only those; hooks/native-event's async Stop registration keeps the
@@ -678,8 +689,12 @@ def handle_event(event, config_path, acceptance=False):
     key = None
     if acceptance:
         if name == "Stop":
-            return acceptance_gates.check(event, config_path)
-        return dispatch_reminder.remind(event) if name == "PreToolUse" else {}
+            return _with_dispositions(acceptance_gates.check(event, config_path),
+                                      dispositions.check(event, config_path))
+        if name == "PreToolUse":
+            dispositions.note(event, config_path)
+            return dispatch_reminder.remind(event)
+        return {}
     if name == "Stop":
         return scan_declaration(event, config_path)
     try:

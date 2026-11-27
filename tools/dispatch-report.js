@@ -5,7 +5,10 @@
 // Read-only, except that --reports <dir> writes report files there.
 // --reviews lists code-reviewer dispatches instead: Important findings (the number after "Important" in the report's
 // counts line, else the distinct I<n> ids) and the "Dispositions: I1 fixed; I2 rejected — why" line main writes after
-// it (outcomes: fixed, rejected, intentional, moot, unproven); per-model precision on stderr. A Dispositions line goes to
+// it (outcomes: fixed, rejected, intentional, moot, unproven); per-model precision on stderr. The line may be a list item
+// or bold ("- Dispositions:", "**Dispositions:**"); entries are split on ";" or "；", may carry a prefix ("#88 I1 fixed",
+// "cr I1 fixed"), and may be blanket ("all fixed", "all Important fixed", "全部 fixed") or a range ("I1-I3 fixed"); a
+// blanket covers every Important id of the review the line goes to, explicit entries win. A Dispositions line goes to
 // the finished review of the same session that has Important findings and no line yet and for which the line records the
 // most findings (the latest on a tie), so a line written after a fix and re-review counts for the first review; with no such review, to the latest one. tagged=no marks a report with neither (its important=0 means unknown), and
 // precision covers tagged reviews only.
@@ -148,6 +151,12 @@ async function scanSession(projectDir, file) {
 }
 
 const OUTCOMES = ["fixed", "rejected", "intentional", "moot", "unproven"];
+// A Dispositions line: optionally a list item and/or bold ("- Dispositions:", "**Dispositions:**", "**Dispositions**:").
+const DISP_RE = /^\s*(?:[-*]\s+)?(?:\*\*)?Dispositions(?:\*\*)?:(?:\*\*)?/;
+// Entries: "I1 fixed", with up to two prefix words ("#88 I1 fixed", "cr I1 fixed"); "I1-I3 fixed"; "all [Important] fixed".
+const ENTRY_RE = /^\s*(?:\S+\s+){0,2}?I(\d+)\s+(fixed|rejected|intentional|moot|unproven)\b/i;
+const RANGE_RE = /^\s*(?:\S+\s+){0,2}?I(\d+)\s*[-\u2013\u2014]\s*I?(\d+)\s+(fixed|rejected|intentional|moot|unproven)\b/i;
+const BLANKET_RE = /^\s*(?:\S+\s+){0,2}?(?:all|\u5168\u90e8|\u5168)\s*(?:Important\s+)?(fixed|rejected|intentional|moot|unproven)\b/i;
 const resultText = c => typeof c.content === "string" ? c.content
   : (Array.isArray(c.content) ? c.content.filter(b => b && b.type === "text").map(b => b.text).join("\n") : "");
 
@@ -197,6 +206,12 @@ async function reviewInfo(projectDir, session, row) {
   const counts = /Important\s*[:：]?\s*(\d+)/.exec(reportText);
   return row.info = { subFile, reportText, ids, counts, important: counts ? Number(counts[1]) : ids.size };
 }
+// A blanket entry ("all fixed") covers every Important id of this review; explicit entries of the line win over it.
+const dispOut = (info, l) => {
+  if (!l.blanket) return l.out;
+  const ids = info.counts ? Array.from({ length: info.important }, (_, i) => "I" + (i + 1)) : [...info.ids];
+  return { ...Object.fromEntries(ids.map(id => [id, l.blanket])), ...l.out };
+};
 // How many of a Dispositions line's findings the report has: ids up to the counts line's number, else ids in the report.
 const recordedIn = (info, out) => Object.keys(out).filter(id => info.counts ? Number(id.slice(1)) <= info.important : info.ids.has(id)).length;
 
@@ -210,15 +225,18 @@ async function scanReviews(projectDir, file) {
         if ((c.type === "tool_use" && (c.name === "Agent" || c.name === "Task")) && c.input.subagent_type === "code-reviewer") {
           last = { ts: o.timestamp, override: c.input.model || "", desc: clip(c.input.description, 60), agentId: null, toolUseId: c.id, text: null, out: {}, done: false };
           byToolUse[c.id] = last; rows.push(last);
-        } else if (c.type === "text" && /^\s*Dispositions:/m.test(c.text || "")) {
+        } else if (c.type === "text" && (c.text || "").split(/\r?\n/).some(l => DISP_RE.test(l))) {
           // Assigned after the scan: which review a line answers depends on the reports, and on later lines.
           const out = {};
-          const line = c.text.split("\n").find(l => /^\s*Dispositions:/.test(l));
-          for (const e of line.replace(/^\s*Dispositions:/, "").split(";")) {
-            const m = /^\s*I(\d+)\s+(fixed|rejected|intentional|moot|unproven)\b/.exec(e);
-            if (m) out["I" + m[1]] = m[2];
+          let blanket = null;
+          const line = c.text.split(/\r?\n/).find(l => DISP_RE.test(l));
+          for (const e of line.replace(DISP_RE, "").split(/[;；]/)) {
+            let m;
+            if ((m = BLANKET_RE.exec(e))) blanket = m[1].toLowerCase();
+            else if ((m = RANGE_RE.exec(e))) { for (let i = Number(m[1]); i <= Number(m[2]) && i - Number(m[1]) < 1000; i++) out["I" + i] = m[3].toLowerCase(); }
+            else if ((m = ENTRY_RE.exec(e))) out["I" + m[1]] = m[2].toLowerCase();
           }
-          lines.push({ out, last, lastDone: !!last && last.done, finished: rows.filter(r => r.done) });
+          lines.push({ out, blanket, last, lastDone: !!last && last.done, finished: rows.filter(r => r.done) });
         }
       }
     }
@@ -241,11 +259,11 @@ async function scanReviews(projectDir, file) {
     for (const r of l.finished) {
       if (r.disp) continue;
       const info = await reviewInfo(projectDir, session, r);
-      const n = info.important > 0 ? recordedIn(info, l.out) : 0;
+      const n = info.important > 0 ? recordedIn(info, dispOut(info, l)) : 0;
       if (n > 0 && n >= most) { best = r; most = n; }
     }
     if (!best && l.lastDone && !l.last.disp) best = l.last;
-    if (best) { best.disp = true; best.out = l.out; }
+    if (best) { best.disp = true; best.out = dispOut(await reviewInfo(projectDir, session, best), l); }
   }
   const out = [];
   for (const row of rows) {

@@ -350,6 +350,58 @@ class DispatchReportTests(unittest.TestCase):
         out, _ = self.run_report("--reviews", "--tsv", "--since", "2026-10-21")
         self.assertEqual([l.split("\t")[4:11] for l in out[1:]], [["0", "0", "0", "0", "0", "0", "0"]])
 
+    def one_review(self, line, report="Counts: Important 3 · Nit 0"):
+        return self.late_lines([
+            dispatch("r1", "2026-10-20T10:00:00Z", "code-reviewer", "Review"),
+            result("r1", "2026-10-20T10:05:00Z", "a1", report),
+            say("2026-10-20T10:06:00Z", line),
+        ])
+
+    def test_a_strict_line_parses_as_before(self):
+        line = "Dispositions: I1 fixed; I2 rejected — wrong file; I3 intentional — by design (see ADR); I4 moot"
+        self.assertEqual(self.one_review(line, "Counts: Important 4 · Nit 0"), [["4", "1", "1", "1", "1", "0", "0"]])
+
+    def test_a_dispositions_word_inside_a_sentence_is_not_a_line(self):
+        self.assertEqual(self.one_review("See the Dispositions: I1 fixed; I2 fixed; I3 fixed"), [["3", "0", "0", "0", "0", "0", "3"]])
+
+    def test_a_list_item_or_bold_line_counts(self):
+        for prefix in ("- Dispositions:", "* Dispositions:", "  - Dispositions:", "**Dispositions:**", "**Dispositions**:", "- **Dispositions:**"):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(self.one_review(prefix + " I1 fixed; I2 rejected; I3 moot"), [["3", "1", "1", "0", "1", "0", "0"]])
+
+    def test_entries_may_be_separated_by_a_full_width_semicolon(self):
+        self.assertEqual(self.one_review("Dispositions: I1 fixed；I2 rejected；I3 moot"), [["3", "1", "1", "0", "1", "0", "0"]])
+
+    def test_an_entry_may_carry_a_prefix_before_its_id(self):
+        line = "Dispositions: #88 I1 fixed；cr I2 rejected — why; arch I3 intentional"
+        self.assertEqual(self.one_review(line), [["3", "1", "1", "1", "0", "0", "0"]])
+
+    def test_a_blanket_entry_covers_every_important_id_of_the_review(self):
+        for entry in ("all fixed", "all Important fixed", "全 fixed", "全部 fixed", "All Fixed — merged"):
+            with self.subTest(entry=entry):
+                self.assertEqual(self.one_review("Dispositions: " + entry), [["3", "3", "0", "0", "0", "0", "0"]])
+
+    def test_a_blanket_entry_uses_the_ids_in_a_report_without_a_counts_line(self):
+        self.assertEqual(self.one_review("Dispositions: all moot", "I1 a.py:1 bug\nI2 b.py:2 bug"), [["2", "0", "0", "0", "2", "0", "0"]])
+
+    def test_explicit_entries_win_over_a_blanket(self):
+        self.assertEqual(self.one_review("Dispositions: all fixed; I2 rejected — wrong file"), [["3", "2", "1", "0", "0", "0", "0"]])
+
+    def test_a_range_expands_to_its_ids(self):
+        for dash in ("-", "–"):
+            with self.subTest(dash=dash):
+                self.assertEqual(self.one_review(f"Dispositions: I1{dash}I2 fixed; I3 moot"), [["3", "2", "0", "0", "1", "0", "0"]])
+
+    def test_a_blanket_line_goes_to_the_review_with_findings(self):
+        rows = self.late_lines([
+            dispatch("r1", "2026-10-20T10:00:00Z", "code-reviewer", "Review"),
+            result("r1", "2026-10-20T10:05:00Z", "a1", "Counts: Important 2 · Nit 0"),
+            dispatch("r2", "2026-10-20T11:00:00Z", "code-reviewer", "Re-review"),
+            result("r2", "2026-10-20T11:05:00Z", "a2", "Counts: Important 0 · Nit 0"),
+            say("2026-10-20T11:06:00Z", "**Dispositions:** all fixed"),
+        ])
+        self.assertEqual(rows, [["2", "2", "0", "0", "0", "0", "0"], ["0", "0", "0", "0", "0", "0", "0"]])
+
     def test_config_dir_overrides_the_default_transcripts_root(self):
         config = self.home / "alt-config"
         jl(config / "projects" / PROJECT / f"{SESSION}.jsonl", [
