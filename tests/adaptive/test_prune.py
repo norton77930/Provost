@@ -865,6 +865,22 @@ class AcceptancePushesPruneTests(FixtureCase):
         self.assertFalse(stale.exists())
         self.assertTrue(all(p.exists() for p in [fresh, kept_session, *others]))
 
+    def test_stale_review_markers_are_handled_like_counters(self):
+        # <session>.review-<tool_use_id>: the Dispositions check's marker of a code-reviewer dispatch (#155).
+        stale = self.put(self.counters / "old-1.review-toolu_01Ab_c-d", 40, '"t.jsonl"')
+        fresh = self.put(self.counters / "fresh.review-toolu_1", 2)
+        kept_session = self.put(self.counters / "current.review-toolu_1", 40)
+        others = [self.put(self.counters / "old.review-", 40), self.put(self.counters / "old.review-bad name", 40),
+                  self.put(self.counters / ".review-toolu_1", 40), self.put(self.counters / "old.review-x.bak", 40),
+                  self.put(self.cache / "root.review-toolu_1", 40)]
+        dry = prune(self.root, acceptance_cache=self.counters, keep_session="current")
+        self.assertEqual(self.listed(dry), ["old-1.review-toolu_01Ab_c-d"])
+        self.assertTrue(stale.exists())
+        result = prune(self.root, acceptance_cache=self.counters, keep_session="current", apply=True)
+        self.assertEqual(result["stale_acceptance_pushes"]["removed"], 1)
+        self.assertFalse(stale.exists())
+        self.assertTrue(all(p.exists() for p in [fresh, kept_session, *others]))
+
     def test_nothing_stale_reports_nothing(self):
         self.put(self.counters / "fresh.pushes", 2)
         self.assertNotIn("stale_acceptance_pushes", prune(self.root, acceptance_cache=self.counters, apply=True))

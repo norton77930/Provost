@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # Acceptance gate entrypoint. Register it for Stop as a synchronous hook (no "async"), beside
 # native-event's async Stop registration: only a synchronous hook can block the turn end.
-# The common cases, no <cwd>/.claude/acceptance directory or one without a *.json file, exit 0 with no
-# output using bash builtins only, before any interpreter starts (each process costs about 0.5 s on
-# Windows). Otherwise provost_runtime.cli acceptance-hook decides: a block decision while a session
-# acceptance file has a non-human gate pending or failed (or is malformed), else {}. Every failure ends
-# with no decision, so a broken check never traps a session. Always exits 0.
+# The common cases, no <cwd>/.claude/acceptance directory or one without a *.json file and no pending
+# code-reviewer review of the session, exit 0 with no output using bash builtins only, before any
+# interpreter starts (each process costs about 0.5 s on Windows). Otherwise provost_runtime.cli
+# acceptance-hook decides: a block decision while a session acceptance file has a non-human gate pending or
+# failed (or is malformed), or once per finished review with Important findings and no Dispositions line
+# after it, else {}. Every failure ends with no decision, so a broken check never traps a session. Always
+# exits 0.
 # Also register it for PreToolUse with matcher Agent (synchronous): it then adds a reminder to cite the
-# acceptance file when an implementation brief does not, and never denies a dispatch.
+# acceptance file when an implementation brief does not, marks a code-reviewer dispatch for the
+# Dispositions check, and never denies a dispatch.
 set -uo pipefail
 input=""
 IFS= read -r -d '' input || true
@@ -17,7 +20,50 @@ cwd_re='"cwd"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)"'
 [[ "$input" =~ $cwd_re ]] || exit 0
 cwd="${BASH_REMATCH[1]//\\\\//}"
 [[ -n "$cwd" ]] || exit 0
-if [[ "$cwd" != *\\* ]]; then
+_src="${BASH_SOURCE[0]//\\//}"
+[[ "$_src" == */* ]] || _src="./${_src}"
+# _python.sh is sourced only where it is needed: for the provost directory of an installed runtime (no
+# $PROVOST_CONFIG) and before Python starts. Sourcing is a builtin, but under Git Bash it forks cygpath for a
+# hook path that is neither a drive path nor C:/-style, so the cheap exits below never pay for it.
+_sourced=""
+# Dispositions check (#155, provost_runtime.dispositions): a main-session code-reviewer dispatch (PreToolUse)
+# goes to Python, which writes the marker <config dir>/cache/acceptance/<session>.review-<tool_use_id>; a Stop
+# goes to Python while its session has such a marker. Keys are matched as JSON keys: text inside a string value
+# arrives with escaped quotes and matches none. The config dir follows provost_runtime.config.config_path():
+# $PROVOST_CONFIG's directory, else the provost directory this runtime is installed in, else ~/.claude/provost.
+review=""
+event_re='"hook_event_name"[[:space:]]*:[[:space:]]*"(Stop|PreToolUse)"'
+reviewer_re='"subagent_type"[[:space:]]*:[[:space:]]*"code-reviewer"'
+session_re='"session_id"[[:space:]]*:[[:space:]]*"([A-Za-z0-9-]+)"'
+if [[ "$input" =~ $event_re ]]; then
+    if [[ "${BASH_REMATCH[1]}" == PreToolUse ]]; then
+        [[ "$input" =~ $reviewer_re ]] && review=1
+    elif [[ "$input" =~ $session_re ]]; then
+        session="${BASH_REMATCH[1]}"
+        if [[ -z "${PROVOST_CONFIG:-}" && -z "$_sourced" ]]; then
+            # shellcheck source=_python.sh
+            source "${_src%/*}/_python.sh"
+            _sourced=1
+        fi
+        case "${PROVOST_CONFIG:-}" in
+            "") markers="${_provost_installed:-${HOME:-}/.claude/provost}" ;;
+            */* | *\\*) markers="${PROVOST_CONFIG%[/\\]*}" ;;
+            *) markers="." ;;
+        esac
+        markers="${markers//\\//}/cache/acceptance"
+        if [[ -d "$markers" ]]; then
+            set +f
+            unset GLOBIGNORE
+            for entry in "$markers/$session".review-?*; do
+                if [[ -e "$entry" ]]; then
+                    review=1
+                    break
+                fi
+            done
+        fi
+    fi
+fi
+if [[ -z "$review" && "$cwd" != *\\* ]]; then
     dir="${cwd%/}/.claude/acceptance"
     [[ -d "$dir" ]] || exit 0
     # Any entry Path.glob("*.json") could count sends the event to Python: hidden names (dotglob) and, since
@@ -38,10 +84,10 @@ if [[ "$cwd" != *\\* ]]; then
     shopt -u dotglob nocaseglob
     [[ -n "$found" ]] || exit 0
 fi
-_src="${BASH_SOURCE[0]//\\//}"
-[[ "$_src" == */* ]] || _src="./${_src}"
-# shellcheck source=_python.sh
-source "${_src%/*}/_python.sh"
+if [[ -z "$_sourced" ]]; then
+    # shellcheck source=_python.sh
+    source "${_src%/*}/_python.sh"
+fi
 if provost_find_python 2>/dev/null &&
     output="$("${PROVOST_PY[@]}" -m provost_runtime.cli acceptance-hook <<< "$input" 2>/dev/null)" &&
     [[ -n "$output" ]]; then

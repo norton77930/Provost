@@ -666,14 +666,16 @@ session has no directory anywhere in the store are listed per session under
 non-empty) once their newest file is older than the expiry age, and deleted only with
 `--apply`; names without a `[A-Za-z0-9-]+` session id (`UNEXPECTED_NAME`) and linked
 entries (`LINKED_STORAGE`) are skipped. The acceptance gate's push counters and last-block
-hashes (`<provost dir>/cache/acceptance/<session_id>.pushes` and `.seen`) belong to no session dir; `prune`
+hashes (`<provost dir>/cache/acceptance/<session_id>.pushes` and `.seen`) and the Dispositions check's
+markers (`<session_id>.review-<tool_use_id>`) belong to no session dir; `prune`
 lists the ones not written for the expiry age (`--expired-older-than-days`, default 30)
 under `stale_acceptance_pushes` (`candidates`, `removed`, `skipped`, `errors`; present
 only when non-empty) and deletes them with `--apply`, even when no handoff store exists.
 With handoff off for the workspace, `prune` does only this: it returns `handoff: false`,
 `expired_older_than_days`, `applied` and `stale_acceptance_pushes`, and reads or creates no
 handoff store (the other store commands still return `HANDOFF_DISABLED`).
-Only regular files named `<session_id>.pushes` or `<session_id>.seen` directly in that folder are touched; the
+Only regular files named `<session_id>.pushes`, `<session_id>.seen` or `<session_id>.review-<tool_use_id>`
+directly in that folder are touched; the
 `--session` files, other files and linked entries are kept. `--older-than-days` (default 14) applies
 to binding-only dirs only. `doctor` reports `expired_sessions` at the default age.
 `--apply` removes expired sessions (counted in `expired_removed`) with the same
@@ -1385,3 +1387,47 @@ adds context at dispatch time and never denies, asks or blocks one:
 
 `python install.py setup` registers it, and `check` reports `settings: not-registered`
 (drift, exit 1) while it is missing or marked `"async": true`.
+
+### Dispositions check
+
+The same `Stop` registration asks once for policy §3's `Dispositions:` line (#155). When
+the main session's turn ends after a finished `code-reviewer` result whose report has
+Important findings (its `Important: N` counts line, else the distinct `I<n>` ids it
+names) and no main-session text after that result has a line starting with
+`Dispositions:` (optionally behind `- `, `* ` or `**`), it blocks once, naming the review's
+description and Important count and the expected line
+`Dispositions: I1 fixed; I2 rejected — <reason>; …`. Outcomes are not parsed.
+
+- **State.** The `PreToolUse` (`Agent`) registration writes one marker per main-session
+  `code-reviewer` dispatch, `<config dir>/cache/acceptance/<session>.review-<tool_use_id>`
+  (atomic write; the dispatch's `tool_use_id` names it, so a dispatch without one is not
+  checked). A `Stop` starts the interpreter only while its session has a marker; without
+  one, and without an acceptance file, the hook still exits on bash builtins alone. Only
+  this synchronous hook touches the markers, never `native-event`'s async `Stop`.
+- **Once per review.** A decided review's marker is deleted before the block is returned:
+  asked, answered by a line, no Important finding, a failed dispatch or a background run
+  that failed. A marker that cannot be deleted is not asked. The block does not spend or
+  reset the acceptance gates' push budget; when both checks ask, one block carries both
+  reasons.
+- **Reports read.** A foreground result is the report unless it only points at the
+  hand-back: one of the harness's two pointer sentences ("This agent's report was
+  delivered to you as a message from … (its SubagentHandback call)" or "This agent has not
+  reported yet: … will deliver its report through SubagentHandback") starting a line within
+  its first 600 characters; a report that quotes the phrase elsewhere is the report. A
+  background or pointing result's report is the agent's hand-back message
+  (`<agent-message from="<agent id>">` then `[Subagent hand-back]`) or its completed
+  task-notification `<result>` that is not such a pointer, read from main-session user lines
+  and, when it was delivered while the main session was mid-turn, from `queued_command`
+  attachment lines (`attachment.prompt`; these lines have no `message`). The report may be
+  written before or after the `Agent` result. Sidechain lines are never read.
+- **Waits.** A review still running (no result yet, or a background run whose report has
+  not arrived) keeps its marker, and so do a subagent's `Stop`, running
+  `background_tasks` and a `needs input:` or `failed:` line, as for the gates. A review
+  still unfinished at a `Stop` more than 4 hours after its dispatch (the marker's mtime) is
+  dropped with no block: background reviews take up to about an hour, so its result was
+  lost, and a kept marker would send every later `Stop` to the interpreter. `prune` removes
+  the markers of sessions that ended first, with the push counters.
+- **Transcripts.** Compaction and resume append to the same transcript, so the review is
+  still found; a review missing from the `Stop`'s transcript (after `/clear`) is dropped
+  with no block. An unreadable transcript or any internal error answers `{}` and keeps the
+  markers.
