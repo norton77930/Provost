@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Builds code-reviewer eval cases (#56): lists case candidates from history, saves a confirmed case.
 // Usage: node reviewer-cases.js candidates --repo <path> [--since YYYY-MM-DD] [--fix-days 30] [--tsv]
+//        node reviewer-cases.js commits --repo <path> [--since YYYY-MM-DD] [--fix-days 30] [--min-lines 250]
+//             [--max-lines 1250] [--tsv]
 //        node reviewer-cases.js save --id <id> --repo <path> --base <sha> --head <sha> --claim <text>
 //             --origin escape|seeded|clean --confirmed-by <name> [--expected '<json array of {file,lines,summary}>']
 // candidates reads ~/.claude/projects/*/<session>.jsonl (code-reviewer dispatches whose cwd is in --repo) and
@@ -9,6 +11,10 @@
 // after the dispatch whose subject carries the same ticket number (headFrom=ticket), else the first commit
 // within 3h after the dispatch (headFrom=window; window? when the claim named a ticket no subject matched, so
 // check it before saving); base = head^ (first parent). Read-only.
+// A claim token that resolves to a merge commit (e.g. "based on main 2246db3") is skipped as a head.
+// commits reads only git (no transcripts, which Claude Code deletes after 30 days): single-parent commits at
+// least --fix-days old, with min-lines <= added+deleted <= max-lines, that no later fix/revert commit touched
+// (the same rule candidates uses for a defect); each row carries a suggested clean-case claim. Read-only.
 // save writes ~/.claude/provost/evals/reviewer/cases/<id>/case.json and refuses to overwrite.
 const fs = require("fs"), path = require("path"), os = require("os"), readline = require("readline");
 const { execFileSync } = require("child_process");
@@ -61,11 +67,12 @@ async function reviews(repo, since) {
   return out.sort((a, b) => a.ts.localeCompare(b.ts));
 }
 
-// All commits as {sha, ct (ms), parent (first parent), subject}, oldest first.
+// All commits as {sha, ct (ms), parent (first parent), parents (count), subject}, oldest first.
 function commits(repo) {
   const rows = git(repo, "log", "--all", "--format=%H%x09%ct%x09%P%x09%s").split("\n").filter(Boolean).map(l => {
     const [sha, ct, parents, ...s] = l.split("\t");
-    return { sha, ct: Number(ct) * 1000, parent: parents.split(" ")[0] || "", subject: s.join("\t") };
+    const ps = parents.split(" ").filter(Boolean);
+    return { sha, ct: Number(ct) * 1000, parent: ps[0] || "", parents: ps.length, subject: s.join("\t") };
   });
   return rows.reverse().sort((a, b) => a.ct - b.ct); // stable: ties keep oldest-first log order
 }
@@ -115,7 +122,7 @@ function blamedLines(repo, f) {
   return by;
 }
 
-// Commit named in the claim: the first 7-40 hex token that resolves to a known commit; null if none does.
+// Commit named in the claim: the first 7-40 hex token that resolves to a known non-merge commit; null if none does.
 const commitCache = new Map();
 function resolveCommit(repo, tok) {
   if (commitCache.has(tok)) return commitCache.get(tok);
@@ -127,7 +134,7 @@ function resolveCommit(repo, tok) {
 function claimedCommit(repo, claim, bySha) {
   for (const tok of String(claim).match(/\b[0-9a-f]{7,40}\b/gi) || []) {
     const sha = resolveCommit(repo, tok);
-    if (sha && bySha.has(sha)) return bySha.get(sha);
+    if (sha && bySha.has(sha) && bySha.get(sha).parents < 2) return bySha.get(sha);
   }
   return null;
 }
@@ -137,6 +144,7 @@ function claimedTicket(claim) {
   const m = /\bticket\s*#?(\d+)\b/i.exec(claim) || /(?:^|[^\w&])#(\d+)\b/.exec(claim) || /\((\d+)\)/.exec(claim) || /^\s*(\d+):/.exec(claim);
   return m ? m[1] : null;
 }
+const FIX_RE = /\b(fix|fixes|fixed|revert)\b/i;
 // Does the commit subject carry ticket n (`#n`, `(n)` or a leading `n:`)?
 const subjectHasTicket = (subject, n) => new RegExp(`(?:^|[^\\w&])#${n}\\b|\\(${n}\\)|^\\s*${n}:`).test(subject);
 
@@ -169,7 +177,7 @@ async function candidates() {
     Object.assign(base, { base: head.parent.slice(0, 12), head: head.sha.slice(0, 12), headFrom });
     let found = false;
     for (const f of all) {
-      if (f.ct <= head.ct || !f.parent || !/\b(fix|fixes|fixed|revert)\b/i.test(f.subject)) continue;
+      if (f.ct <= head.ct || !f.parent || !FIX_RE.test(f.subject)) continue;
       for (const [file, ls] of blamedLines(repo, f).get(head.sha) || []) {
         found = true;
         rows.push({ ...base, kind: "defect", fix: f.sha.slice(0, 12), file, lines: rangeText([...ls].sort((x, y) => x - y)) });
@@ -189,6 +197,49 @@ async function candidates() {
   const n = {};
   for (const r of rows) n[r.kind] = (n[r.kind] || 0) + 1;
   console.error(`\n${rows.length} rows` + Object.entries(n).map(([k, v]) => `; ${k}=${v}`).join(""));
+}
+
+// Added+deleted lines and file count of commit c against its first parent (binary rows count 0 lines).
+function diffSize(repo, c) {
+  let lines = 0, files = 0;
+  for (const l of git(repo, "diff", "--numstat", "--no-renames", c.parent, c.sha).split("\n").filter(Boolean)) {
+    const [a, d] = l.split("\t");
+    lines += (Number(a) || 0) + (Number(d) || 0); files++;
+  }
+  return { lines, files };
+}
+
+function commitsMode() {
+  const repoArg = opt("--repo", ""); if (!repoArg) die("commits: --repo is required");
+  const repo = path.resolve(repoArg);
+  const sinceArg = opt("--since", ""), since = sinceArg ? new Date(sinceArg + "T00:00:00Z") : null;
+  if (since && Number.isNaN(since.getTime())) die("commits: --since must be YYYY-MM-DD");
+  const num = (k, d) => { const v = Number(opt(k, d)); if (!Number.isFinite(v) || v < 0) die(`commits: ${k} must be a number >= 0`); return v; };
+  const fixDays = num("--fix-days", "30"), minLines = num("--min-lines", "250"), maxLines = num("--max-lines", "1250");
+  try { git(repo, "rev-parse", "--git-dir"); } catch { die(`commits: not a git repository: ${repo}`); }
+  const all = commits(repo), now = Date.now(), rows = [], n = { merge: 0, size: 0, young: 0, fixed: 0 };
+  for (const c of all) {
+    if (since && c.ct < since.getTime()) continue;
+    if (c.parents !== 1) { n.merge++; continue; } // merge commits, and the root commit
+    if (now - c.ct < fixDays * 86400000) { n.young++; continue; }
+    const size = diffSize(repo, c);
+    if (size.lines < minLines || size.lines > maxLines) { n.size++; continue; }
+    // blame is the costly part, so only survivors get the fix check
+    if (all.some(f => f.ct > c.ct && f.parent && FIX_RE.test(f.subject) && blamedLines(repo, f).get(c.sha)?.size)) { n.fixed++; continue; }
+    const subject = clip(c.subject, 200);
+    rows.push({ repo, sha: c.sha.slice(0, 12), parent: c.parent.slice(0, 12), date: new Date(c.ct).toISOString().slice(0, 10), lines: size.lines, files: size.files, subject,
+      claim: `Commit ${c.sha.slice(0, 7)} "${subject}". Review whether this change is correct and complete.` });
+  }
+  const cols = ["repo", "sha", "parent", "date", "lines", "files", "subject", "claim"];
+  const cell = c => String(c ?? "");
+  if (args.includes("--tsv")) {
+    console.log(cols.join("\t"));
+    rows.forEach(r => console.log(cols.map(c => cell(r[c]).replace(/[\t\r\n]+/g, " ")).join("\t")));
+  } else {
+    console.log("| " + cols.join(" | ") + " |"); console.log("|" + cols.map(() => "---").join("|") + "|");
+    rows.forEach(r => console.log("| " + cols.map(c => cell(r[c]).replace(/\|/g, "\|").replace(/[\r\n]+/g, " ")).join(" | ") + " |"));
+  }
+  console.error(`\n${rows.length} rows; merge=${n.merge}; size=${n.size}; young=${n.young}; fixed=${n.fixed}`);
 }
 
 function save() {
@@ -213,5 +264,6 @@ function save() {
 }
 
 if (cmd === "candidates") candidates().catch(e => die(e.message));
+else if (cmd === "commits") commitsMode();
 else if (cmd === "save") save();
-else die("usage: reviewer-cases.js candidates --repo <path> [--since D] [--fix-days N] [--tsv] | save --id ... (see header)");
+else die("usage: reviewer-cases.js candidates --repo <path> [--since D] [--fix-days N] [--tsv] | commits --repo <path> [--since D] [--fix-days N] [--min-lines N] [--max-lines N] [--tsv] | save --id ... (see header)");
