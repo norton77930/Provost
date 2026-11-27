@@ -160,3 +160,43 @@ test("commits excludes merges, size misfits, young commits and commits a later f
     assert.ok(commitsMode(fx, "--fix-days", "0").rows.some(r => r.sha === fx.sha.young.slice(0, 12)));
   } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
 });
+
+// A side-branch commit and its cherry-picked copy on main share one git patch-id (identical diff, so the
+// copy is identical rather than carrying an extra docs file, which would change the patch-id).
+function patchIdRepo() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "provost-casestest-"));
+  const repo = path.join(root, "repo");
+  fs.mkdirSync(repo);
+  const g = (when, ...a) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-C", repo, ...a],
+    { encoding: "utf8", env: { ...process.env, GIT_AUTHOR_DATE: iso(when), GIT_COMMITTER_DATE: iso(when) } }).trim();
+  const put = (file, text, subject, when) => { fs.writeFileSync(path.join(repo, file), text); g(when, "add", "."); g(when, "commit", "-qm", subject); return g(when, "rev-parse", "HEAD"); };
+  g(T0, "init", "-q", "-b", "main");
+  put("init.txt", "init\n", "chore: init", T0);
+  g(T0, "checkout", "-q", "-b", "side");
+  const sha = {};
+  sha.x = put("x.txt", lines(300, "x"), "feat: x", T0 + 1000e3); // later fixed through its main copy
+  sha.z = put("z.txt", lines(300, "z"), "feat: z", T0 + 1500e3); // copied to main, never fixed
+  sha.only = put("only.txt", lines(300, "o"), "feat: side only", T0 + 1800e3); // no copy, no fix
+  g(T0, "checkout", "-q", "main");
+  g(T0 + 2000e3, "cherry-pick", sha.x);
+  sha.xCopy = g(T0, "rev-parse", "HEAD");
+  g(T0 + 2500e3, "cherry-pick", sha.z);
+  sha.zCopy = g(T0, "rev-parse", "HEAD");
+  put("x.txt", lines(3, "y") + lines(297, "x").split("\n").slice(3).join("\n"), "fix: repair x", T0 + 3000e3);
+  return { root, repo, sha };
+}
+
+test("commits treats a cherry-picked copy as the same commit: a fix on the copy marks the side commit fixed", () => {
+  const fx = patchIdRepo();
+  try {
+    const { rows, stderr } = commitsMode(fx);
+    const listed = rows.map(r => r.sha);
+    for (const k of ["x", "xCopy"]) assert.ok(!listed.includes(fx.sha[k].slice(0, 12)), `${k} excluded`);
+    assert.ok(listed.includes(fx.sha.only.slice(0, 12)), "side-only commit without an equivalent stays listed");
+    // an unfixed group is one row, the copy reachable from HEAD
+    assert.ok(listed.includes(fx.sha.zCopy.slice(0, 12)), "main copy of z listed");
+    assert.ok(!listed.includes(fx.sha.z.slice(0, 12)), "side copy of z dropped");
+    assert.strictEqual(rows.length, 2);
+    assert.match(stderr, /fixed=1; dup=2/);
+  } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
+});
