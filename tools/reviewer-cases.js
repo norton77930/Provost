@@ -15,6 +15,10 @@
 // commits reads only git (no transcripts, which Claude Code deletes after 30 days): single-parent commits at
 // least --fix-days old, with min-lines <= added+deleted <= max-lines, that no later fix/revert commit touched
 // (the same rule candidates uses for a defect); each row carries a suggested clean-case claim. Read-only.
+// Commits with the same `git patch-id --stable` (a commit and its rebased or cherry-picked copies) count as one:
+// a later fix that blamed any copy marks the whole group fixed (fixed=), and the group is listed once, as the
+// copy reachable from HEAD when there is one (the other copies are counted in dup=). A commit with no
+// equivalent is judged alone. The stderr summary line ends with `...; fixed=N; dup=N`.
 // save writes ~/.claude/provost/evals/reviewer/cases/<id>/case.json and refuses to overwrite.
 const fs = require("fs"), path = require("path"), os = require("os"), readline = require("readline");
 const { execFileSync } = require("child_process");
@@ -75,6 +79,22 @@ function commits(repo) {
     return { sha, ct: Number(ct) * 1000, parent: ps[0] || "", parents: ps.length, subject: s.join("\t") };
   });
   return rows.reverse().sort((a, b) => a.ct - b.ct); // stable: ties keep oldest-first log order
+}
+
+// sha -> group of commits sharing one `git patch-id --stable` (a commit and its rebased or cherry-picked copies),
+// computed in one batch over all non-merge history. A commit with no equivalent gets no entry.
+function patchGroups(repo) {
+  const log = git(repo, "log", "--all", "--no-merges", "-p", "--format=commit %H");
+  const out = execFileSync("git", ["-C", repo, "patch-id", "--stable"], { input: log, encoding: "utf8", maxBuffer: 1 << 28, stdio: ["pipe", "pipe", "pipe"] });
+  const byId = new Map();
+  for (const l of out.split("\n").filter(Boolean)) {
+    const [id, sha] = l.split(" ");
+    if (!byId.has(id)) byId.set(id, []);
+    byId.get(id).push(sha);
+  }
+  const groups = new Map();
+  for (const g of byId.values()) if (g.length > 1) for (const sha of g) groups.set(sha, g);
+  return groups;
 }
 
 // file -> old-side line ranges [a,b] that commit F deleted or modified (pure additions and new files have none).
@@ -217,15 +237,23 @@ function commitsMode() {
   const num = (k, d) => { const v = Number(opt(k, d)); if (!Number.isFinite(v) || v < 0) die(`commits: ${k} must be a number >= 0`); return v; };
   const fixDays = num("--fix-days", "30"), minLines = num("--min-lines", "250"), maxLines = num("--max-lines", "1250");
   try { git(repo, "rev-parse", "--git-dir"); } catch { die(`commits: not a git repository: ${repo}`); }
-  const all = commits(repo), now = Date.now(), rows = [], n = { merge: 0, size: 0, young: 0, fixed: 0 };
+  const all = commits(repo), now = Date.now(), rows = [], n = { merge: 0, size: 0, young: 0, fixed: 0, dup: 0 };
+  const groups = patchGroups(repo), bySha = new Map(all.map(c => [c.sha, c]));
+  const onHead = new Set(git(repo, "rev-list", "HEAD").split("\n").filter(Boolean));
+  // one representative per group: a commit reachable from HEAD, else the oldest
+  const rep = g => g.find(s => onHead.has(s)) || g.slice().sort((a, b) => (bySha.get(a)?.ct ?? 0) - (bySha.get(b)?.ct ?? 0))[0];
   for (const c of all) {
     if (since && c.ct < since.getTime()) continue;
     if (c.parents !== 1) { n.merge++; continue; } // merge commits, and the root commit
+    const group = groups.get(c.sha) || [c.sha];
+    if (rep(group) !== c.sha) { n.dup++; continue; } // listed once, through its representative
     if (now - c.ct < fixDays * 86400000) { n.young++; continue; }
     const size = diffSize(repo, c);
     if (size.lines < minLines || size.lines > maxLines) { n.size++; continue; }
     // blame is the costly part, so only survivors get the fix check
-    if (all.some(f => f.ct > c.ct && f.parent && FIX_RE.test(f.subject) && blamedLines(repo, f).get(c.sha)?.size)) { n.fixed++; continue; }
+    // a fix that blamed any equivalent copy counts, since git blame follows only the copy on the fixed line
+    const first = Math.min(...group.map(s => bySha.get(s)?.ct ?? c.ct));
+    if (all.some(f => f.ct > first && f.parent && FIX_RE.test(f.subject) && group.some(s => blamedLines(repo, f).get(s)?.size))) { n.fixed++; continue; }
     const subject = clip(c.subject, 200);
     rows.push({ repo, sha: c.sha.slice(0, 12), parent: c.parent.slice(0, 12), date: new Date(c.ct).toISOString().slice(0, 10), lines: size.lines, files: size.files, subject,
       claim: `Commit ${c.sha.slice(0, 7)} "${subject}". Review whether this change is correct and complete.` });
@@ -239,7 +267,7 @@ function commitsMode() {
     console.log("| " + cols.join(" | ") + " |"); console.log("|" + cols.map(() => "---").join("|") + "|");
     rows.forEach(r => console.log("| " + cols.map(c => cell(r[c]).replace(/\|/g, "\|").replace(/[\r\n]+/g, " ")).join(" | ") + " |"));
   }
-  console.error(`\n${rows.length} rows; merge=${n.merge}; size=${n.size}; young=${n.young}; fixed=${n.fixed}`);
+  console.error(`\n${rows.length} rows; merge=${n.merge}; size=${n.size}; young=${n.young}; fixed=${n.fixed}; dup=${n.dup}`);
 }
 
 function save() {
