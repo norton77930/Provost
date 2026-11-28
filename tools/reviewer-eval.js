@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 // Runs code-reviewer headless on saved eval cases (#56) and scores its Important findings.
 // Usage: node reviewer-eval.js run [--cases-dir DIR] [--ids a,b] [--label NAME] [--max-cost USD]
-//             [--claude PATH] [--tsv] [--inject DEST=SRC]... [--hypothesis TEXT]
+//             [--claude PATH] [--tsv] [--inject DEST=SRC]... [--agent-file PATH] [--hypothesis TEXT]
 //        node reviewer-eval.js rescore --run NAME[,NAME] [--judge-model MODEL] [--claude PATH] [--max-cost USD]
 //             [--cases-dir DIR] [--hypothesis TEXT]
 // Cases: <cases-dir>/<id>/case.json (default ~/.claude/provost/evals/reviewer/cases), written by
 // reviewer-cases.js save. Per case, sorted by id: `git archive <head>` is unpacked into a fresh temp dir
 // (the source repo is never checked out or changed), `git diff <base> <head>` goes to .changes/change.patch, and
 // `claude -p --agent code-reviewer` reviews it read-only (Read, Glob, Grep) with model and effort from
-// ~/.claude/agents/code-reviewer.md. The temp dir is named wt-* and the prompt does not mention evaluation.
+// ~/.claude/agents/code-reviewer.md (or from --agent-file). The temp dir is named wt-* and the prompt does not mention evaluation.
 // --inject DEST=SRC (repeatable) copies the local file SRC to <temp dir>/DEST after unpacking (overwriting an
 // archived file), so the reviewer sees the same context as in production (e.g. REVIEW.md); DEST must be relative
 // and free of `..`. Hit = an Important finding (I<n>) cites an expected file within ±10 lines
@@ -16,6 +16,12 @@
 // false alarm. Rows go to stdout and ~/.claude/provost/evals/reviewer/runs/<UTC>-<label>.tsv; summary on stderr.
 // The reviewer's report per case is saved in runs/<UTC>-<label>/<id>.md (CLI result text verbatim; <id>.err.txt
 // for an error without result text) and linked in the report column, so a score can be audited.
+// --agent-file PATH reviews with a candidate agent file instead of the installed one: its frontmatter model, effort
+// and tools and its body (the prompt) are passed in memory as `--agents` JSON defining `code-reviewer`, which
+// `--agent code-reviewer` then resolves to instead of the installed definition (checked against the CLI: the
+// --agents entry wins). Nothing under ~/.claude/agents is written or renamed. Model and effort come from the
+// candidate only. The path and the first 12 hex of its sha256 go to the stderr summary and to the "injected"
+// column of decisions.tsv.
 // --max-cost stops after the case that takes the cumulative total_cost_usd above it. --claude PATH ending in
 // .js runs under this node (test doubles).
 // A usage-limit reply (error exit whose result text matches /hit your .*limit/i) is recorded as
@@ -27,7 +33,7 @@
 // and answers yes / no / unsure. Output: runs/<first-run>.rescore.tsv and a summary on stderr.
 // Both subcommands append one row to ~/.claude/provost/evals/reviewer/decisions.tsv (verdict left empty for a
 // person to fill; --hypothesis TEXT is recorded).
-const fs = require("fs"), path = require("path"), os = require("os");
+const fs = require("fs"), path = require("path"), os = require("os"), crypto = require("crypto");
 const { execFileSync, spawnSync } = require("child_process");
 
 const args = process.argv.slice(2);
@@ -74,9 +80,9 @@ function untar(buf, dir) {
   }
 }
 
-// model/effort from the installed role's frontmatter, so `--agent` runs with the configured ones.
-function roleConfig() {
-  const file = path.join(os.homedir(), ".claude", "agents", "code-reviewer.md");
+// model/effort from the installed role's frontmatter (or the candidate file's), so `--agent` runs with the
+// configured ones.
+function roleConfig(file = path.join(os.homedir(), ".claude", "agents", "code-reviewer.md")) {
   const out = {};
   if (!fs.existsSync(file)) return out;
   const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(fs.readFileSync(file, "utf8"));
@@ -85,6 +91,20 @@ function roleConfig() {
     if (m) out[k] = m[1];
   }
   return out;
+}
+
+// Candidate agent file -> { path, sha, role, def }; def is the `--agents` entry (description, prompt, tools).
+function loadAgentFile(p) {
+  if (!fs.existsSync(p) || !fs.statSync(p).isFile()) die(`run: --agent-file does not exist: ${p}`);
+  const buf = fs.readFileSync(p);
+  const m = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)([\s\S]*)$/.exec(buf.toString("utf8"));
+  const body = m ? m[2].replace(/\r\n/g, "\n").trim() : "";
+  if (!body) die(`run: --agent-file has no prompt body: ${p}`);
+  const field = k => { const x = new RegExp(`^${k}:[ \\t]*(.*?)[ \\t]*$`, "m").exec(m[1].replace(/\r/g, "")); return x ? x[1] : ""; };
+  const def = { description: field("description") || "code-reviewer", prompt: body };
+  const tools = field("tools").split(",").map(t => t.trim()).filter(Boolean);
+  if (tools.length) def.tools = tools;
+  return { path: p, sha: crypto.createHash("sha256").update(buf).digest("hex").slice(0, 12), role: roleConfig(p), def };
 }
 
 const prompt = c => [
@@ -111,8 +131,9 @@ function spawnCli(cli, cwd, a, input) {
   return { cost, text, raw };
 }
 
-function runClaude(cli, dir, c, role) {
-  const a = ["-p", "--agent", "code-reviewer", "--tools", TOOLS, "--allowedTools", TOOLS,
+function runClaude(cli, dir, c, role, agentDef) {
+  // --agents defines code-reviewer in memory; --agent code-reviewer then resolves to it, not to the installed file.
+  const a = ["-p", "--agent", "code-reviewer", ...(agentDef ? ["--agents", JSON.stringify({ "code-reviewer": agentDef })] : []), "--tools", TOOLS, "--allowedTools", TOOLS,
     "--permission-mode", "dontAsk", "--output-format", "json", "--no-session-persistence"];
   if (role.model) a.push("--model", role.model);
   if (role.effort) a.push("--effort", role.effort);
@@ -183,7 +204,7 @@ function saveReport(rep, id, out) {
   return name ? `${rep.name}/${name}` : "";
 }
 
-function runCase(id, file, cli, role, rep, injects) {
+function runCase(id, file, cli, role, rep, injects, agentDef) {
   const row = { id, origin: "", kind: "", important: "", hit: "", fileHit: "", falseAlarm: "", cost: 0, status: "ok", report: "" };
   let c;
   try { c = JSON.parse(fs.readFileSync(file, "utf8")); } catch { row.status = "error:bad case.json"; return row; }
@@ -204,7 +225,7 @@ function runCase(id, file, cli, role, rep, injects) {
       fs.writeFileSync(path.join(dir, ".changes", "change.patch"), git(c.repo, ["diff", "--no-color", c.base, c.head], "buffer"));
     } catch (e) { row.status = "error:git " + String(e.stderr || e.message).trim().split("\n")[0]; return row; }
     let out;
-    try { out = runClaude(cli, dir, c, role); } catch (e) { row.status = "error:" + e.message; return row; }
+    try { out = runClaude(cli, dir, c, role, agentDef); } catch (e) { row.status = "error:" + e.message; return row; }
     row.cost = out.cost;
     try { row.report = saveReport(rep, id, out); } catch (e) { console.error(`${id}: report not saved: ${e.message}`); }
     if (out.error) { row.status = "error:" + out.error; return row; }
@@ -238,6 +259,9 @@ function run() {
     if (!fs.existsSync(src) || !fs.statSync(src).isFile()) die(`run: --inject SRC does not exist: ${src}`);
     return [dest, path.resolve(src)];
   });
+  const agentOpt = opt("--agent-file", "");
+  if (args.includes("--agent-file") && !agentOpt) die("run: --agent-file needs a PATH");
+  const agentFile = agentOpt ? loadAgentFile(path.resolve(agentOpt)) : null;
   let ids = fs.readdirSync(casesDir).filter(d => fs.existsSync(path.join(casesDir, d, "case.json"))).sort();
   const want = opt("--ids", "");
   if (want) {
@@ -246,14 +270,14 @@ function run() {
     if (missing.length) die(`run: unknown case id(s): ${missing.join(", ")}`);
     ids = ids.filter(x => w.includes(x));
   }
-  const role = roleConfig(), rows = [];
+  const role = agentFile ? agentFile.role : roleConfig(), rows = [];
   const runsDir = path.join(EVALS, "runs");
   const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
   const rep = { name: `${stamp}-${label}`, dir: path.join(runsDir, `${stamp}-${label}`) };
   fs.mkdirSync(rep.dir, { recursive: true });
   let total = 0, stoppedAfter = "", limitAt = "";
   for (const id of ids) {
-    const row = runCase(id, path.join(casesDir, id, "case.json"), cli, role, rep, injects);
+    const row = runCase(id, path.join(casesDir, id, "case.json"), cli, role, rep, injects, agentFile && agentFile.def);
     rows.push(row);
     total += row.cost;
     console.error(`${id}: ${row.status}`);
@@ -277,6 +301,7 @@ function run() {
     `stopped by usage limit: ${limitAt ? `yes (at ${limitAt})` : "no"}`,
     `role: code-reviewer model=${role.model || "default"} effort=${role.effort || "default"}`,
     `injected: ${injects.length ? injects.map(i => i[0]).join(", ") : "none"}`,
+    `agent-file: ${agentFile ? `${agentFile.path} sha256=${agentFile.sha}` : "none"}`,
   ];
 
   const cols = ["id", "origin", "kind", "important", "hit", "fileHit", "falseAlarm", "costUsd", "status", "report"];
@@ -295,7 +320,8 @@ function run() {
   logDecision({ command: "run", label, cases: rows.length, ok: ok.length,
     recall: nd(defects.filter(r => r.hit === "yes").length, defects.length),
     falseAlarm: nd(cleans.filter(r => r.falseAlarm === "yes").length, cleans.length), judgeYes: "",
-    cost: total, injected: injects.length ? injects.map(i => i[0]).join(",") : "none" });
+    cost: total,
+    injected: [...injects.map(i => i[0]), ...(agentFile ? [`agent-file:${agentFile.path} sha256=${agentFile.sha}`] : [])].join(",") || "none" });
   if (limitAt) console.error(`\nusage limit hit at ${limitAt}; not run: ${notRun.join(", ") || "(none)"}\nrerun after the limit resets: --ids ${[limitAt, ...notRun].join(",")}`);
 }
 
@@ -439,4 +465,4 @@ function rescore() {
 
 if (cmd === "run") run();
 else if (cmd === "rescore") rescore();
-else die("usage: reviewer-eval.js run [--cases-dir DIR] [--ids a,b] [--label NAME] [--max-cost USD] [--claude PATH] [--tsv] [--inject DEST=SRC]... [--hypothesis TEXT]\n       reviewer-eval.js rescore --run NAME[,NAME] [--judge-model MODEL] [--claude PATH] [--max-cost USD] [--cases-dir DIR] [--hypothesis TEXT]");
+else die("usage: reviewer-eval.js run [--cases-dir DIR] [--ids a,b] [--label NAME] [--max-cost USD] [--claude PATH] [--tsv] [--inject DEST=SRC]... [--agent-file PATH] [--hypothesis TEXT]\n       reviewer-eval.js rescore --run NAME[,NAME] [--judge-model MODEL] [--claude PATH] [--max-cost USD] [--cases-dir DIR] [--hypothesis TEXT]");
