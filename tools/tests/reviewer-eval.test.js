@@ -32,6 +32,7 @@ function fixture(ids, claims = {}) {
   const cli = path.join(root, "fake-claude.js");
   fs.writeFileSync(cli, `
 let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
+  require("fs").appendFileSync(__dirname + "/argv.jsonl", JSON.stringify(process.argv.slice(2)) + "\\n");
   if (/Claim to review: LIMIT/.test(s)) {
     console.log(JSON.stringify({ type: "result", is_error: true, result: "You've hit your 5-hour limit \\u00b7 resets 3pm", total_cost_usd: 0 }));
     process.exit(1);
@@ -59,5 +60,64 @@ test("usage-limit reply stops the run, is saved as .err.txt and lists a rerun", 
     assert.ok(!fs.existsSync(path.join(rep, "c3.md")) && !fs.existsSync(path.join(rep, "c4.md")), "later cases not run");
     assert.match(r.stderr, /not run: c3, c4/);
     assert.match(r.stderr, /--ids c2,c3,c4/);
+  } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+const readArgv = fx => JSON.parse(fs.readFileSync(path.join(fx.root, "argv.jsonl"), "utf8").trim().split("\n")[0]);
+
+test("--agent-file runs the candidate agent as code-reviewer with its prompt, model and effort, and records it", () => {
+  const fx = fixture(["c1"]);
+  try {
+    const agents = path.join(fx.root, ".claude", "agents");
+    fs.mkdirSync(agents, { recursive: true });
+    const installed = path.join(agents, "code-reviewer.md");
+    fs.writeFileSync(installed, "---\nname: code-reviewer\nmodel: fable\neffort: high\ntools: Read, Glob, Grep\n---\nINSTALLED PROMPT\n");
+    const cand = path.join(fx.root, "cand.md");
+    fs.writeFileSync(cand, "---\r\nname: code-reviewer\r\ndescription: Candidate: strict\r\nmodel: opus\r\neffort: low\r\ntools: Read, Grep\r\n---\r\n\r\nCANDIDATE PROMPT line 1\r\nline 2\r\n");
+    const before = fs.readFileSync(installed, "utf8");
+    const r = runTool(fx, ["--agent-file", cand, "--hypothesis", "cand"]);
+    assert.strictEqual(r.status, 0, r.stderr);
+    const argv = readArgv(fx);
+    const val = k => argv[argv.indexOf(k) + 1];
+    assert.strictEqual(val("--agent"), "code-reviewer");
+    assert.strictEqual(val("--model"), "opus");
+    assert.strictEqual(val("--effort"), "low");
+    const defs = JSON.parse(val("--agents"));
+    assert.deepStrictEqual(Object.keys(defs), ["code-reviewer"]);
+    assert.strictEqual(defs["code-reviewer"].prompt, "CANDIDATE PROMPT line 1\nline 2");
+    assert.deepStrictEqual(defs["code-reviewer"].tools, ["Read", "Grep"]);
+    assert.strictEqual(defs["code-reviewer"].description, "Candidate: strict");
+    const sha = require("crypto").createHash("sha256").update(fs.readFileSync(cand)).digest("hex").slice(0, 12);
+    assert.ok(r.stderr.includes(`agent-file: ${cand} sha256=${sha}`), r.stderr);
+    assert.match(r.stderr, /role: code-reviewer model=opus effort=low/);
+    const rows = fs.readFileSync(path.join(fx.root, ".claude", "provost", "evals", "reviewer", "decisions.tsv"), "utf8").split("\n").filter(Boolean);
+    const head = rows[0].split("\t"), row = rows[1].split("\t");
+    assert.strictEqual(row.length, head.length);
+    assert.ok(row[head.indexOf("injected")].includes(`agent-file:${cand} sha256=${sha}`), rows[1]);
+    assert.strictEqual(fs.readFileSync(installed, "utf8"), before);
+  } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test("without --agent-file no --agents is passed and the summary says none", () => {
+  const fx = fixture(["c1"]);
+  try {
+    const r = runTool(fx);
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.ok(!readArgv(fx).includes("--agents"));
+    assert.match(r.stderr, /agent-file: none/);
+  } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
+});
+
+test("--agent-file with a missing file or without a prompt body is refused", () => {
+  const fx = fixture(["c1"]);
+  try {
+    const missing = runTool(fx, ["--agent-file", path.join(fx.root, "nope.md")]);
+    assert.strictEqual(missing.status, 1);
+    assert.match(missing.stderr, /--agent-file does not exist/);
+    const empty = path.join(fx.root, "empty.md");
+    fs.writeFileSync(empty, "---\nmodel: opus\n---\n");
+    const r = runTool(fx, ["--agent-file", empty]);
+    assert.strictEqual(r.status, 1);
+    assert.match(r.stderr, /--agent-file has no prompt body/);
   } finally { fs.rmSync(fx.root, { recursive: true, force: true }); }
 });
